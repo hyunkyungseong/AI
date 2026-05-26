@@ -131,11 +131,22 @@ for start, end in ranges_to_delete:
 print("\n[3단계] XML 파싱 중...")
 
 # 원본 파일의 헤더 줄(XML 선언, XSL 참조 PI) 보존
+# XSL href를 output/ 기준 상대 경로로 교체 (원본은 data/ 기준이므로 조정 필요)
+import re as _re
+_xsl_src_dir  = os.path.dirname(XML_PATH)        # data/
+_xsl_out_dir  = os.path.dirname(OUT_XML)          # output/
 xml_header_lines = []
 with open(XML_PATH, encoding='utf-8-sig') as f:
     for line in f:
         stripped = line.rstrip()
         if stripped.lstrip().startswith('<?'):
+            # XSL PI의 href 경로를 output/ 기준 상대 경로로 변환
+            def _fix_href(m):
+                xsl_filename = m.group(1)
+                xsl_abs = os.path.join(_xsl_src_dir, xsl_filename)
+                rel = os.path.relpath(xsl_abs, _xsl_out_dir).replace('\\', '/')
+                return f'href="{rel}"'
+            stripped = _re.sub(r'href="([^"]+\.xsl)"', _fix_href, stripped)
             xml_header_lines.append(stripped)
         else:
             break

@@ -23,6 +23,9 @@
 - [x] 폴더 구조 정리 — data/scripts/output/work/docs 분리 (2026-05-24)
 - [x] 스크립트 경로 동적화 — BASE_DIR 하드코딩 → `__file__` 기준 자동 계산 (2026-05-24)
 - [x] CLAUDE.md 구조 개선 — 관리 지침 추가, 이력 분리 (2026-05-26)
+- [x] 06_generate_pdf_com.py 수정 — XHwpWindows try/except, time.sleep(2) 추가 (2026-05-26)
+- [x] 05_generate_맞춤약관.py 수정 — XSL href 상대경로 자동 변환 (output/ 기준) (2026-05-26)
+- [x] COM PDF 생성 실패 원인 파악 — HWPML SubVersion 불일치 (XML:10.0.0.0 vs 한컴 2010) (2026-05-26)
 
 ---
 
@@ -66,9 +69,30 @@
 - CLAUDE.md에 관리 지침 섹션 추가
 - 메모리 파일 경로 수정 (shk → hyunkyung)
 
+### 2026-05-26 — COM PDF 생성 디버깅
+
+**증상:** `hwp.SaveAs("PDF")` 호출 시 `-2147023170 RPC 크래시`
+
+**원인 분석 과정:**
+1. `XHwpWindows.Item(0).Visible = False` → 한컴 2010 미지원, try/except 처리
+2. SaveAs 옵션 문자열(`Security:1` 등) → 한컴 2010 크래시 유발, 옵션 제거
+3. XSL 파일 경로 불일치 → `output/` 기준 상대경로(`../data/`)로 자동 변환
+4. **근본 원인 확인**: HWPML `SubVersion="10.0.0.0"` (한컴 2020+)과 한컴 2010 COM 불호환
+   - 하위버전 한컴으로 상위버전 XML을 `forceopen`하면 문서 객체 불완전 → SaveAs 크래시
+
+**수정된 파일:**
+- `scripts/06_generate_pdf_com.py`: import time 추가, XHwpWindows try/except, time.sleep(2), SaveAs 옵션 제거
+- `scripts/05_generate_맞춤약관.py`: XSL href를 output/ 기준 상대경로로 자동 변환
+
+**결론:** 한컴오피스 상위버전(XML 생성 버전 이상) 설치 필요. 타 PC 이전 시 `pip install pywin32` + 폴더 복사만으로 실행 가능.
+
 ---
 
 ## ⏭ 다음 할 일
 
+- [ ] **한컴오피스 상위버전 설치 후 `06_generate_pdf_com.py` PDF 생성 테스트** ← 최우선
+  - XML SubVersion(10.0.0.0) 이상 버전 설치 필요
+  - 타 PC(상위버전 설치됨) 또는 현재 PC 업그레이드 후 진행
+  - 성공 시 SaveAs 옵션(`Embedding:1;Security:1;Resolution:300;`) 재적용 검토
 - [ ] `05_generate_맞춤약관.py` + `06_generate_pdf_com.py` 통합 실행 스크립트 구현
 - [ ] 담보코드를 외부(엑셀·CSV 등)에서 읽어오는 인터페이스 추가 검토

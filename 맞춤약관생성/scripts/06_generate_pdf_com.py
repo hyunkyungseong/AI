@@ -6,6 +6,7 @@
 """
 
 import os
+import time
 import win32com.client
 
 # ════════════════════════════════════════════════════════════════
@@ -63,7 +64,11 @@ try:
         pass
 
     # 화면 표시 여부 (False = 백그라운드 실행)
-    hwp.XHwpWindows.Item(0).Visible = False
+    # 한컴 2010 등 일부 버전은 XHwpWindows 미지원 → 무시
+    try:
+        hwp.XHwpWindows.Item(0).Visible = False
+    except Exception:
+        pass
 
     # ── 2. XML 파일 열기 ──────────────────────────────────────
     print(f"\n[2단계] XML 파일 열기 중...")
@@ -76,23 +81,18 @@ try:
         raise RuntimeError("파일 열기 실패 — Open() 이 False 를 반환했습니다.")
     print("  ->열기 성공")
 
+    # 문서가 완전히 로드될 때까지 대기 (한컴 2010 안정성)
+    time.sleep(2)
+
     # ── 3. PDF 저장 ───────────────────────────────────────────
     print(f"\n[3단계] PDF 저장 중...")
     print(f"  ->저장 경로: {OUT_PDF}")
 
-    # PDF 저장 옵션 문자열
-    # - Embedding:1   : 폰트 서브셋 임베딩 (기본값이나 명시)
-    # - Security:1    : 편집 금지 (법적 문서 보호)
-    # - Resolution:300: 이미지 해상도 300dpi
-    pdf_option = "Embedding:1;Security:1;Resolution:300;"
-
-    result = hwp.SaveAs(OUT_PDF, "PDF", pdf_option)
+    # 한컴 2010은 옵션 문자열이 크래시를 유발할 수 있어 먼저 옵션 없이 시도
+    result = hwp.SaveAs(OUT_PDF, "PDF", "")
     if not result:
-        # 일부 버전은 옵션 미지원 → 옵션 없이 재시도
-        print("  [!] 옵션 적용 실패 — 기본 옵션으로 재시도...")
-        result = hwp.SaveAs(OUT_PDF, "PDF", "")
-        if not result:
-            raise RuntimeError("PDF 저장 실패 — SaveAs() 가 False 를 반환했습니다.")
+        raise RuntimeError("PDF 저장 실패 — SaveAs() 가 False 를 반환했습니다.")
+    print("  ->기본 옵션으로 저장 완료")
 
     if os.path.exists(OUT_PDF):
         size_kb = os.path.getsize(OUT_PDF) / 1024

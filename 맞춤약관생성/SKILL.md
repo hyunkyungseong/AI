@@ -285,13 +285,14 @@ with open(OUT_XML, 'w', encoding='utf-8') as f:
 
 **목적:** 맞춤약관 XML을 한컴오피스 COM 자동화로 열어 PDF로 저장
 
-**검증 상태:** ✅ 완료 (2026-05-23)
+**검증 상태:** ⏳ 대기 중 — 한컴오피스 상위버전 설치 후 재검증 필요 (2026-05-26)
 
-**스크립트:** `generate_pdf_com.py`
+**스크립트:** `06_generate_pdf_com.py`
 
-**핵심 로직:**
+**핵심 로직 (현재 코드 기준):**
 ```python
 import win32com.client
+import time
 
 # COM ProgID 버전별 자동 감지
 COM_IDS = [
@@ -305,36 +306,61 @@ for prog_id in COM_IDS:
     except Exception:
         continue
 
-# 보안 모듈 등록 — 파일 열기 팝업 방지
-hwp.RegisterModule("FilePathCheckDLL", "SecurityModule")
+# 보안 모듈 등록 — 파일 열기 팝업 방지 (버전에 따라 없을 수 있음)
+try:
+    hwp.RegisterModule("FilePathCheckDLL", "SecurityModule")
+except Exception:
+    pass
 
-# 백그라운드 실행
-hwp.XHwpWindows.Item(0).Visible = False
+# 백그라운드 실행 (한컴 2010 등 미지원 버전은 예외 무시)
+try:
+    hwp.XHwpWindows.Item(0).Visible = False
+except Exception:
+    pass
 
 # XML 파일 열기 (HWPML2X: 한글 XML 필터)
 hwp.Open(xml_path, "HWPML2X", "forceopen:true")
 
-# PDF 저장 (폰트 서브셋 임베딩, 편집 금지, 300dpi)
-pdf_option = "Embedding:1;Security:1;Resolution:300;"
-result = hwp.SaveAs(pdf_path, "PDF", pdf_option)
+# 문서 완전 로딩 대기 (한컴 2010 안정성)
+time.sleep(2)
+
+# PDF 저장 — 옵션 없이 저장 (옵션 문자열이 일부 버전에서 크래시 유발)
+# 상위버전 검증 완료 후 Embedding:1;Security:1;Resolution:300; 옵션 추가 예정
+result = hwp.SaveAs(pdf_path, "PDF", "")
 if not result:
-    hwp.SaveAs(pdf_path, "PDF", "")   # 옵션 미지원 버전 재시도
+    raise RuntimeError("PDF 저장 실패 — SaveAs() 가 False 를 반환했습니다.")
 
 hwp.Quit()
 ```
 
-**PDF 저장 옵션 설명:**
+**버전 호환성 — 핵심 주의사항:**
 
-| 옵션 | 값 | 의미 |
-|---|---|---|
-| Embedding | 1 | 폰트 서브셋 임베딩 (텍스트 검색 가능) |
-| Security | 1 | 편집·수정 금지 (법적 문서 보호) |
-| Resolution | 300 | 이미지 해상도 300dpi |
+| 상황 | 결과 |
+|---|---|
+| XML SubVersion과 한컴 버전 일치 | SaveAs PDF 정상 동작 |
+| XML SubVersion 상위 > 설치된 한컴 | SaveAs 시 RPC 크래시 (`-2147023170`) |
+
+- HWPML 파일의 `<HWPML SubVersion="10.0.0.0">` 값이 설치된 한컴 버전보다 높으면 COM PDF 변환 불가
+- `forceopen:true` 로 열더라도 문서 객체가 불완전한 상태로 열려 SaveAs 크래시 발생
+- **현재 환경**: XML은 한컴 2020+(SubVersion 10.0.0.0) 생성, 설치 버전은 2010 → 불호환
+
+**XSL 경로 주의사항:**
+
+출력 XML(`output/`)과 XSL 파일(`data/`)이 다른 폴더에 있으므로 XSL href를 상대 경로로 자동 변환해야 함
+→ `05_generate_맞춤약관.py`에서 `../data/파일명.xsl` 형태로 자동 처리됨
+
+**타 PC 이전 방법:**
+```
+1. 프로젝트 폴더 전체 복사 (경로 무관)
+2. pip install pywin32
+3. 한컴오피스 설치 확인
+4. python scripts/06_generate_pdf_com.py 실행
+```
 
 **주의사항:**
 - `RegisterModule` 은 버전에 따라 없을 수 있음 → try/except 로 무시
-- `Visible = False` 설정 전 `XHwpWindows.Item(0)` 이 없으면 오류 → 실행 환경에 따라 생략 가능
-- PDF 옵션 문자열은 버전마다 지원 범위가 다름 → 실패 시 빈 문자열(`""`)로 재시도
+- `XHwpWindows.Item(0)` 은 한컴 2010에서 없을 수 있음 → try/except 로 무시
+- PDF 저장 옵션(`Embedding:1;Security:1` 등)은 상위버전 검증 후 재적용 예정
 - 한컴오피스가 미설치 상태이면 COM Dispatch 자체가 실패 → 설치 여부 사전 확인 필요
 
 ---
