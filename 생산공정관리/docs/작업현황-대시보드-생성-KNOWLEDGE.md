@@ -68,7 +68,7 @@
 ## 🚀 최종 배포 목표
 
 > ⚠️ **현재 단계:** 로컬 개발 완료 (SQLite + 로컬 Streamlit)
-> **다음 단계:** 원격 PC에 MySQL + Streamlit 배포 → 팀 전체 사용
+> **다음 단계:** 원격 PC에 MariaDB + Streamlit 배포 → 팀 전체 사용
 
 ### 목표 아키텍처
 ```
@@ -80,7 +80,7 @@
 
 [목표 — 원격 배포]
   원격 서버 PC
-  ├── MySQL DB
+  ├── MariaDB DB
   │   ├── 운영통계자료 테이블  ← xlsx 데이터 INSERT
   │   ├── 거래처마스터 테이블
   │   └── 거래명세서이력 테이블
@@ -96,20 +96,51 @@
 
 > 팀 규모(2~5명) 사내 사용 기준 → **hosts 파일 방법 권장**
 
-### 전환 작업 순서 (새 세션에서 진행)
-1. 원격 PC에 MySQL 설치 및 DB·테이블 생성
-2. `운영통계자료.xlsx` 데이터 → MySQL 테이블 INSERT
-3. 적재 데이터 조회·검증
-4. `app.py` SQLite → MySQL 연결 코드 교체 (`pymysql` 사용)
-5. `init_db.py` MySQL 버전으로 재작성
-6. 원격 PC에서 Streamlit 서버 실행·배포
+### 전환 작업 순서
+> CHANGELOG.md ⏭ 섹션에 단계별 상세 항목 기재
 
-### SQLite → MySQL 전환 대상 파일
+1. 원격 PC: MariaDB + HeidiSQL 설치, DB·계정·방화벽(3306·8501 포트) 설정
+2. 현재 PC: `db_config.py`·`init_db_mariadb.py`·`migrate_sqlite_to_mariadb.py` 신규 작성
+3. 현재 PC: `preprocess.py` 수정 (pkl → MariaDB INSERT), `app.py` 수정 (pymysql 전환)
+4. 원격 PC: Python + 패키지 설치, 파일 복사, DB 적재·검증, Streamlit 배포
+
+### SQLite → MariaDB 전환 대상 파일
 | 파일 | 변경 내용 |
 |---|---|
-| `scripts/init_db.py` | MySQL 테이블 생성 스크립트로 전체 재작성 |
-| `scripts/app.py` | `get_conn()` 함수 → `pymysql.connect()` 로 교체, SQL 문법 검토 |
-| `scripts/preprocess.py` | pkl 유지 OR MySQL 직접 INSERT 방식으로 변경 검토 |
+| `scripts/db_config.py` (신규) | DB 접속 정보 — host·user·password·db명 |
+| `scripts/init_db_mariadb.py` (신규) | MariaDB 3개 테이블 생성 |
+| `scripts/migrate_sqlite_to_mariadb.py` (신규) | 기존 SQLite 거래처마스터·이력 → MariaDB 이관 |
+| `scripts/preprocess.py` | pkl 저장 제거, MariaDB INSERT 방식으로 변경 **(확정)** |
+| `scripts/app.py` | sqlite3·pkl → pymysql·SQL 쿼리, `get_conn()` 함수 pymysql로 교체 |
+| `scripts/init_db.py` | 역할 종료 (init_db_mariadb.py 로 대체) |
+
+### 운영통계자료 MariaDB 테이블 스키마 (21개 컬럼)
+> preprocess.py 출력 기준 — 원본 14개 + 파생 7개 / 갱신 방식: TRUNCATE & INSERT
+
+| 컬럼 | 타입 | 구분 |
+|---|---|---|
+| id | INT AUTO_INCREMENT PK | — |
+| 마케팅담당자 | VARCHAR(50) | 원본 |
+| 등록자 | VARCHAR(50) | 원본 |
+| 업무명 | VARCHAR(200) | 원본 |
+| 업무의뢰서번호 | INT | 원본 |
+| 작업일자 | DATETIME | 원본 |
+| 작업내역서번호 | INT | 원본 |
+| 작업내역서 | VARCHAR(300) | 원본 |
+| 작업명 | VARCHAR(200) | 원본 |
+| 작업내역서상세 | TEXT | 원본 |
+| P수 | VARCHAR(20) | 원본 |
+| 장수 | INT | 원본 |
+| 건수 | INT | 원본 |
+| 출력페이지 | INT | 원본 |
+| 청구페이지 | INT | 원본 |
+| 연월 | VARCHAR(7) | 파생 |
+| 날짜 | VARCHAR(10) | 파생 |
+| 시간대 | INT | 파생 |
+| 거래처명 | VARCHAR(100) | 파생 |
+| 업무명상세 | VARCHAR(300) | 파생 |
+| 사업부 | VARCHAR(20) | 파생 |
+| 확정청구페이지 | INT | 파생 |
 
 ---
 
@@ -122,7 +153,7 @@
 | 차트 | Plotly 6.7.0 | Plotly 6.7.0 | 그래프·시각화 |
 | 데이터 처리 | pandas | pandas | 엑셀 데이터 가공 |
 | 엑셀 읽기 | openpyxl | openpyxl | .xlsx 파일 처리 |
-| **DB** | **SQLite (로컬 파일)** | **MySQL (원격 서버)** | 운영통계·거래명세서 저장 |
+| **DB** | **SQLite (로컬 파일)** | **MariaDB (원격 서버)** | 운영통계·거래명세서 저장 |
 | **DB 드라이버** | **sqlite3 (내장)** | **pymysql** | DB 연결 |
 | 이메일 발송 | smtplib (미구현) | smtplib | 거래명세서 이메일 발송 |
 

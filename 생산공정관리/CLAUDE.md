@@ -28,6 +28,7 @@
 - 추측으로 답하지 말 것
 - 코드만 주지 말고 설명도 반드시 포함할 것
 - 결과물 없이 설명만 하지 말 것
+- **유료 외부 API 사용 금지** (OpenAI, Google API 등 추가 과금 발생하는 서비스 일체) — Python 내장 라이브러리 또는 이미 설치된 패키지만 사용할 것
 
 ## 💌 특별 당부사항
 - 항상 한국어로 답해줘
@@ -100,6 +101,36 @@ touch docs/CHANGELOG.md
 
 ### 폴더 운영 규칙
 - data 폴더의 원본파일은 절대 수정하지 말것, output 폴더의 데이타는 이력관리가 되어야 함
+
+---
+
+## 🛠️ 기술 스택 (고정 — 변경 전 반드시 확인)
+
+| 구분 | 현재 | 목표 |
+|---|---|---|
+| 언어 | Python 3.12.5 | Python 3.12.5 |
+| 대시보드 | Streamlit 1.58.0 | Streamlit 1.58.0 |
+| 차트 | Plotly 6.7.0 | Plotly 6.7.0 |
+| DB | SQLite (로컬) | MariaDB (원격) |
+| DB 드라이버 | sqlite3 (내장) | pymysql |
+
+## ⚙️ 실행 명령어
+
+```
+대시보드 실행        : 대시보드_실행.bat
+데이터 갱신 후 실행  : 데이터갱신_후_실행.bat
+전처리만 실행        : python scripts/preprocess.py
+문법 검사            : python -m py_compile scripts/app.py
+```
+
+## 📏 코딩 규칙
+
+- 코드 수정 후 `python -m py_compile scripts/app.py` 문법 검사 필수
+- `st.rerun()` 최소화 — 불필요한 호출은 탭 상태 초기화 유발
+- DB 숫자 비교 시 타입 통일 필수 (float · str 혼용 금지 → int로 통일)
+- `data/` 폴더 원본 파일 절대 수정 금지
+- `st.experimental_*` 사용 금지 (deprecated)
+- 유료 외부 API 사용 금지 (OpenAI · Google API 등 추가 과금 서비스 일체)
 
 ---
 
