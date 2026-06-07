@@ -47,13 +47,14 @@
 ### STEP 1 — 추가 파일 즉시 읽기
 1. `SKILL.md` (루트) — 검증된 스킬 패턴
 2. `docs/작업현황-대시보드-생성-KNOWLEDGE.md` — 프로젝트 지식, 도메인 용어, 주요 결정사항
-3. `docs/CHANGELOG.md` — 마지막 완료 작업 및 다음 할 일 확인
+3. `docs/CHANGELOG.md` — 마지막 완료 작업 확인
+4. `.claude/plans/` — 폴더 내 플랜 파일 목록 확인 후 현재 진행 단계 파악
 
 ### STEP 2 — 현재 상태 파악 후 사용자에게 보고
 ```
 [맥락 복원 완료]
 - 마지막 완료 작업 : (docs/CHANGELOG.md ✅ 섹션 기준)
-- 다음 예정 작업   : (docs/CHANGELOG.md ⏭ 섹션 기준)
+- 다음 예정 작업   : (.claude/plans/ 현재 단계 플랜 파일 기준)
 - 질문 또는 바로 시작할까요?
 ```
 
@@ -67,7 +68,8 @@
 |---|---|---|
 | `SKILL.md` | 루트 | 검증된 스킬 코드 패턴 — 구현 시 재사용 |
 | `작업현황-대시보드-생성-KNOWLEDGE.md` | `docs/` | 프로젝트 지식, 도메인 용어, 주요 결정사항 |
-| `CHANGELOG.md` | `docs/` | 작업 이력 및 다음 할 일 |
+| `CHANGELOG.md` | `docs/` | 작업 완료 이력 |
+| `plan_N단계_*.md` | `.claude/plans/` | 현재 진행 단계 및 체크리스트 |
 
 ---
 
@@ -78,18 +80,21 @@
 ```
 작업현황 대시보드 생성/
 ├── CLAUDE.md / SKILL.md     ← 루트 고정 (Claude Code 자동 인식)
+├── .claude/                 ← Claude Code 전용 설정
+│   └── plans/               ← 단계별 플랜 파일 (plan_N단계_기능명.md)
 ├── data/                    ← 원본 입력 데이터 (수정 금지)
 ├── scripts/                 ← 실행 스크립트
-├── output/                  ← 생성된 결과물
+├── output/                  ← 생성된 결과물 (이력 관리)
 ├── work/                    ← 중간 작업 데이터
 └── docs/                    ← 문서 및 분석 결과
     ├── 작업현황-대시보드-생성-KNOWLEDGE.md
-    ├── CHANGELOG.md         ← 작업 이력 및 다음 할 일
+    ├── CHANGELOG.md         ← 완료 작업 이력 (to-do 기록 금지)
     └── results/
 ```
 
 ```bash
 # 폴더 자동 생성 (이미 있으면 무시됨)
+mkdir -p .claude/plans
 mkdir -p data
 mkdir -p scripts
 mkdir -p output
@@ -125,12 +130,32 @@ touch docs/CHANGELOG.md
 
 ## 📏 코딩 규칙
 
+- 경로는 절대경로 하드코딩 금지 — Python: `Path(__file__).parent` 기준 상대경로, bat 파일: `%~dp0` 사용
 - 코드 수정 후 `python -m py_compile scripts/app.py` 문법 검사 필수
 - `st.rerun()` 최소화 — 불필요한 호출은 탭 상태 초기화 유발
 - DB 숫자 비교 시 타입 통일 필수 (float · str 혼용 금지 → int로 통일)
 - `data/` 폴더 원본 파일 절대 수정 금지
 - `st.experimental_*` 사용 금지 (deprecated)
 - 유료 외부 API 사용 금지 (OpenAI · Google API 등 추가 과금 서비스 일체)
+
+---
+
+## 🚨 비개발자 관리 가이드 (NON-DEVELOPER MANAGEMENT)
+
+### 1. 문서 및 진행 관리 규칙
+- **docs/CHANGELOG.md** : 과거에 완료된 핵심 결과(날짜·완료 내역)만 기록하는 역사책 — to-do 절대 기록 금지
+- **`.claude/plans/plan_기능명.md`** : 새 기능·복잡한 작업 시작 전, 기획과 단계별 계획을 먼저 작성 → 완료 항목은 `[ ]` → `[x]` 업데이트 → 기능 완성 시 보관/삭제
+
+### 2. 선(先)계획 후(後)코딩 원칙
+- 아이디어·기능 요청 시 코드를 즉시 수정하지 말고, **Read-only 분석 먼저** 실행
+- 분석 후 **전문 용어 배제·비유 활용**한 쉬운 계획서 작성 → 관리자 컨펌 대기
+- 관리자의 명시적 승인(`진행해줘`, `X단계 시작해줘`)이 있을 때만 수정 모드 전환 → **한 단계씩** 실행
+- 플랜 작성 완료 후 반드시 **ExitPlanMode**로 플랜을 화면에 표시하고 승인을 받은 후 수정 시작 — 대화 중 나온 "진행해줘"는 플랜 승인으로 간주하지 않음
+
+### 3. 사이드 이펙트(부작용) 방지
+- **사전 검증**: 수정 전 관련 파일을 `Grep`·`Read`로 재확인하여 기존 기능 영향 여부 점검
+- **비개발자용 검증 체크리스트**: 코딩 완료 후 관리자가 눈으로 확인할 수 있는 화면 테스트 3단계를 매번 제공
+  - 예) `1. ○○ 메뉴 클릭 → 2. ○○ 값 입력 → 3. ○○ 화면 결과 확인`
 
 ---
 
@@ -143,7 +168,8 @@ touch docs/CHANGELOG.md
 | 항상 지켜야 할 규칙, 폴더 구조 | **이 파일 (CLAUDE.md)** |
 | 검증된 코드 패턴·스킬 | **SKILL.md** |
 | 도메인 지식, 주요 결정사항 | **docs/작업현황-대시보드-생성-KNOWLEDGE.md** |
-| 작업 완료 이력, 다음 할 일 | **docs/CHANGELOG.md** |
+| 작업 완료 이력 (to-do 기록 금지) | **docs/CHANGELOG.md** |
+| 기능별 작업 계획·진행 체크리스트 | **.claude/plans/plan_기능명.md** |
 
 ### 절대 CLAUDE.md에 추가하지 말 것
 - 완료된 작업 체크리스트 / 날짜별 이력 / 코드 스니펫

@@ -9,6 +9,7 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).parent.parent
 DATA_FILE = BASE_DIR / "data" / "운영통계자료.xlsx"
+자재_FILE = BASE_DIR / "data" / "자재사용현황.xlsx"
 OUTPUT_FILE = BASE_DIR / "work" / "processed.pkl"
 
 
@@ -31,6 +32,55 @@ def add_client_column(df):
     split = df["작업내역서"].str.split(" - ", n=1, expand=True)
     df["거래처명"]  = split[0].str.strip()
     df["업무명상세"] = split[1].str.strip() if 1 in split.columns else ""
+    return df
+
+
+def apply_반제품_logic(df):
+    """반제품=Y인 행의 건수 필드를 0으로 설정 (봉입 없음 처리)"""
+    df.loc[df["반제품"] == "Y", "건수"] = 0
+    return df
+
+
+def load_and_merge_자재(df):
+    """자재사용현황.xlsx를 읽어 자재종류별 사용량 컬럼으로 조인"""
+    자재df = pd.read_excel(자재_FILE, engine="openpyxl")
+    자재df.columns = 자재df.columns.str.strip()
+    자재df = 자재df.rename(columns={
+        "업무의뢰서코드": "업무의뢰서번호",
+        "작업내역서코드": "작업내역서번호",
+    })
+    자재df["업무의뢰서번호"] = 자재df["업무의뢰서번호"].astype(int)
+    자재df["작업내역서번호"] = 자재df["작업내역서번호"].astype(int)
+    자재df["작업일자"] = pd.to_datetime(자재df["작업일자"]).dt.strftime("%Y-%m-%d")
+
+    pivot = (
+        자재df.groupby(["업무의뢰서번호", "작업내역서번호", "작업일자", "자재종류"])["사용량"]
+        .sum()
+        .unstack(fill_value=0)
+        .reset_index()
+    )
+    pivot.columns.name = None
+    pivot.columns = [
+        c if c in ("업무의뢰서번호", "작업내역서번호", "작업일자") else f"{c}_사용량"
+        for c in pivot.columns
+    ]
+
+    df["_작업일자날짜"] = pd.to_datetime(df["작업일자"], errors="coerce").dt.strftime("%Y-%m-%d")
+    df["_업무의뢰서번호키"] = pd.to_numeric(df["업무의뢰서번호"], errors="coerce").fillna(-1).astype(int)
+    df["_작업내역서번호키"] = pd.to_numeric(df["작업내역서번호"], errors="coerce").fillna(-1).astype(int)
+
+    df = df.merge(
+        pivot,
+        left_on=["_업무의뢰서번호키", "_작업내역서번호키", "_작업일자날짜"],
+        right_on=["업무의뢰서번호", "작업내역서번호", "작업일자"],
+        how="left",
+        suffixes=("", "_자재"),
+    )
+    df = df.drop(columns=["_작업일자날짜", "_업무의뢰서번호키", "_작업내역서번호키",
+                           "업무의뢰서번호_자재", "작업내역서번호_자재", "작업일자_자재"], errors="ignore")
+
+    자재컬럼 = [c for c in df.columns if c.endswith("_사용량")]
+    df[자재컬럼] = df[자재컬럼].fillna(0).astype(int)
     return df
 
 
@@ -69,18 +119,22 @@ def apply_billing_logic(df):
 
 
 def main():
-    print("[1/4] 데이터 로드 중...")
+    print("[1/5] 데이터 로드 중...")
     df = load_raw()
     print(f"  총 {len(df):,}행 로드 완료")
 
-    print("[2/4] 날짜/시간 컬럼 추가 중...")
+    print("[2/5] 반제품 처리 중...")
+    df = apply_반제품_logic(df)
+
+    print("[3/5] 날짜/시간 컬럼 추가 중...")
     df = add_date_columns(df)
 
-    print("[3/4] 거래처명·사업부 컬럼 추가 중...")
+    print("[4/5] 거래처명·사업부 추가 및 자재 조인 중...")
     df = add_client_column(df)
     df = add_사업부(df)
+    df = load_and_merge_자재(df)
 
-    print("[4/4] 청구페이지 계산 중...")
+    print("[5/5] 청구페이지 계산 중...")
     df = apply_billing_logic(df)
 
     df.to_pickle(OUTPUT_FILE)

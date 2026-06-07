@@ -53,14 +53,38 @@ def load_이력():
     return df
 
 @st.cache_data
+def load_자재_summary():
+    """자재사용현황.xlsx → 업무의뢰서번호별 자재 사용량 합산"""
+    자재_path = BASE_DIR / "data" / "자재사용현황.xlsx"
+    if not 자재_path.exists():
+        return pd.DataFrame(columns=["업무의뢰서번호","봉투_사용량_합","용지_사용량_합","삽지_사용량_합","미구분_사용량_합"])
+    zdf = pd.read_excel(자재_path, engine="openpyxl")
+    zdf.columns = zdf.columns.str.strip()
+    zdf = zdf.rename(columns={"업무의뢰서코드": "업무의뢰서번호", "작업내역서코드": "작업내역서번호"})
+    # (업무의뢰서번호, 작업내역서번호, 작업일자, 자재종류) 그루핑 합 → pivot → 업무의뢰서번호별 합산
+    grp = zdf.groupby(["업무의뢰서번호","작업내역서번호","작업일자","자재종류"])["사용량"].sum().reset_index()
+    pivot = grp.pivot_table(index=["업무의뢰서번호","작업내역서번호","작업일자"], columns="자재종류", values="사용량", aggfunc="sum", fill_value=0).reset_index()
+    pivot.columns.name = None
+    자재종류목록 = [c for c in pivot.columns if c not in ("업무의뢰서번호","작업내역서번호","작업일자")]
+    result = pivot.groupby("업무의뢰서번호")[자재종류목록].sum().reset_index()
+    result = result.rename(columns={c: f"{c}_사용량_합" for c in 자재종류목록})
+    return result
+
+@st.cache_data
 def build_의뢰서_summary(df):
     first = df.groupby("업무의뢰서번호", sort=False).first().reset_index()
-    agg   = df.groupby("업무의뢰서번호", sort=False).agg(
-        봉입건수_합=("건수", "sum"),
+    agg = df.groupby("업무의뢰서번호", sort=False).agg(
+        봉입건수_합=("건수",        "sum"),
         출력페이지_합=("출력페이지", "sum"),
-        장수_합=("장수", "sum"),
+        장수_합=("장수",            "sum"),
     ).reset_index()
-    return first[["업무의뢰서번호","거래처명","업무명","업무명상세","사업부","연월","날짜","마케팅담당자","확정청구페이지"]].merge(agg, on="업무의뢰서번호")
+    자재 = load_자재_summary()
+    result = first[["업무의뢰서번호","거래처명","업무명","업무명상세","사업부","연월","날짜","마케팅담당자","확정청구페이지"]].merge(agg, on="업무의뢰서번호")
+    if not 자재.empty:
+        result = result.merge(자재, on="업무의뢰서번호", how="left")
+        자재cols = [c for c in 자재.columns if c != "업무의뢰서번호"]
+        result[자재cols] = result[자재cols].fillna(0).astype(int)
+    return result
 
 df_all   = load_data(_mtime=_pkl_mtime)
 연월목록 = sorted(df_all["연월"].unique())
@@ -334,7 +358,8 @@ with tab2:
                      color="사업부", orientation="h",
                      color_discrete_map={"DM사업부":"#4C72B0","N사업부":"#DD8452"},
                      text=[f"{int(v/10_000)/100:.2f}M" for v in top20["출력페이지"]])
-        fig.update_layout(height=550, yaxis={"categoryorder":"total ascending"})
+        fig.update_layout(height=550, yaxis={"categoryorder":"total ascending"},
+                          legend={"orientation":"h","yanchor":"bottom","y":1.02,"xanchor":"left","x":0})
         fig.update_traces(textposition="outside")
         st.plotly_chart(fig, use_container_width=True)
     with col2:
@@ -343,7 +368,8 @@ with tab2:
         fig2 = px.bar(top20_b, x="봉입건수", y="거래처명", color="사업부", orientation="h",
                       color_discrete_map={"DM사업부":"#4C72B0","N사업부":"#DD8452"},
                       text=[f"{int(v/10_000)/100:.2f}M" for v in top20_b["봉입건수"]])
-        fig2.update_layout(height=550, yaxis={"categoryorder":"total ascending"})
+        fig2.update_layout(height=550, yaxis={"categoryorder":"total ascending"},
+                           legend={"orientation":"h","yanchor":"bottom","y":1.02,"xanchor":"left","x":0})
         fig2.update_traces(textposition="outside")
         st.plotly_chart(fig2, use_container_width=True)
 
@@ -505,23 +531,54 @@ with tab4:
         ).isin(발행요청_번호)].copy()
         미발송 = 미발송.sort_values("날짜", ascending=False)
 
-        # 탭 내 거래처 추가 필터
-        거래처_선택 = st.selectbox(
-            "거래처 필터",
-            ["전체"] + sorted(미발송["거래처명"].dropna().unique().tolist()),
-            key="t4_거래처",
-        )
-        if 거래처_선택 != "전체":
-            미발송 = 미발송[미발송["거래처명"] == 거래처_선택]
+        # ── 업무의뢰서번호 검색 필터 ─────────────────────────────
+        if "t4a_검색번호" not in st.session_state:
+            st.session_state["t4a_검색번호"] = set()
+        af1, af2, af3 = st.columns([6, 1, 1.3])
+        with af1:
+            t4a_검색입력 = st.text_input(
+                "검색", placeholder="의뢰서번호 붙여넣기  예: 94361|94362|94363",
+                key="t4a_검색입력", label_visibility="collapsed",
+            )
+        with af2:
+            if st.button("검색", key="t4a_검색_btn", use_container_width=True) and t4a_검색입력.strip():
+                st.session_state["t4a_검색번호"] = {n.strip() for n in t4a_검색입력.split("|") if n.strip()}
+        with af3:
+            if st.button("전체 보기", key="t4a_검색초기화_btn", use_container_width=True):
+                st.session_state["t4a_검색번호"] = set()
+
+        t4a_검색번호 = st.session_state["t4a_검색번호"]
+        if t4a_검색번호:
+            미발송_str = 미발송["업무의뢰서번호"].apply(
+                lambda x: str(int(float(x))) if pd.notna(x) else ""
+            )
+            미발송 = 미발송[미발송_str.isin(t4a_검색번호)]
+            if 미발송.empty:
+                st.warning(f"검색한 의뢰서번호 {len(t4a_검색번호)}건이 미발행 목록에 없습니다.")
 
         master = load_master()
-        단가맵 = {r["거래처명"]: (r["출력단가"], r["봉입단가"]) for _, r in master.iterrows()}
+        단가맵 = {
+            r["거래처명"]: {
+                "출력단가":     r.get("출력단가")     or 0,
+                "봉입단가":     r.get("봉입단가")     or 0,
+                "추가봉입단가": r.get("추가봉입단가") or 0,
+                "용지제작단가": r.get("용지제작단가") or 0,
+                "봉투제작단가": r.get("봉투제작단가") or 0,
+            }
+            for _, r in master.iterrows()
+        }
 
         def 예상공급가(row):
             rates = 단가맵.get(row["거래처명"])
-            if rates and (rates[0] > 0 or rates[1] > 0):
-                return int(row["확정청구페이지"] * rates[0] + row["봉입건수_합"] * rates[1])
-            return None
+            if not rates:
+                return None
+            출력료    = row["확정청구페이지"]        * rates["출력단가"]
+            봉입료    = row["봉입건수_합"]            * rates["봉입단가"]
+            추가봉입비 = (row["삽지_사용량_합"] if "삽지_사용량_합" in row.index else 0) * rates["추가봉입단가"]
+            용지제작비 = (row["용지_사용량_합"] if "용지_사용량_합" in row.index else 0) * rates["용지제작단가"]
+            봉투제작비 = (row["봉투_사용량_합"] if "봉투_사용량_합" in row.index else 0) * rates["봉투제작단가"]
+            총액 = 출력료 + 봉입료 + 추가봉입비 + 용지제작비 + 봉투제작비
+            return int(총액) if 총액 > 0 else None
 
         미발송["예상공급가액"] = 미발송.apply(예상공급가, axis=1)
 
@@ -542,6 +599,7 @@ with tab4:
         # 미발송 목록 표시용 DataFrame
         display_df = pd.DataFrame({
             "선택":           st.session_state.t4_전체선택,
+            "No":             range(1, len(미발송_r) + 1),
             "담당자":         미발송_r["마케팅담당자"].values,
             "의뢰서번호":     미발송_r["업무의뢰서번호_str"].values,
             "사업부":         미발송_r["사업부"].values,
@@ -549,10 +607,13 @@ with tab4:
             "업무명":         미발송_r["업무명"].values,
             "업무명상세":     미발송_r["업무명상세"].values,
             "작업일자":       미발송_r["날짜"].values,
-            "청구페이지":     pd.to_numeric(미발송_r["확정청구페이지"], errors="coerce").values,
-            "장수":           pd.to_numeric(미발송_r["장수_합"],        errors="coerce").values,
-            "봉입건수":       pd.to_numeric(미발송_r["봉입건수_합"],    errors="coerce").values,
-            "예상공급가액":   pd.to_numeric(미발송_r["예상공급가액"],   errors="coerce").values,
+            "청구페이지":     pd.to_numeric(미발송_r["확정청구페이지"],          errors="coerce").values,
+            "장수":           pd.to_numeric(미발송_r["장수_합"],                  errors="coerce").values,
+            "봉입건수":       pd.to_numeric(미발송_r["봉입건수_합"],              errors="coerce").values,
+            "용지수량":       pd.to_numeric(미발송_r.get("용지_사용량_합", 0),   errors="coerce").values,
+            "봉투수량":       pd.to_numeric(미발송_r.get("봉투_사용량_합", 0),   errors="coerce").values,
+            "삽지수량":       pd.to_numeric(미발송_r.get("삽지_사용량_합", 0),   errors="coerce").values,
+            "예상공급가액":   pd.to_numeric(미발송_r["예상공급가액"],             errors="coerce").values,
         })
 
         # 전체선택 체크박스 (선택 컬럼 헤더 역할) + 미발송 건수
@@ -574,15 +635,24 @@ with tab4:
         선택결과 = st.data_editor(
             display_df,
             column_config={
-                "선택":           st.column_config.CheckboxColumn("선택", default=False),
-                "의뢰서번호":     st.column_config.TextColumn("의뢰서번호"),
-                "청구페이지":     st.column_config.NumberColumn("청구페이지",     format="%d"),
-                "장수":           st.column_config.NumberColumn("장수",           format="%d"),
-                "봉입건수":       st.column_config.NumberColumn("봉입건수",       format="%d"),
-                "예상공급가액":   st.column_config.NumberColumn("예상공급가액",   format="%d"),
+                "선택":           st.column_config.CheckboxColumn("선택",        pinned=True),
+                "No":             st.column_config.NumberColumn("No",            format="%d",  pinned=True),
+                "담당자":         st.column_config.TextColumn("담당자",          pinned=True),
+                "의뢰서번호":     st.column_config.TextColumn("의뢰서번호",      pinned=True),
+                "사업부":         st.column_config.TextColumn("사업부",          pinned=True),
+                "거래처명":       st.column_config.TextColumn("거래처명",        pinned=True),
+                "업무명":         st.column_config.TextColumn("업무명",          pinned=True),
+                "청구페이지":     st.column_config.NumberColumn("청구페이지",    format="%,d"),
+                "장수":           st.column_config.NumberColumn("장수",          format="%,d"),
+                "봉입건수":       st.column_config.NumberColumn("봉입건수",      format="%,d"),
+                "용지수량":       st.column_config.NumberColumn("용지수량",      format="%,d"),
+                "봉투수량":       st.column_config.NumberColumn("봉투수량",      format="%,d"),
+                "삽지수량":       st.column_config.NumberColumn("삽지수량",      format="%,d"),
+                "예상공급가액":   st.column_config.NumberColumn("예상공급가액",  format="%,d"),
             },
-            disabled=["담당자","의뢰서번호","사업부","거래처명","업무명","업무명상세","작업일자",
-                      "청구페이지","장수","봉입건수","예상공급가액"],
+            disabled=["No","담당자","의뢰서번호","사업부","거래처명","업무명","업무명상세","작업일자",
+                      "청구페이지","장수","봉입건수","봉투수량","용지수량","삽지수량","예상공급가액"],
+            hide_index=True,
             use_container_width=True,
             height=380,
             key=f"미발송_선택_{st.session_state.t4_선택버전}",
@@ -598,6 +668,7 @@ with tab4:
             # 합계 (원본 숫자로 계산)
             총청구 = int(선택된["확정청구페이지"].sum())
             총봉입 = int(선택된["봉입건수_합"].sum())
+            총장수 = int(선택된["장수_합"].sum())
             총공급_s = 선택된["예상공급가액"]
             총공급 = 총공급_s.sum() if 총공급_s.notna().all() else None
             총공급str = f"{int(총공급):,}원" if 총공급 is not None else "단가 미등록"
@@ -625,11 +696,20 @@ with tab4:
   </code>
 </div>""", height=46)
 
+            # 자재 수량 합계
+            총봉투 = int(선택된["봉투_사용량_합"].sum()) if "봉투_사용량_합" in 선택된.columns else 0
+            총용지 = int(선택된["용지_사용량_합"].sum()) if "용지_사용량_합" in 선택된.columns else 0
+            총삽지 = int(선택된["삽지_사용량_합"].sum()) if "삽지_사용량_합" in 선택된.columns else 0
+
             # 합계 텍스트 — 폰트 크게, 진하게
             st.markdown(
                 f"<p style='font-size:1.05rem;font-weight:bold;margin:4px 0;'>"
-                f"확정청구페이지: {총청구:,} &nbsp;|&nbsp; "
+                f"청구페이지: {총청구:,} &nbsp;|&nbsp; "
                 f"봉입건수: {총봉입:,} &nbsp;|&nbsp; "
+                f"장수: {총장수:,} &nbsp;|&nbsp; "
+                f"봉투: {총봉투:,} &nbsp;|&nbsp; "
+                f"용지: {총용지:,} &nbsp;|&nbsp; "
+                f"삽지: {총삽지:,} &nbsp;|&nbsp; "
                 f"예상공급가액: {총공급str}</p>",
                 unsafe_allow_html=True,
             )
@@ -674,7 +754,7 @@ with tab4:
                 st.session_state["t4_요청완료"] = True
                 st.rerun()
 
-            # ── 세부내역
+            # ── 세부내역 (용지/봉투/삽지는 의뢰서 단위 합계라 행별 표기 불가 → 합계 텍스트에서 확인)
             st.markdown("**선택 항목 세부 내역**")
             선택번호_int = {int(float(n)) for n in 선택된["업무의뢰서번호_str"]}
             NUM_COLS = ["장수","건수","출력페이지","청구페이지"]
@@ -687,7 +767,7 @@ with tab4:
             세부["업무의뢰서번호"] = 세부["업무의뢰서번호"].apply(
                 lambda x: str(int(float(x))) if pd.notna(x) else ""
             )
-            세부 = 세부[["업무의뢰서번호","업무명","업무명상세","작업내역서상세","P수"] + NUM_COLS]
+            세부 = 세부[["업무의뢰서번호","거래처명","작업일자","업무명","업무명상세","작업내역서상세","P수"] + NUM_COLS].reset_index(drop=True)
 
             # 의뢰서 2개 이상 선택 시 의뢰서번호별 소계 행 추가
             if len(선택번호_int) > 1:
@@ -702,6 +782,8 @@ with tab4:
                     rows.append(pd.DataFrame([sub]))
                 세부 = pd.concat(rows, ignore_index=True)
 
+            세부.insert(0, "No", range(1, len(세부) + 1))
+
             def _style(row):
                 if row["업무명"] == "▶ 소계":
                     return ["font-weight:bold"] * len(row)
@@ -711,7 +793,14 @@ with tab4:
                 {c: "{:,.0f}" for c in NUM_COLS},
                 na_rep="",
             )
-            st.dataframe(styled, use_container_width=True, height=320)
+            st.dataframe(styled, use_container_width=True, height=320, hide_index=True,
+                         column_config={
+                             "No":         st.column_config.NumberColumn("No",         pinned=True),
+                             "업무의뢰서번호": st.column_config.TextColumn("업무의뢰서번호", pinned=True),
+                             "거래처명":   st.column_config.TextColumn("거래처명",      pinned=True),
+                             "작업일자":   st.column_config.TextColumn("작업일자",      pinned=True),
+                             "업무명":     st.column_config.TextColumn("업무명",        pinned=True),
+                         })
 
     with t4b:
         st.subheader("거래처 마스터 관리")
@@ -817,6 +906,9 @@ with tab4:
                                     "출력페이지": int(s["출력페이지_합"])   if pd.notna(s["출력페이지_합"])   else 0,
                                     "장수":       int(s["장수_합"])          if pd.notna(s["장수_합"])          else 0,
                                     "봉입건수":   int(s["봉입건수_합"])      if pd.notna(s["봉입건수_합"])      else 0,
+                                    "용지수량":   int(s["용지_사용량_합"])   if "용지_사용량_합" in s.index and pd.notna(s["용지_사용량_합"]) else 0,
+                                    "봉투수량":   int(s["봉투_사용량_합"])   if "봉투_사용량_합" in s.index and pd.notna(s["봉투_사용량_합"]) else 0,
+                                    "삽지수량":   int(s["삽지_사용량_합"])   if "삽지_사용량_합" in s.index and pd.notna(s["삽지_사용량_합"]) else 0,
                                     "발행여부":   "발행완료" if row["발송여부"] == 1 else "발행대기",
                                 })
                     except Exception:
@@ -844,6 +936,7 @@ with tab4:
 
                 display_c = pd.DataFrame({
                     "선택":       st.session_state.t4c_전체선택,
+                    "No":         range(1, len(exp_df) + 1),
                     "담당자":     exp_df["담당자"].values,
                     "의뢰서번호": exp_df["의뢰서번호"].values,
                     "사업부":     exp_df["사업부"].values,
@@ -854,6 +947,9 @@ with tab4:
                     "청구페이지": pd.to_numeric(exp_df["청구페이지"], errors="coerce").values,
                     "장수":       pd.to_numeric(exp_df["장수"],       errors="coerce").values,
                     "봉입건수":   pd.to_numeric(exp_df["봉입건수"],   errors="coerce").values,
+                    "용지수량":   pd.to_numeric(exp_df["용지수량"],   errors="coerce").values,
+                    "봉투수량":   pd.to_numeric(exp_df["봉투수량"],   errors="coerce").values,
+                    "삽지수량":   pd.to_numeric(exp_df["삽지수량"],   errors="coerce").values,
                     "발행여부":   exp_df["발행여부"].values,
                 })
 
@@ -875,14 +971,23 @@ with tab4:
                 이력_선택결과 = st.data_editor(
                     display_c,
                     column_config={
-                        "선택":       st.column_config.CheckboxColumn("선택", default=False),
-                        "의뢰서번호": st.column_config.TextColumn("의뢰서번호"),
-                        "청구페이지": st.column_config.NumberColumn("청구페이지", format="%d"),
-                        "장수":       st.column_config.NumberColumn("장수",       format="%d"),
-                        "봉입건수":   st.column_config.NumberColumn("봉입건수",   format="%d"),
+                        "선택":       st.column_config.CheckboxColumn("선택",       pinned=True),
+                        "No":         st.column_config.NumberColumn("No",           format="%d",  pinned=True),
+                        "담당자":     st.column_config.TextColumn("담당자",         pinned=True),
+                        "의뢰서번호": st.column_config.TextColumn("의뢰서번호",     pinned=True),
+                        "사업부":     st.column_config.TextColumn("사업부",         pinned=True),
+                        "거래처명":   st.column_config.TextColumn("거래처명",       pinned=True),
+                        "업무명":     st.column_config.TextColumn("업무명",         pinned=True),
+                        "청구페이지": st.column_config.NumberColumn("청구페이지",   format="%,d"),
+                        "장수":       st.column_config.NumberColumn("장수",         format="%,d"),
+                        "봉입건수":   st.column_config.NumberColumn("봉입건수",     format="%,d"),
+                        "용지수량":   st.column_config.NumberColumn("용지수량",     format="%,d"),
+                        "봉투수량":   st.column_config.NumberColumn("봉투수량",     format="%,d"),
+                        "삽지수량":   st.column_config.NumberColumn("삽지수량",     format="%,d"),
                     },
-                    disabled=["담당자","의뢰서번호","사업부","거래처명","업무명","업무명상세",
-                              "작업일자","청구페이지","장수","봉입건수","발행여부"],
+                    disabled=["No","담당자","의뢰서번호","사업부","거래처명","업무명","업무명상세",
+                              "작업일자","청구페이지","장수","봉입건수","용지수량","봉투수량","삽지수량","발행여부"],
+                    hide_index=True,
                     use_container_width=True,
                     height=380,
                     key=f"이력_선택_{st.session_state.t4c_선택버전}",
@@ -912,31 +1017,24 @@ with tab4:
 
                     st.subheader("선택된 업무의뢰서")
 
-                    # 합계 표시
+                    # 합계 — 미발행 목록과 동일한 텍스트 한 줄 형식
                     선택_exp = exp_df.iloc[선택_idx_c]
-                    _장수  = f"{int(선택_exp['장수'].sum()):,}"
-                    _봉입  = f"{int(선택_exp['봉입건수'].sum()):,}"
-                    _출력  = f"{int(선택_exp['출력페이지'].sum()):,}"
-                    _청구  = f"{int(선택_exp['청구페이지'].sum()):,}"
-                    st.markdown(f"""
-<div style="display:flex;gap:10px;margin:6px 0 10px 0;flex-wrap:wrap;">
-  <div style="background:#f0f2f6;border-radius:6px;padding:6px 14px;text-align:right;">
-    <div style="font-size:0.95rem;color:#666;white-space:nowrap;">장수 합계</div>
-    <div style="font-size:0.82rem;font-weight:bold;">{_장수}</div>
-  </div>
-  <div style="background:#f0f2f6;border-radius:6px;padding:6px 14px;text-align:right;">
-    <div style="font-size:0.95rem;color:#666;white-space:nowrap;">봉입건수 합계</div>
-    <div style="font-size:0.82rem;font-weight:bold;">{_봉입}</div>
-  </div>
-  <div style="background:#f0f2f6;border-radius:6px;padding:6px 14px;text-align:right;">
-    <div style="font-size:0.95rem;color:#666;white-space:nowrap;">출력페이지 합계</div>
-    <div style="font-size:0.82rem;font-weight:bold;">{_출력}</div>
-  </div>
-  <div style="background:#f0f2f6;border-radius:6px;padding:6px 14px;text-align:right;">
-    <div style="font-size:0.95rem;color:#666;white-space:nowrap;">청구페이지 합계</div>
-    <div style="font-size:0.82rem;font-weight:bold;">{_청구}</div>
-  </div>
-</div>""", unsafe_allow_html=True)
+                    _장수 = int(선택_exp["장수"].sum())
+                    _봉입 = int(선택_exp["봉입건수"].sum())
+                    _청구 = int(선택_exp["청구페이지"].sum())
+                    _용지 = int(선택_exp["용지수량"].sum())
+                    _봉투 = int(선택_exp["봉투수량"].sum())
+                    _삽지 = int(선택_exp["삽지수량"].sum())
+                    st.markdown(
+                        f"<p style='font-size:1.05rem;font-weight:bold;margin:4px 0;'>"
+                        f"청구페이지: {_청구:,} &nbsp;|&nbsp; "
+                        f"봉입건수: {_봉입:,} &nbsp;|&nbsp; "
+                        f"장수: {_장수:,} &nbsp;|&nbsp; "
+                        f"봉투: {_봉투:,} &nbsp;|&nbsp; "
+                        f"용지: {_용지:,} &nbsp;|&nbsp; "
+                        f"삽지: {_삽지:,}</p>",
+                        unsafe_allow_html=True,
+                    )
 
                     선택번호_int_c = {int(exp_df.iloc[idx]["의뢰서번호"]) for idx in 선택_idx_c}
 
@@ -949,7 +1047,7 @@ with tab4:
                     세부_c["업무의뢰서번호"] = 세부_c["업무의뢰서번호"].apply(
                         lambda x: str(int(float(x))) if pd.notna(x) else ""
                     )
-                    세부_c = 세부_c[["업무의뢰서번호","업무명","업무명상세","작업내역서상세","P수"] + NUM_COLS_C]
+                    세부_c = 세부_c[["업무의뢰서번호","거래처명","작업일자","업무명","업무명상세","작업내역서상세","P수"] + NUM_COLS_C].reset_index(drop=True)
 
                     if len(선택번호_int_c) > 1:
                         rows_c = []
@@ -963,6 +1061,8 @@ with tab4:
                             rows_c.append(pd.DataFrame([sub]))
                         세부_c = pd.concat(rows_c, ignore_index=True)
 
+                    세부_c.insert(0, "No", range(1, len(세부_c) + 1))
+
                     def _style_c(row):
                         if row["업무명"] == "▶ 소계":
                             return ["font-weight:bold"] * len(row)
@@ -971,4 +1071,11 @@ with tab4:
                     styled_c = 세부_c.style.apply(_style_c, axis=1).format(
                         {c: "{:,.0f}" for c in NUM_COLS_C}, na_rep=""
                     )
-                    st.dataframe(styled_c, use_container_width=True, height=320)
+                    st.dataframe(styled_c, use_container_width=True, height=320, hide_index=True,
+                                 column_config={
+                                     "No":         st.column_config.NumberColumn("No",         pinned=True),
+                                     "업무의뢰서번호": st.column_config.TextColumn("업무의뢰서번호", pinned=True),
+                                     "거래처명":   st.column_config.TextColumn("거래처명",      pinned=True),
+                                     "작업일자":   st.column_config.TextColumn("작업일자",      pinned=True),
+                                     "업무명":     st.column_config.TextColumn("업무명",        pinned=True),
+                                 })
