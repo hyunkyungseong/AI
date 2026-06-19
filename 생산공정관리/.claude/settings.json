@@ -8,7 +8,10 @@
     "deny": [
       "Bash(rm -rf*)",
       "Bash(del /f*)",
-      "Bash(drop*)"
+      "Bash(drop*)",
+      "Read(../*)  ",
+      "Edit(../*)  ",
+      "Write(../*)"
     ]
   },
   "hooks": {
@@ -18,7 +21,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python -m py_compile d:/AI/생산공정관리/scripts/app.py && echo [OK] app.py 문법 검사 통과 || echo [ERROR] app.py 문법 오류 - 수정 필요"
+            "command": "python -m py_compile scripts/app.py scripts/preprocess.py scripts/init_db.py && echo [OK] scripts 문법 검사 통과 || echo [ERROR] 문법 오류 - 수정 필요"
           }
         ]
       }

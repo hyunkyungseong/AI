@@ -479,6 +479,29 @@ with tab3:
         st.plotly_chart(fig3, use_container_width=True)
 
 
+# ── 거래처 삭제 확인 다이얼로그 ─────────────────────────────
+@st.dialog("거래처 삭제 확인")
+def _거래처삭제_dialog(거래처_목록):
+    if len(거래처_목록) == 1:
+        st.warning(f"**'{거래처_목록[0]}'** 거래처를 삭제하시겠습니까?")
+    else:
+        st.warning(f"선택한 {len(거래처_목록)}개 거래처를 삭제하시겠습니까?\n\n" +
+                   "\n".join(f"• {n}" for n in 거래처_목록))
+    st.caption("삭제 후 복구할 수 없습니다.")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("삭제", type="primary", use_container_width=True, key="dlg_del_confirm"):
+            conn = get_conn()
+            for 거래처명 in 거래처_목록:
+                conn.execute("DELETE FROM 거래처마스터 WHERE 거래처명 = ?", (거래처명,))
+            conn.commit()
+            conn.close()
+            st.cache_data.clear()
+            st.rerun()
+    with c2:
+        if st.button("취소", use_container_width=True, key="dlg_del_cancel"):
+            st.rerun()
+
 # ════════════════════════════════════════════════════════════
 # 탭 4 — 거래명세서 관리
 # ════════════════════════════════════════════════════════════
@@ -557,15 +580,14 @@ with tab4:
                 st.warning(f"검색한 의뢰서번호 {len(t4a_검색번호)}건이 미발행 목록에 없습니다.")
 
         master = load_master()
+        _단가컬럼 = ["출력단가","봉입단가","추가봉입단가","용지제작단가","봉투제작단가"]
+        _master_단가 = master.copy()
+        _master_단가[_단가컬럼] = _master_단가[_단가컬럼].apply(
+            pd.to_numeric, errors="coerce"
+        ).fillna(0)
         단가맵 = {
-            r["거래처명"]: {
-                "출력단가":     r.get("출력단가")     or 0,
-                "봉입단가":     r.get("봉입단가")     or 0,
-                "추가봉입단가": r.get("추가봉입단가") or 0,
-                "용지제작단가": r.get("용지제작단가") or 0,
-                "봉투제작단가": r.get("봉투제작단가") or 0,
-            }
-            for _, r in master.iterrows()
+            r["거래처명"]: {c: r[c] for c in _단가컬럼}
+            for _, r in _master_단가.iterrows()
         }
 
         def 예상공급가(row):
@@ -574,7 +596,11 @@ with tab4:
                 return None
             출력료    = row["확정청구페이지"]        * rates["출력단가"]
             봉입료    = row["봉입건수_합"]            * rates["봉입단가"]
-            추가봉입비 = (row["삽지_사용량_합"] if "삽지_사용량_합" in row.index else 0) * rates["추가봉입단가"]
+            삽지량    = row["삽지_사용량_합"] if "삽지_사용량_합" in row.index else 0
+            장수      = row["장수_합"]        if "장수_합"        in row.index else 0
+            봉입      = row["봉입건수_합"]
+            추가용지  = (장수 - 봉입) if (장수 > 0 and 봉입 > 0) else 0
+            추가봉입비 = (삽지량 + 추가용지) * rates["추가봉입단가"]
             용지제작비 = (row["용지_사용량_합"] if "용지_사용량_합" in row.index else 0) * rates["용지제작단가"]
             봉투제작비 = (row["봉투_사용량_합"] if "봉투_사용량_합" in row.index else 0) * rates["봉투제작단가"]
             총액 = 출력료 + 봉입료 + 추가봉입비 + 용지제작비 + 봉투제작비
@@ -700,6 +726,7 @@ with tab4:
             총봉투 = int(선택된["봉투_사용량_합"].sum()) if "봉투_사용량_합" in 선택된.columns else 0
             총용지 = int(선택된["용지_사용량_합"].sum()) if "용지_사용량_합" in 선택된.columns else 0
             총삽지 = int(선택된["삽지_사용량_합"].sum()) if "삽지_사용량_합" in 선택된.columns else 0
+            총추가용지 = (총장수 - 총봉입) if (총장수 > 0 and 총봉입 > 0) else 0
 
             # 합계 텍스트 — 폰트 크게, 진하게
             st.markdown(
@@ -709,6 +736,7 @@ with tab4:
                 f"장수: {총장수:,} &nbsp;|&nbsp; "
                 f"봉투: {총봉투:,} &nbsp;|&nbsp; "
                 f"용지: {총용지:,} &nbsp;|&nbsp; "
+                f"추가용지: {총추가용지:,} &nbsp;|&nbsp; "
                 f"삽지: {총삽지:,} &nbsp;|&nbsp; "
                 f"예상공급가액: {총공급str}</p>",
                 unsafe_allow_html=True,
@@ -805,12 +833,15 @@ with tab4:
     with t4b:
         st.subheader("거래처 마스터 관리")
         master = load_master()
+        display_df = master[["거래처명","사업자등록번호","수신이메일",
+                              "출력단가","봉입단가",
+                              "추가봉입단가","용지제작단가","봉투제작단가","비고"]].copy()
+        display_df.insert(0, "선택", False)
         edited = st.data_editor(
-            master[["거래처명","사업자등록번호","수신이메일",
-                    "출력단가","봉입단가",
-                    "추가봉입단가","용지제작단가","봉투제작단가","비고"]],
+            display_df,
             num_rows="dynamic",
             column_config={
+                "선택":         st.column_config.CheckboxColumn("선택", pinned=True, default=False),
                 "거래처명":     st.column_config.TextColumn("거래처명", required=True),
                 "출력단가":     st.column_config.NumberColumn("출력단가(원)", min_value=0),
                 "봉입단가":     st.column_config.NumberColumn("봉입단가(원)", min_value=0),
@@ -821,18 +852,25 @@ with tab4:
             use_container_width=True,
             key="master_editor",
         )
-        if st.button("저장", type="primary", key="master_save"):
-            from datetime import date
-            conn = get_conn()
-            conn.execute("DELETE FROM 거래처마스터")
-            edited["수정일"] = str(date.today())
-            if "등록일" not in edited.columns:
-                edited["등록일"] = str(date.today())
-            edited.to_sql("거래처마스터", conn, if_exists="append", index=False)
-            conn.close()
-            st.cache_data.clear()
-            st.success("저장되었습니다.")
-            st.rerun()
+        선택된_목록 = edited.loc[edited["선택"] == True, "거래처명"].dropna().tolist()
+        save_c, del_c, _ = st.columns([1, 1, 8])
+        with save_c:
+            if st.button("저장", type="primary", key="master_save"):
+                from datetime import date
+                conn = get_conn()
+                conn.execute("DELETE FROM 거래처마스터")
+                save_df = edited.drop(columns=["선택"])
+                save_df["수정일"] = str(date.today())
+                if "등록일" not in save_df.columns:
+                    save_df["등록일"] = str(date.today())
+                save_df.to_sql("거래처마스터", conn, if_exists="append", index=False)
+                conn.close()
+                st.cache_data.clear()
+                st.success("저장되었습니다.")
+                st.rerun()
+        with del_c:
+            if st.button("삭제", key="master_del_btn", disabled=not 선택된_목록):
+                _거래처삭제_dialog(선택된_목록)
 
     with t4c:
         st.subheader("발행요청목록")
@@ -894,22 +932,23 @@ with tab4:
                             s = summary_map.get(req_no)
                             if s is not None:
                                 expanded_rows.append({
-                                    "_이력_id":   int(row["id"]),
-                                    "담당자":     str(s["마케팅담당자"]),
-                                    "의뢰서번호": str(req_no),
-                                    "사업부":     str(s["사업부"]),
-                                    "거래처명":   str(s["거래처명"]),
-                                    "업무명":     str(s["업무명"]),
-                                    "업무명상세": str(s["업무명상세"]),
-                                    "작업일자":   str(s["날짜"]),
-                                    "청구페이지": int(s["확정청구페이지"]) if pd.notna(s["확정청구페이지"]) else 0,
-                                    "출력페이지": int(s["출력페이지_합"])   if pd.notna(s["출력페이지_합"])   else 0,
-                                    "장수":       int(s["장수_합"])          if pd.notna(s["장수_합"])          else 0,
-                                    "봉입건수":   int(s["봉입건수_합"])      if pd.notna(s["봉입건수_합"])      else 0,
-                                    "용지수량":   int(s["용지_사용량_합"])   if "용지_사용량_합" in s.index and pd.notna(s["용지_사용량_합"]) else 0,
-                                    "봉투수량":   int(s["봉투_사용량_합"])   if "봉투_사용량_합" in s.index and pd.notna(s["봉투_사용량_합"]) else 0,
-                                    "삽지수량":   int(s["삽지_사용량_합"])   if "삽지_사용량_합" in s.index and pd.notna(s["삽지_사용량_합"]) else 0,
-                                    "발행여부":   "발행완료" if row["발송여부"] == 1 else "발행대기",
+                                    "_이력_id":    int(row["id"]),
+                                    "담당자":      str(s["마케팅담당자"]),
+                                    "의뢰서번호":  str(req_no),
+                                    "사업부":      str(s["사업부"]),
+                                    "거래처명":    str(s["거래처명"]),
+                                    "업무명":      str(s["업무명"]),
+                                    "업무명상세":  str(s["업무명상세"]),
+                                    "작업일자":    str(s["날짜"]),
+                                    "청구페이지":  int(s["확정청구페이지"]) if pd.notna(s["확정청구페이지"]) else 0,
+                                    "출력페이지":  int(s["출력페이지_합"])   if pd.notna(s["출력페이지_합"])   else 0,
+                                    "장수":        int(s["장수_합"])          if pd.notna(s["장수_합"])          else 0,
+                                    "봉입건수":    int(s["봉입건수_합"])      if pd.notna(s["봉입건수_합"])      else 0,
+                                    "용지수량":    int(s["용지_사용량_합"])   if "용지_사용량_합" in s.index and pd.notna(s["용지_사용량_합"]) else 0,
+                                    "봉투수량":    int(s["봉투_사용량_합"])   if "봉투_사용량_합" in s.index and pd.notna(s["봉투_사용량_합"]) else 0,
+                                    "삽지수량":    int(s["삽지_사용량_합"])   if "삽지_사용량_합" in s.index and pd.notna(s["삽지_사용량_합"]) else 0,
+                                    "예상공급가액": 예상공급가(s),
+                                    "발행여부":    "발행완료" if row["발송여부"] == 1 else "발행대기",
                                 })
                     except Exception:
                         pass
@@ -947,10 +986,11 @@ with tab4:
                     "청구페이지": pd.to_numeric(exp_df["청구페이지"], errors="coerce").values,
                     "장수":       pd.to_numeric(exp_df["장수"],       errors="coerce").values,
                     "봉입건수":   pd.to_numeric(exp_df["봉입건수"],   errors="coerce").values,
-                    "용지수량":   pd.to_numeric(exp_df["용지수량"],   errors="coerce").values,
-                    "봉투수량":   pd.to_numeric(exp_df["봉투수량"],   errors="coerce").values,
-                    "삽지수량":   pd.to_numeric(exp_df["삽지수량"],   errors="coerce").values,
-                    "발행여부":   exp_df["발행여부"].values,
+                    "용지수량":    pd.to_numeric(exp_df["용지수량"],    errors="coerce").values,
+                    "봉투수량":    pd.to_numeric(exp_df["봉투수량"],    errors="coerce").values,
+                    "삽지수량":    pd.to_numeric(exp_df["삽지수량"],    errors="coerce").values,
+                    "예상공급가액": pd.to_numeric(exp_df["예상공급가액"], errors="coerce").values,
+                    "발행여부":    exp_df["발행여부"].values,
                 })
 
                 cb_c2, cnt_c2 = st.columns([1.5, 8.5])
@@ -981,12 +1021,13 @@ with tab4:
                         "청구페이지": st.column_config.NumberColumn("청구페이지",   format="%,d"),
                         "장수":       st.column_config.NumberColumn("장수",         format="%,d"),
                         "봉입건수":   st.column_config.NumberColumn("봉입건수",     format="%,d"),
-                        "용지수량":   st.column_config.NumberColumn("용지수량",     format="%,d"),
-                        "봉투수량":   st.column_config.NumberColumn("봉투수량",     format="%,d"),
-                        "삽지수량":   st.column_config.NumberColumn("삽지수량",     format="%,d"),
+                        "용지수량":    st.column_config.NumberColumn("용지수량",     format="%,d"),
+                        "봉투수량":    st.column_config.NumberColumn("봉투수량",     format="%,d"),
+                        "삽지수량":    st.column_config.NumberColumn("삽지수량",     format="%,d"),
+                        "예상공급가액": st.column_config.NumberColumn("예상공급가액", format="%,d"),
                     },
                     disabled=["No","담당자","의뢰서번호","사업부","거래처명","업무명","업무명상세",
-                              "작업일자","청구페이지","장수","봉입건수","용지수량","봉투수량","삽지수량","발행여부"],
+                              "작업일자","청구페이지","장수","봉입건수","용지수량","봉투수량","삽지수량","예상공급가액","발행여부"],
                     hide_index=True,
                     use_container_width=True,
                     height=380,
@@ -1025,6 +1066,10 @@ with tab4:
                     _용지 = int(선택_exp["용지수량"].sum())
                     _봉투 = int(선택_exp["봉투수량"].sum())
                     _삽지 = int(선택_exp["삽지수량"].sum())
+                    _추가용지 = (_장수 - _봉입) if (_장수 > 0 and _봉입 > 0) else 0
+                    _공급_s = 선택_exp["예상공급가액"]
+                    _공급 = int(_공급_s.sum()) if _공급_s.notna().all() else None
+                    _공급str = f"{_공급:,}원" if _공급 is not None else "단가 미등록"
                     st.markdown(
                         f"<p style='font-size:1.05rem;font-weight:bold;margin:4px 0;'>"
                         f"청구페이지: {_청구:,} &nbsp;|&nbsp; "
@@ -1032,7 +1077,9 @@ with tab4:
                         f"장수: {_장수:,} &nbsp;|&nbsp; "
                         f"봉투: {_봉투:,} &nbsp;|&nbsp; "
                         f"용지: {_용지:,} &nbsp;|&nbsp; "
-                        f"삽지: {_삽지:,}</p>",
+                        f"추가용지: {_추가용지:,} &nbsp;|&nbsp; "
+                        f"삽지: {_삽지:,} &nbsp;|&nbsp; "
+                        f"예상공급가액: {_공급str}</p>",
                         unsafe_allow_html=True,
                     )
 
