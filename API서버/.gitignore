@@ -1,0 +1,5 @@
+# 절대 외부에 올라가면 안 되는 파일
+.env
+secret.key
+__pycache__/
+*.pyc

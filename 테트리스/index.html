@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>테트리스</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <h1>TETRIS</h1>
+    </header>
+
+    <main class="game-container">
+      <!-- 왼쪽 패널 -->
+      <aside class="panel panel-left">
+        <div class="info-box">
+          <div class="label">SCORE</div>
+          <div class="value" id="score">0</div>
+        </div>
+        <div class="info-box">
+          <div class="label">BEST</div>
+          <div class="value" id="best-score">0</div>
+        </div>
+        <div class="info-box">
+          <div class="label">LEVEL</div>
+          <div class="value" id="level">1</div>
+        </div>
+        <div class="info-box">
+          <div class="label">LINES</div>
+          <div class="value" id="lines">0</div>
+        </div>
+      </aside>
+
+      <!-- 게임 보드 -->
+      <div class="board-wrapper">
+        <canvas id="game-canvas" width="250" height="500"></canvas>
+        <div class="overlay" id="overlay">
+          <div class="overlay-content">
+            <div class="overlay-title" id="overlay-title">TETRIS</div>
+            <div class="overlay-sub" id="overlay-sub">클래식 블록 퍼즐</div>
+            <button class="btn-start" id="btn-start">게임 시작</button>
+            <div class="controls-hint">
+              <div>← → 이동 &nbsp;|&nbsp; ↑ 회전</div>
+              <div>↓ 빠르게 &nbsp;|&nbsp; Space 드롭</div>
+              <div>P 일시정지</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 오른쪽 패널 -->
+      <aside class="panel panel-right">
+        <div class="info-box">
+          <div class="label">NEXT</div>
+          <canvas id="next-canvas" width="90" height="90"></canvas>
+        </div>
+        <div class="info-box">
+          <div class="label">HOLD</div>
+          <canvas id="hold-canvas" width="90" height="90"></canvas>
+        </div>
+        <div class="controls-box">
+          <div class="label">CONTROLS</div>
+          <div class="controls-list">
+            <div class="ctrl-row"><span class="key">←→</span><span>이동</span></div>
+            <div class="ctrl-row"><span class="key">↑</span><span>회전</span></div>
+            <div class="ctrl-row"><span class="key">↓</span><span>천천히</span></div>
+            <div class="ctrl-row"><span class="key">SPC</span><span>드롭</span></div>
+            <div class="ctrl-row"><span class="key">C</span><span>홀드</span></div>
+            <div class="ctrl-row"><span class="key">P</span><span>정지</span></div>
+          </div>
+        </div>
+      </aside>
+    </main>
+
+    <!-- 하단 버튼 -->
+    <div class="bottom-bar">
+      <button class="btn-action" id="btn-pause">일시정지</button>
+      <button class="btn-action" id="btn-restart">다시시작</button>
+    </div>
+  </div>
+
+  <script src="tetris.js"></script>
+</body>
+</html>
