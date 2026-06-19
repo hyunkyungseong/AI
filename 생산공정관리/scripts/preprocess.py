@@ -36,8 +36,8 @@ def add_client_column(df):
 
 
 def apply_반제품_logic(df):
-    """반제품=Y인 행의 건수 필드를 0으로 설정 (봉입 없음 처리)"""
-    df.loc[df["반제품"] == "Y", "건수"] = 0
+    """반제품여부=Y인 행의 건수 필드를 0으로 설정 (봉입 없음 처리)"""
+    df.loc[df["반제품여부"] == "Y", "건수"] = 0
     return df
 
 

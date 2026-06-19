@@ -14,7 +14,8 @@
 | SKILL-02 | 업무의뢰서번호 타입 통일 (float → int) | ✅ 2026-06-02 |
 | SKILL-03 | st.cache_data 파일 변경 감지 | ✅ 2026-05-29 |
 | SKILL-04 | st.data_editor 선택 상태 유지 | ✅ 2026-06-02 |
-| SKILL-05 | MariaDB 연결 패턴 (pymysql) | ⏳ 구현 예정 |
+| SKILL-05 | MariaDB 연결 패턴 (pymysql) | ⏳ 미검증 초안 |
+| SKILL-06 | 비개발자용 화면 검증 체크리스트 | ✅ 표준 템플릿 |
 
 ---
 
@@ -138,34 +139,127 @@ if 새_전체선택 != st.session_state.t4_전체선택:
 
 **목적:** SQLite → MariaDB 전환 시 재사용할 연결 패턴
 
-**검증 상태:** ⏳ 구현 예정
+**검증 상태:** ⏳ 미검증 초안 (1단계 구현 후 ✅ 갱신 예정)
 
-**핵심 로직:**
+**구조:** 접속 정보를 `scripts/db_config.py`에 분리 → git 제외(.gitignore)
+
+**① scripts/db_config.py (신규 생성 — git 제외)**
+```python
+# 이 파일은 .gitignore에 추가해 외부 유출 방지
+DB_HOST     = "서버IP또는도메인"   # 예: "192.168.0.10"
+DB_PORT     = 3306
+DB_USER     = "dashboard_user"
+DB_PASSWORD = "비밀번호"
+DB_NAME     = "dashboard"
+```
+
+**② 연결 헬퍼 (app.py / preprocess.py 상단에 추가)**
 ```python
 import pymysql
+from contextlib import contextmanager
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent))
+import db_config as cfg
 
-def get_conn():
-    return pymysql.connect(
-        host="서버IP또는도메인",
-        port=3306,
-        user="DB사용자명",
-        password="비밀번호",
-        database="DB명",
+@contextmanager
+def get_db():
+    conn = pymysql.connect(
+        host=cfg.DB_HOST,
+        port=cfg.DB_PORT,
+        user=cfg.DB_USER,
+        password=cfg.DB_PASSWORD,
+        database=cfg.DB_NAME,
         charset="utf8mb4",
         cursorclass=pymysql.cursors.DictCursor,
+        autocommit=False,
     )
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+```
 
-# 사용 예시 (기존 SQLite와 동일한 방식 유지)
-conn = get_conn()
-conn.execute("SELECT * FROM 거래처마스터")
-conn.commit()
-conn.close()
+**③ 사용 예시**
+```python
+# SELECT
+with get_db() as conn:
+    with conn.cursor() as cur:
+        cur.execute("SELECT * FROM 거래처마스터")
+        rows = cur.fetchall()   # [{"거래처명": "...", ...}, ...]
+
+# INSERT
+with get_db() as conn:
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO 거래명세서이력 (업무의뢰서번호, 거래처명) VALUES (%s, %s)",
+            (번호, 거래처명)
+        )
+```
+
+**SQLite → MariaDB 주요 문법 차이**
+| 항목 | SQLite | MariaDB |
+|---|---|---|
+| 플레이스홀더 | `?` | `%s` |
+| 자동증가 | `INTEGER PRIMARY KEY` | `INT AUTO_INCREMENT PRIMARY KEY` |
+| 현재시각 | `datetime('now','localtime')` | `NOW()` |
+| 테이블 존재확인 | `IF NOT EXISTS` | `IF NOT EXISTS` (동일) |
+
+**주의사항:**
+- `db_config.py`는 반드시 `.gitignore`에 추가 (`scripts/db_config.py`)
+- `autocommit=False` 유지 → `get_db()` 컨텍스트 종료 시 자동 commit/rollback
+- 연결 실패 시 `pymysql.err.OperationalError` 발생 → 서버 IP·방화벽 확인
+- MariaDB는 MySQL과 호환 → pymysql 드라이버 그대로 사용 가능
+
+---
+
+## SKILL-06. 비개발자용 화면 검증 체크리스트 템플릿
+
+**목적:** 코딩 완료 후 관리자가 눈으로 직접 확인할 수 있는 3단계 화면 테스트 표준 형식
+
+**검증 상태:** ✅ 표준 템플릿 (모든 기능에 적용)
+
+**템플릿 형식 (코딩 완료 시 매번 이 형식으로 제공):**
+```
+✅ 화면 테스트 체크리스트 — [기능명]
+
+1. [첫 번째 동작]
+   → 예상 결과: [무엇이 보여야 하는지 구체적으로]
+
+2. [두 번째 동작]
+   → 예상 결과: [무엇이 보여야 하는지 구체적으로]
+
+3. [세 번째 동작]
+   → 예상 결과: [무엇이 보여야 하는지 구체적으로]
+
+❌ 오류 시: [해결 방법 또는 Claude에게 전달할 내용]
+```
+
+**작성 예시 (탭4 거래명세서 요청 기능):**
+```
+✅ 화면 테스트 체크리스트 — 거래명세서 요청
+
+1. 대시보드_실행.bat 실행 → [탭4 거래명세서 관리] 클릭
+   → 예상 결과: 미발행 목록 표가 보여야 함 (항목이 없으면 "미발행 없음" 표시)
+
+2. 항목 1개 왼쪽 체크박스 선택 → [거래명세서 요청] 버튼 클릭
+   → 예상 결과: "발행요청 완료" 초록색 메시지가 뜨고,
+                해당 항목이 미발행 목록에서 사라져야 함
+
+3. [발행요청목록] 탭 클릭
+   → 예상 결과: 방금 요청한 항목이 목록에 추가되어 있어야 함
+
+❌ 오류 시: 빨간색 오류 메시지를 캡처하거나 내용을 그대로 복사해서 알려주세요.
 ```
 
 **주의사항:**
-- SQLite의 `sqlite3.connect()` 와 달리 접속 정보(host, user, pw) 필요
-- 비밀번호 등 민감 정보는 코드에 직접 입력 금지 → 환경변수 또는 별도 config 파일 사용
-- MariaDB는 MySQL과 호환 → pymysql 드라이버 그대로 사용 가능
+- 동작은 "클릭", "입력", "선택" 등 마우스·키보드 행동 단위로 작성
+- 예상 결과는 색상·위치·문구까지 구체적으로 명시 (애매한 표현 금지)
+- 오류 시 대응도 반드시 포함 (비개발자가 혼자 판단할 수 없는 상황 대비)
 
 ---
 
