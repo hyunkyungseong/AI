@@ -116,8 +116,8 @@ touch docs/CHANGELOG.md
 | 언어 | Python 3.12.5 | Python 3.12.5 |
 | 대시보드 | Streamlit 1.58.0 | Streamlit 1.58.0 |
 | 차트 | Plotly 6.7.0 | Plotly 6.7.0 |
-| DB | SQLite (로컬) | MariaDB (원격) |
-| DB 드라이버 | sqlite3 (내장) | pymysql |
+| DB | SQLite (로컬) | SQLite 유지 (MariaDB 전환 후순위 보류) |
+| DB 드라이버 | sqlite3 (내장) | sqlite3 유지 |
 
 ## ⚙️ 실행 명령어
 

@@ -46,6 +46,18 @@ def load_master():
     conn.close()
     return df
 
+def load_단가마스터():
+    conn = get_conn()
+    df = pd.read_sql("SELECT * FROM 단가마스터 ORDER BY 거래처명, 업무명, 작업명", conn)
+    conn.close()
+    _단가컬럼 = ["출력단가","봉입단가","추가봉입단가","용지제작단가","봉투제작단가","삽지제작단가","각대대봉투단가","각대대봉투봉입단가"]
+    _단가컬럼 = [c for c in _단가컬럼 if c in df.columns]
+    df[_단가컬럼] = df[_단가컬럼].apply(pd.to_numeric, errors="coerce").fillna(0)
+    # None 유지 (dict 키 매칭용 — NaN → None 변환)
+    df["업무명"] = df["업무명"].where(df["업무명"].notna(), None)
+    df["작업명"] = df["작업명"].where(df["작업명"].notna(), None)
+    return df
+
 def load_이력():
     conn = get_conn()
     df = pd.read_sql("SELECT * FROM 거래명세서이력 ORDER BY 등록일 DESC", conn)
@@ -54,21 +66,39 @@ def load_이력():
 
 @st.cache_data
 def load_자재_summary():
-    """자재사용현황.xlsx → 업무의뢰서번호별 자재 사용량 합산"""
+    """자재사용현황.xlsx → (업무의뢰서번호, 작업이름) 기준 자재 수량 집계 (봉투는 일반/각대대봉투 분리)"""
     자재_path = BASE_DIR / "data" / "자재사용현황.xlsx"
     if not 자재_path.exists():
-        return pd.DataFrame(columns=["업무의뢰서번호","봉투_사용량_합","용지_사용량_합","삽지_사용량_합","미구분_사용량_합"])
+        return pd.DataFrame(columns=["업무의뢰서번호","작업이름","일반봉투_수량","각대대봉투_수량","용지_수량","삽지_수량"])
     zdf = pd.read_excel(자재_path, engine="openpyxl")
     zdf.columns = zdf.columns.str.strip()
-    zdf = zdf.rename(columns={"업무의뢰서코드": "업무의뢰서번호", "작업내역서코드": "작업내역서번호"})
-    # (업무의뢰서번호, 작업내역서번호, 작업일자, 자재종류) 그루핑 합 → pivot → 업무의뢰서번호별 합산
-    grp = zdf.groupby(["업무의뢰서번호","작업내역서번호","작업일자","자재종류"])["사용량"].sum().reset_index()
-    pivot = grp.pivot_table(index=["업무의뢰서번호","작업내역서번호","작업일자"], columns="자재종류", values="사용량", aggfunc="sum", fill_value=0).reset_index()
+    zdf = zdf.rename(columns={"업무의뢰서코드": "업무의뢰서번호"})
+    zdf["업무의뢰서번호"] = pd.to_numeric(zdf["업무의뢰서번호"], errors="coerce").fillna(-1).astype(int)
+
+    def _봉투종류(자재명):
+        s = str(자재명)
+        return "각대대봉투" if ("각대" in s or "대봉투" in s) else "일반봉투"
+
+    # 봉투 행: 자재명으로 일반봉투/각대대봉투 분류, 나머지는 자재종류 그대로
+    zdf["자재종류2"] = zdf["자재종류"].where(zdf["자재종류"] != "봉투", zdf["자재명"].apply(_봉투종류))
+
+    grp = zdf.groupby(["업무의뢰서번호","작업이름","자재종류2"])["사용량"].sum().reset_index()
+    pivot = grp.pivot_table(
+        index=["업무의뢰서번호","작업이름"],
+        columns="자재종류2",
+        values="사용량",
+        aggfunc="sum",
+        fill_value=0,
+    ).reset_index()
     pivot.columns.name = None
-    자재종류목록 = [c for c in pivot.columns if c not in ("업무의뢰서번호","작업내역서번호","작업일자")]
-    result = pivot.groupby("업무의뢰서번호")[자재종류목록].sum().reset_index()
-    result = result.rename(columns={c: f"{c}_사용량_합" for c in 자재종류목록})
-    return result
+
+    rename_map = {"일반봉투": "일반봉투_수량", "각대대봉투": "각대대봉투_수량",
+                  "용지": "용지_수량", "삽지": "삽지_수량", "미구분": "미구분_수량"}
+    pivot = pivot.rename(columns={k: v for k, v in rename_map.items() if k in pivot.columns})
+    for col in ["일반봉투_수량","각대대봉투_수량","용지_수량","삽지_수량"]:
+        if col not in pivot.columns:
+            pivot[col] = 0
+    return pivot
 
 @st.cache_data
 def build_의뢰서_summary(df):
@@ -78,12 +108,17 @@ def build_의뢰서_summary(df):
         출력페이지_합=("출력페이지", "sum"),
         장수_합=("장수",            "sum"),
     ).reset_index()
-    자재 = load_자재_summary()
-    result = first[["업무의뢰서번호","거래처명","업무명","업무명상세","사업부","연월","날짜","마케팅담당자","확정청구페이지"]].merge(agg, on="업무의뢰서번호")
-    if not 자재.empty:
-        result = result.merge(자재, on="업무의뢰서번호", how="left")
-        자재cols = [c for c in 자재.columns if c != "업무의뢰서번호"]
-        result[자재cols] = result[자재cols].fillna(0).astype(int)
+    자재df = load_자재_summary()
+    result = first[["업무의뢰서번호","거래처명","업무명","작업명","업무명상세","사업부","연월","날짜","마케팅담당자","확정청구페이지"]].merge(agg, on="업무의뢰서번호")
+    if not 자재df.empty:
+        자재_의뢰서 = 자재df.groupby("업무의뢰서번호")[["일반봉투_수량","각대대봉투_수량","용지_수량","삽지_수량"]].sum().reset_index()
+        자재_의뢰서["봉투_사용량_합"] = 자재_의뢰서["일반봉투_수량"] + 자재_의뢰서["각대대봉투_수량"]
+        자재_의뢰서 = 자재_의뢰서.rename(columns={"용지_수량": "용지_사용량_합", "삽지_수량": "삽지_사용량_합"})
+        result = result.merge(자재_의뢰서, on="업무의뢰서번호", how="left")
+        자재cols = ["봉투_사용량_합","용지_사용량_합","삽지_사용량_합","일반봉투_수량","각대대봉투_수량"]
+        for c in 자재cols:
+            if c in result.columns:
+                result[c] = result[c].fillna(0).astype(int)
     return result
 
 df_all   = load_data(_mtime=_pkl_mtime)
@@ -529,6 +564,223 @@ with tab4:
         </script>
         """, height=0)
 
+    # ── 공용: 단가맵·자재map (t4a·t4c 공유) ────────────────────
+    _t4_단가컬럼 = ["출력단가","봉입단가","추가봉입단가","용지제작단가","봉투제작단가","삽지제작단가","각대대봉투단가","각대대봉투봉입단가"]
+    _t4_단가df   = load_단가마스터()
+    _t4_단가컬럼 = [c for c in _t4_단가컬럼 if c in _t4_단가df.columns]
+    _t4_단가맵 = {
+        (r["거래처명"],
+         None if pd.isna(r["업무명"]) else r["업무명"],
+         None if pd.isna(r["작업명"]) else r["작업명"]): {c: r[c] for c in _t4_단가컬럼}
+        for _, r in _t4_단가df.iterrows()
+    }
+
+    _t4_자재_summary = load_자재_summary()
+    _t4_자재map = {
+        (int(r["업무의뢰서번호"]), r["작업이름"]): {
+            "일반봉투_수량":   int(r.get("일반봉투_수량",   0)),
+            "각대대봉투_수량": int(r.get("각대대봉투_수량", 0)),
+            "용지_수량":       int(r.get("용지_수량",       0)),
+            "삽지_수량":       int(r.get("삽지_수량",       0)),
+        }
+        for _, r in _t4_자재_summary.iterrows()
+    } if not _t4_자재_summary.empty else {}
+
+    def calc_공급가맵(의뢰서번호셋):
+        """의뢰서번호 집합 → {의뢰서번호int: {"합계": float, "거래처명": str, "업무명": str,
+                                               "항목": {품명: 금액}, "수량": {품명: 수량}, "단가": {품명: 단가}}}"""
+        _tgt = df_all[df_all["업무의뢰서번호"].apply(
+            lambda x: int(float(x)) if pd.notna(x) else -1
+        ).isin(의뢰서번호셋)].copy()
+        if _tgt.empty:
+            return {}
+        _tgt["_의뢰서int"] = _tgt["업무의뢰서번호"].apply(lambda x: int(float(x)) if pd.notna(x) else -1)
+        _g = _tgt.groupby(["_의뢰서int","작업명","거래처명","업무명"], sort=False).agg(
+            출력단가기준페이지=("확정청구페이지", "sum"),
+            봉입건수=("건수", "sum"),
+            장수=("장수", "sum"),
+        ).reset_index()
+        결과 = {}
+        for _, _r in _g.iterrows():
+            의뢰서 = _r["_의뢰서int"]
+            작업   = _r["작업명"]
+            거래처 = _r["거래처명"]
+            업무   = _r["업무명"]
+            rates = (
+                _t4_단가맵.get((거래처, 업무, 작업))
+                or _t4_단가맵.get((거래처, 업무, None))
+                or _t4_단가맵.get((거래처, None, None))
+            )
+            if not rates:
+                continue
+            z = _t4_자재map.get((의뢰서, 작업), {"일반봉투_수량":0,"각대대봉투_수량":0,"용지_수량":0,"삽지_수량":0})
+            일반봉투   = z["일반봉투_수량"]
+            각대대봉투 = z["각대대봉투_수량"]
+            용지       = z["용지_수량"]
+            삽지       = z["삽지_수량"]
+            봉입건수   = _r["봉입건수"]
+            장수       = _r["장수"]
+            추가용지   = max(0, 장수 - 봉입건수)
+            청구페이지 = _r["출력단가기준페이지"]
+            항목금액 = {
+                "출력비":    청구페이지 * rates.get("출력단가", 0),
+                "봉입비":    봉입건수   * rates.get("봉입단가", 0) + 각대대봉투 * rates.get("각대대봉투봉입단가", 0),
+                "용지제작비": 용지      * rates.get("용지제작단가", 0),
+                "봉투제작비": 일반봉투  * rates.get("봉투제작단가", 0) + 각대대봉투 * rates.get("각대대봉투단가", 0),
+                "추가봉입비": (삽지 + 추가용지) * rates.get("추가봉입단가", 0),
+                "삽지봉입비": 삽지      * rates.get("삽지제작단가", 0),
+            }
+            항목수량 = {
+                "출력비":    청구페이지,
+                "봉입비":    봉입건수 + 각대대봉투,
+                "용지제작비": 용지,
+                "봉투제작비": 일반봉투 + 각대대봉투,
+                "추가봉입비": 삽지 + 추가용지,
+                "삽지봉입비": 삽지,
+            }
+            항목단가 = {
+                "출력비":    rates.get("출력단가", 0),
+                "봉입비":    rates.get("봉입단가", 0),
+                "용지제작비": rates.get("용지제작단가", 0),
+                "봉투제작비": rates.get("봉투제작단가", 0),
+                "추가봉입비": rates.get("추가봉입단가", 0),
+                "삽지봉입비": rates.get("삽지제작단가", 0),
+            }
+            소계 = sum(항목금액.values())
+            if 의뢰서 not in 결과:
+                결과[의뢰서] = {"합계": 0, "거래처명": 거래처, "업무명": 업무,
+                                "항목": {k: 0 for k in 항목금액}, "수량": {k: 0 for k in 항목수량}, "단가": {}}
+            결과[의뢰서]["합계"] += 소계
+            for k in 항목금액:
+                결과[의뢰서]["항목"][k] = 결과[의뢰서]["항목"].get(k, 0) + 항목금액[k]
+                결과[의뢰서]["수량"][k] = 결과[의뢰서]["수량"].get(k, 0) + 항목수량[k]
+                결과[의뢰서]["단가"][k]  = 항목단가[k]  # 마지막 작업명 단가 사용 (단순화)
+        return 결과
+
+    def generate_거래명세서_excel(의뢰서번호셋, 발행일):
+        """Excel COM(win32com)으로 원본 파일을 직접 열고 값만 채워 저장 — 스타일·이미지 완전 무손상."""
+        import win32com.client as win32
+        import os, tempfile
+        from pathlib import Path
+        from collections import defaultdict
+
+        src_path = str(Path(__file__).parent.parent / "data" / "20260507_KB국민카드(이용대금명세서)_발행요청.xlsx")
+
+        # ── 품목 정의 ────────────────────────────────────────────────
+        품목순서 = ["출력비", "봉입비", "출력자재비", "봉입자재비", "추가봉입비", "삽지비"]
+        코드맵   = {"출력비": "P", "봉입비": "M", "출력자재비": "F",
+                    "봉입자재비": "E", "추가봉입비": "M", "삽지비": "M"}
+        순서맵   = {p: i for i, p in enumerate(품목순서)}
+
+        # ── 데이터 계산 ──────────────────────────────────────────────
+        _tgt = df_all[df_all["업무의뢰서번호"].apply(
+            lambda x: int(float(x)) if pd.notna(x) else -1
+        ).isin(의뢰서번호셋)].copy()
+        if _tgt.empty:
+            return None
+
+        _g = _tgt.groupby(["작업명", "거래처명", "업무명"], sort=False).agg(
+            청구페이지=("확정청구페이지", "sum"),
+            봉입건수=("건수", "sum"),
+            장수=("장수", "sum"),
+        ).reset_index()
+
+        거래처명 = _g.iloc[0]["거래처명"]
+        업무명   = _g.iloc[0]["업무명"]
+
+        행데이터 = defaultdict(lambda: {"수량": 0.0, "금액": 0.0})
+        for _, _r in _g.iterrows():
+            작업   = _r["작업명"]
+            거래처 = _r["거래처명"]
+            업무   = _r["업무명"]
+            rates = (
+                _t4_단가맵.get((거래처, 업무, 작업))
+                or _t4_단가맵.get((거래처, 업무, None))
+                or _t4_단가맵.get((거래처, None, None))
+            )
+            if not rates:
+                continue
+            일반봉투 = 각대대봉투 = 용지 = 삽지 = 0
+            for 번호 in 의뢰서번호셋:
+                z = _t4_자재map.get((번호, 작업), {})
+                일반봉투   += z.get("일반봉투_수량", 0)
+                각대대봉투 += z.get("각대대봉투_수량", 0)
+                용지       += z.get("용지_수량", 0)
+                삽지       += z.get("삽지_수량", 0)
+            봉입건수 = _r["봉입건수"]
+            장수     = _r["장수"]
+            청구     = _r["청구페이지"]
+            추가용지 = max(0, 장수 - 봉입건수)
+            항목계산 = {
+                "출력비":    (청구,                rates.get("출력단가", 0)),
+                "봉입비":    (봉입건수 + 각대대봉투, rates.get("봉입단가", 0)),
+                "출력자재비": (용지,                rates.get("용지제작단가", 0)),
+                "봉입자재비": (일반봉투 + 각대대봉투, rates.get("봉투제작단가", 0)),
+                "추가봉입비": (삽지 + 추가용지,    rates.get("추가봉입단가", 0)),
+                "삽지비":    (삽지,                rates.get("삽지제작단가", 0)),
+            }
+            for 품목, (수량, 단가) in 항목계산.items():
+                if 단가 > 0 and 수량 > 0:
+                    행데이터[(품목, 작업, 단가)]["수량"] += 수량
+                    행데이터[(품목, 작업, 단가)]["금액"] += 수량 * 단가
+
+        정렬행 = sorted(행데이터.items(), key=lambda x: (순서맵.get(x[0][0], 99), x[0][1]))
+        if not 정렬행:
+            return None
+        총합계 = sum(v["금액"] for _, v in 정렬행)
+        구분날짜 = f"{발행일.month:02d}월{발행일.day:02d}일"
+
+        # ── Excel COM으로 파일 열기 → 값 채우기 → 임시파일 저장 → bytes 반환 ──
+        tmp_path = os.path.join(tempfile.gettempdir(), "거래명세서_tmp.xlsx")
+        excel = win32.Dispatch("Excel.Application")
+        excel.Visible = False
+        excel.DisplayAlerts = False
+        try:
+            wb = excel.Workbooks.Open(os.path.abspath(src_path), ReadOnly=False)
+            ws = wb.Worksheets(2)
+
+            # 헤더
+            ws.Range("B10").Value = 발행일.strftime("%Y-%m-%d")
+            ws.Range("B11").Value = 거래처명
+            ws.Range("B12").Value = 업무명
+            from num2words import num2words
+            ws.Range("K14").Value = round(총합계)
+            ws.Range("D14").Value = f"금 {num2words(round(총합계), lang='ko')}"
+
+            # 데이터 행 초기화
+            for r in range(16, 26):
+                for col in ["A", "B", "D", "I", "J", "K"]:
+                    ws.Range(f"{col}{r}").Value = None
+
+            # 데이터 쓰기
+            첫행 = True
+            for i, ((품목, 작업명_key, 단가), v) in enumerate(정렬행):
+                if i >= 10: break
+                r = 16 + i
+                ws.Range(f"A{r}").Value = 코드맵.get(품목, "M")
+                if 첫행:
+                    ws.Range(f"B{r}").Value = 구분날짜
+                품명표시 = f"{품목}({작업명_key})" if 작업명_key else 품목
+                ws.Range(f"D{r}").Value = 품명표시
+                ws.Range(f"I{r}").Value = int(v["수량"])
+                ws.Range(f"J{r}").Value = 단가
+                ws.Range(f"K{r}").Value = round(v["금액"])
+                첫행 = False
+
+            ws.Range("J31").Value = round(총합계)
+
+            # 품명 셀 너비 자동맞춤 — 범위 지정 시 병합 발생하므로 행별 개별 적용
+            for _r in range(16, 26):
+                ws.Range(f"D{_r}").ShrinkToFit = True
+
+            wb.SaveAs(tmp_path, 51)  # 51 = xlOpenXMLWorkbook
+            wb.Close(False)
+        finally:
+            excel.Quit()
+
+        with open(tmp_path, "rb") as f:
+            return f.read()
+
     t4a, t4b, t4c = st.tabs(["미발행 목록", "거래처 마스터", "발행요청목록"])
 
     with t4a:
@@ -579,34 +831,15 @@ with tab4:
             if 미발송.empty:
                 st.warning(f"검색한 의뢰서번호 {len(t4a_검색번호)}건이 미발행 목록에 없습니다.")
 
-        master = load_master()
-        _단가컬럼 = ["출력단가","봉입단가","추가봉입단가","용지제작단가","봉투제작단가"]
-        _master_단가 = master.copy()
-        _master_단가[_단가컬럼] = _master_단가[_단가컬럼].apply(
-            pd.to_numeric, errors="coerce"
-        ).fillna(0)
-        단가맵 = {
-            r["거래처명"]: {c: r[c] for c in _단가컬럼}
-            for _, r in _master_단가.iterrows()
-        }
+        # 공용 calc_공급가맵 사용 (탭 밖에서 정의됨)
+        미발송_번호셋 = set(
+            미발송["업무의뢰서번호"].apply(lambda x: int(float(x)) if pd.notna(x) else -1)
+        )
+        공급가맵 = calc_공급가맵(미발송_번호셋)
 
-        def 예상공급가(row):
-            rates = 단가맵.get(row["거래처명"])
-            if not rates:
-                return None
-            출력료    = row["확정청구페이지"]        * rates["출력단가"]
-            봉입료    = row["봉입건수_합"]            * rates["봉입단가"]
-            삽지량    = row["삽지_사용량_합"] if "삽지_사용량_합" in row.index else 0
-            장수      = row["장수_합"]        if "장수_합"        in row.index else 0
-            봉입      = row["봉입건수_합"]
-            추가용지  = (장수 - 봉입) if (장수 > 0 and 봉입 > 0) else 0
-            추가봉입비 = (삽지량 + 추가용지) * rates["추가봉입단가"]
-            용지제작비 = (row["용지_사용량_합"] if "용지_사용량_합" in row.index else 0) * rates["용지제작단가"]
-            봉투제작비 = (row["봉투_사용량_합"] if "봉투_사용량_합" in row.index else 0) * rates["봉투제작단가"]
-            총액 = 출력료 + 봉입료 + 추가봉입비 + 용지제작비 + 봉투제작비
-            return int(총액) if 총액 > 0 else None
-
-        미발송["예상공급가액"] = 미발송.apply(예상공급가, axis=1)
+        미발송["예상공급가액"] = 미발송["업무의뢰서번호"].apply(
+            lambda x: int(공급가맵[int(float(x))]["합계"]) if (pd.notna(x) and int(float(x)) in 공급가맵 and 공급가맵[int(float(x))]["합계"] > 0) else None
+        )
 
         # 인덱스 리셋 (선택 후 원본 매핑용)
         미발송_r = 미발송.reset_index(drop=True)
@@ -623,9 +856,11 @@ with tab4:
             st.session_state.t4_선택버전 = 0
 
         # 미발송 목록 표시용 DataFrame
+        _단가미등록여부 = 미발송_r["예상공급가액"].isna()
         display_df = pd.DataFrame({
             "선택":           st.session_state.t4_전체선택,
             "No":             range(1, len(미발송_r) + 1),
+            "단가":           ["⚠️ 미등록" if v else "" for v in _단가미등록여부],
             "담당자":         미발송_r["마케팅담당자"].values,
             "의뢰서번호":     미발송_r["업무의뢰서번호_str"].values,
             "사업부":         미발송_r["사업부"].values,
@@ -663,6 +898,7 @@ with tab4:
             column_config={
                 "선택":           st.column_config.CheckboxColumn("선택",        pinned=True),
                 "No":             st.column_config.NumberColumn("No",            format="%d",  pinned=True),
+                "단가":           st.column_config.TextColumn("단가",            pinned=True),
                 "담당자":         st.column_config.TextColumn("담당자",          pinned=True),
                 "의뢰서번호":     st.column_config.TextColumn("의뢰서번호",      pinned=True),
                 "사업부":         st.column_config.TextColumn("사업부",          pinned=True),
@@ -676,7 +912,7 @@ with tab4:
                 "삽지수량":       st.column_config.NumberColumn("삽지수량",      format="%,d"),
                 "예상공급가액":   st.column_config.NumberColumn("예상공급가액",  format="%,d"),
             },
-            disabled=["No","담당자","의뢰서번호","사업부","거래처명","업무명","업무명상세","작업일자",
+            disabled=["No","단가","담당자","의뢰서번호","사업부","거래처명","업무명","업무명상세","작업일자",
                       "청구페이지","장수","봉입건수","봉투수량","용지수량","삽지수량","예상공급가액"],
             hide_index=True,
             use_container_width=True,
@@ -742,14 +978,21 @@ with tab4:
                 unsafe_allow_html=True,
             )
 
+            # 선택된 항목 중 단가 미등록 의뢰서번호 목록
+            미등록_번호목록 = 선택된[선택된["예상공급가액"].isna()]["업무의뢰서번호_str"].tolist()
+
             btn_col, warn_col = st.columns([2, 8])
             with btn_col:
                 요청_클릭 = st.button("거래명세서 요청", type="primary",
-                                      disabled=(총공급 is None),
+                                      disabled=bool(미등록_번호목록),
                                       help="단가가 등록된 경우에만 활성화됩니다.")
             with warn_col:
-                if 총공급 is None:
-                    st.warning("단가 미등록 거래처가 포함되어 있습니다. 거래처 마스터 탭에서 단가를 입력해 주세요.")
+                if 미등록_번호목록:
+                    st.warning(
+                        f"단가 미등록 의뢰서 {len(미등록_번호목록)}건이 선택에 포함되어 있습니다. "
+                        f"거래처 마스터 탭에서 단가를 입력해 주세요.\n\n"
+                        f"미등록 의뢰서번호: {', '.join(미등록_번호목록)}"
+                    )
 
             if 요청_클릭:
                 import json as _json_req
@@ -832,45 +1075,223 @@ with tab4:
 
     with t4b:
         st.subheader("거래처 마스터 관리")
-        master = load_master()
-        display_df = master[["거래처명","사업자등록번호","수신이메일",
-                              "출력단가","봉입단가",
-                              "추가봉입단가","용지제작단가","봉투제작단가","비고"]].copy()
-        display_df.insert(0, "선택", False)
-        edited = st.data_editor(
-            display_df,
-            num_rows="dynamic",
-            column_config={
-                "선택":         st.column_config.CheckboxColumn("선택", pinned=True, default=False),
-                "거래처명":     st.column_config.TextColumn("거래처명", required=True),
-                "출력단가":     st.column_config.NumberColumn("출력단가(원)", min_value=0),
-                "봉입단가":     st.column_config.NumberColumn("봉입단가(원)", min_value=0),
-                "추가봉입단가": st.column_config.NumberColumn("추가봉입단가(원)", min_value=0, help="현재 미사용"),
-                "용지제작단가": st.column_config.NumberColumn("용지제작단가(원)", min_value=0, help="현재 미사용"),
-                "봉투제작단가": st.column_config.NumberColumn("봉투제작단가(원)", min_value=0, help="현재 미사용"),
-            },
-            use_container_width=True,
-            key="master_editor",
+
+        # 탭 상태 초기화 (key 없이 index로만 제어 — 프로그래밍 전환 가능)
+        if "t4b_탭_요청" not in st.session_state:
+            st.session_state["t4b_탭_요청"] = "기본정보"
+
+        t4b_탭 = st.radio(
+            "", ["기본정보", "단가 관리"],
+            horizontal=True,
+            index=0 if st.session_state["t4b_탭_요청"] == "기본정보" else 1,
         )
-        선택된_목록 = edited.loc[edited["선택"] == True, "거래처명"].dropna().tolist()
-        save_c, del_c, _ = st.columns([1, 1, 8])
-        with save_c:
-            if st.button("저장", type="primary", key="master_save"):
-                from datetime import date
-                conn = get_conn()
-                conn.execute("DELETE FROM 거래처마스터")
-                save_df = edited.drop(columns=["선택"])
-                save_df["수정일"] = str(date.today())
-                if "등록일" not in save_df.columns:
-                    save_df["등록일"] = str(date.today())
-                save_df.to_sql("거래처마스터", conn, if_exists="append", index=False)
-                conn.close()
-                st.cache_data.clear()
-                st.success("저장되었습니다.")
-                st.rerun()
-        with del_c:
-            if st.button("삭제", key="master_del_btn", disabled=not 선택된_목록):
-                _거래처삭제_dialog(선택된_목록)
+        # 사용자가 직접 탭 클릭 시 상태 동기화
+        if t4b_탭 != st.session_state["t4b_탭_요청"]:
+            st.session_state["t4b_탭_요청"] = t4b_탭
+        st.divider()
+
+        if t4b_탭 == "기본정보":
+            master = load_master()
+            display_df = master[["거래처명","사업자등록번호","수신이메일","비고"]].copy()
+            display_df.insert(0, "선택", False)
+            edited = st.data_editor(
+                display_df,
+                num_rows="dynamic",
+                column_config={
+                    "선택":           st.column_config.CheckboxColumn("선택", pinned=True, default=False),
+                    "거래처명":       st.column_config.TextColumn("거래처명", required=True),
+                    "사업자등록번호": st.column_config.TextColumn("사업자등록번호"),
+                    "수신이메일":     st.column_config.TextColumn("수신이메일"),
+                    "비고":           st.column_config.TextColumn("비고"),
+                },
+                use_container_width=True,
+                key="master_editor",
+            )
+            선택된_목록 = edited.loc[edited["선택"] == True, "거래처명"].dropna().tolist()
+            save_c, del_c, move_c, _ = st.columns([1, 1, 2, 6])
+            with save_c:
+                if st.button("저장", type="primary", key="master_save"):
+                    from datetime import date
+                    conn = get_conn()
+                    conn.execute("DELETE FROM 거래처마스터")
+                    save_df = edited.drop(columns=["선택"])
+                    save_df["수정일"] = str(date.today())
+                    if "등록일" not in save_df.columns:
+                        save_df["등록일"] = str(date.today())
+                    save_df.to_sql("거래처마스터", conn, if_exists="append", index=False)
+                    conn.close()
+                    st.cache_data.clear()
+                    st.success("저장되었습니다.")
+                    st.rerun()
+            with del_c:
+                if st.button("삭제", key="master_del_btn", disabled=not 선택된_목록):
+                    _거래처삭제_dialog(선택된_목록)
+            with move_c:
+                if st.button(
+                    "→ 단가 관리",
+                    key="master_goto_단가",
+                    disabled=len(선택된_목록) != 1,
+                    help="거래처를 1개 선택한 후 클릭하세요.",
+                ):
+                    st.session_state["단가_거래처_selectbox"] = 선택된_목록[0]
+                    st.session_state["t4b_탭_요청"] = "단가 관리"
+                    st.rerun()
+
+        elif t4b_탭 == "단가 관리":
+            master_단가탭 = load_master()
+            거래처목록_단가 = master_단가탭["거래처명"].dropna().tolist()
+            if not 거래처목록_단가:
+                st.info("먼저 기본정보 탭에서 거래처를 등록해 주세요.")
+            else:
+                선택_거래처_단가 = st.selectbox(
+                    "거래처 선택",
+                    거래처목록_단가,
+                    key="단가_거래처_selectbox",
+                )
+                단가df = load_단가마스터()
+                해당_단가 = 단가df[단가df["거래처명"] == 선택_거래처_단가].copy()
+
+                # ── 기존 단가 목록 ──────────────────────────────
+                st.markdown("##### 등록된 단가 목록")
+                st.caption("단가만 수정 가능합니다. 업무명·작업명 변경이 필요하면 삭제 후 재등록하세요.")
+
+                if 해당_단가.empty:
+                    st.info("등록된 단가가 없습니다. 아래에서 추가하세요.")
+                    edited_단가 = pd.DataFrame()
+                else:
+                    _표시컬럼 = [c for c in ["id","업무명","작업명","출력단가","봉입단가","추가봉입단가","각대대봉투봉입단가","용지제작단가","봉투제작단가","삽지제작단가","각대대봉투단가","비고"] if c in 해당_단가.columns]
+                    표시df = 해당_단가[_표시컬럼].copy()
+                    표시df["업무명"] = 표시df["업무명"].fillna("(기본단가)")
+                    표시df["작업명"] = 표시df["작업명"].fillna("(기본단가)")
+                    표시df["비고"]   = 표시df["비고"].fillna("")
+                    표시df.insert(0, "선택", False)
+
+                    edited_단가 = st.data_editor(
+                        표시df,
+                        num_rows="fixed",
+                        column_config={
+                            "선택":         st.column_config.CheckboxColumn("선택", default=False),
+                            "id":           None,
+                            "업무명":       st.column_config.TextColumn("업무명",   disabled=True),
+                            "작업명":       st.column_config.TextColumn("작업명",   disabled=True),
+                            "출력단가":     st.column_config.NumberColumn("출력단가(원)",     min_value=0, default=0, format="%.2f"),
+                            "봉입단가":     st.column_config.NumberColumn("봉입단가(원)",     min_value=0, default=0, format="%.2f"),
+                            "추가봉입단가": st.column_config.NumberColumn("추가봉입단가(원)", min_value=0, default=0, format="%.2f"),
+                            "용지제작단가": st.column_config.NumberColumn("용지제작단가(원)", min_value=0, default=0, format="%.2f"),
+                            "각대대봉투봉입단가": st.column_config.NumberColumn("수작업 단가(원)",      min_value=0, default=0, format="%.2f"),
+                            "봉투제작단가":    st.column_config.NumberColumn("봉투제작단가(원)",      min_value=0, default=0, format="%.2f"),
+                            "삽지제작단가":    st.column_config.NumberColumn("삽지제작단가(원)",      min_value=0, default=0, format="%.2f"),
+                            "각대대봉투단가":  st.column_config.NumberColumn("각대대봉투단가(원)",    min_value=0, default=0, format="%.2f"),
+                            "비고":            st.column_config.TextColumn("비고"),
+                        },
+                        use_container_width=True,
+                        hide_index=True,
+                        key="단가_editor",
+                    )
+
+                    선택된_단가행 = edited_단가.loc[edited_단가["선택"] == True]
+                    dsave_c, ddel_c, _ = st.columns([1, 1, 8])
+
+                    with dsave_c:
+                        if st.button("저장", type="primary", key="단가_save"):
+                            from datetime import date as _date
+                            today = str(_date.today())
+                            conn = get_conn()
+                            for _, r in edited_단가.iterrows():
+                                if pd.isna(r["id"]):
+                                    continue
+                                conn.execute("""
+                                    UPDATE 단가마스터
+                                    SET 출력단가=?, 봉입단가=?, 추가봉입단가=?,
+                                        용지제작단가=?, 봉투제작단가=?, 삽지제작단가=?,
+                                        각대대봉투단가=?, 각대대봉투봉입단가=?, 비고=?, 수정일=?
+                                    WHERE id=?
+                                """, (r["출력단가"] or 0, r["봉입단가"] or 0,
+                                      r["추가봉입단가"] or 0, r["용지제작단가"] or 0,
+                                      r["봉투제작단가"] or 0, r["삽지제작단가"] or 0,
+                                      r.get("각대대봉투단가") or 0, r.get("각대대봉투봉입단가") or 0,
+                                      r["비고"] if r["비고"] != "" else None,
+                                      today, int(r["id"])))
+                            conn.commit()
+                            conn.close()
+                            st.cache_data.clear()
+                            st.success("저장되었습니다.")
+                            st.rerun()
+
+                    with ddel_c:
+                        삭제_ids = 선택된_단가행["id"].dropna().tolist() if not 선택된_단가행.empty else []
+                        if st.button("삭제", key="단가_del_btn", disabled=not 삭제_ids):
+                            conn = get_conn()
+                            for _id in 삭제_ids:
+                                conn.execute("DELETE FROM 단가마스터 WHERE id=?", (int(_id),))
+                            conn.commit()
+                            conn.close()
+                            st.cache_data.clear()
+                            st.success(f"{len(삭제_ids)}건 삭제되었습니다.")
+                            st.rerun()
+
+                # ── 새 단가 추가 (거래처명→업무명→작업명 3단계 연동) ──
+                st.divider()
+                st.markdown("##### 새 단가 추가")
+
+                거래처_df = df_all[df_all["거래처명"] == 선택_거래처_단가]
+                업무명목록 = ["(기본단가 — 선택 안 함)"] + sorted(거래처_df["업무명"].dropna().unique().tolist())
+
+                add_c1, add_c2 = st.columns(2)
+                with add_c1:
+                    선택_업무명 = st.selectbox(
+                        "업무명",
+                        업무명목록,
+                        key="단가_add_업무명",
+                        help="선택하지 않으면 거래처 전체 기본단가로 등록됩니다.",
+                    )
+                with add_c2:
+                    if 선택_업무명 == "(기본단가 — 선택 안 함)":
+                        작업명목록 = ["(기본단가 — 선택 안 함)"]
+                    else:
+                        filtered_작업 = 거래처_df[거래처_df["업무명"] == 선택_업무명]
+                        작업명목록 = ["(기본단가 — 선택 안 함)"] + sorted(filtered_작업["작업명"].dropna().unique().tolist())
+                    선택_작업명 = st.selectbox(
+                        "작업명",
+                        작업명목록,
+                        key="단가_add_작업명",
+                        help="선택하지 않으면 업무명 단위 기본단가로 등록됩니다.",
+                    )
+
+                p1, p2, p3, p4 = st.columns(4)
+                with p1: add_출력 = st.number_input("출력단가(원)",     min_value=0.0, value=None, step=0.01, format="%.2f", placeholder="0.00", key="단가_add_출력")
+                with p2: add_봉입 = st.number_input("봉입단가(원)",     min_value=0.0, value=None, step=0.01, format="%.2f", placeholder="0.00", key="단가_add_봉입")
+                with p3: add_추가 = st.number_input("추가봉입단가(원)", min_value=0.0, value=None, step=0.01, format="%.2f", placeholder="0.00", key="단가_add_추가")
+                with p4: add_각대봉입 = st.number_input("수작업 단가(원)", min_value=0.0, value=None, step=0.01, format="%.2f", placeholder="0.00", key="단가_add_각대봉입")
+                p5, p6, p7, p8 = st.columns(4)
+                with p5: add_용지 = st.number_input("용지제작단가(원)", min_value=0.0, value=None, step=0.01, format="%.2f", placeholder="0.00", key="단가_add_용지")
+                with p6: add_봉투 = st.number_input("봉투제작단가(원)", min_value=0.0, value=None, step=0.01, format="%.2f", placeholder="0.00", key="단가_add_봉투")
+                with p7: add_삽지 = st.number_input("삽지제작단가(원)", min_value=0.0, value=None, step=0.01, format="%.2f", placeholder="0.00", key="단가_add_삽지")
+                with p8: add_각대봉투 = st.number_input("각대대봉투단가(원)", min_value=0.0, value=None, step=0.01, format="%.2f", placeholder="0.00", key="단가_add_각대봉투")
+                add_비고 = st.text_input("비고", key="단가_add_비고")
+
+                if st.button("추가", type="primary", key="단가_add_btn"):
+                    from datetime import date as _date
+                    _업무명 = None if 선택_업무명 == "(기본단가 — 선택 안 함)" else 선택_업무명
+                    _작업명 = None if 선택_작업명 == "(기본단가 — 선택 안 함)" else 선택_작업명
+                    conn = get_conn()
+                    try:
+                        conn.execute("""
+                            INSERT INTO 단가마스터
+                                (거래처명,업무명,작업명,출력단가,봉입단가,추가봉입단가,용지제작단가,봉투제작단가,삽지제작단가,각대대봉투단가,각대대봉투봉입단가,비고,등록일,수정일)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        """, (선택_거래처_단가, _업무명, _작업명,
+                              add_출력 or 0, add_봉입 or 0, add_추가 or 0, add_용지 or 0, add_봉투 or 0, add_삽지 or 0,
+                              add_각대봉투 or 0, add_각대봉입 or 0,
+                              add_비고 or None, str(_date.today()), str(_date.today())))
+                        conn.commit()
+                        st.cache_data.clear()
+                        st.success("추가되었습니다.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"동일한 업무명·작업명 조합이 이미 존재합니다. ({e})")
+                    finally:
+                        conn.close()
 
     with t4c:
         st.subheader("발행요청목록")
@@ -923,6 +1344,16 @@ with tab4:
                 except Exception:
                     pass
 
+            # 이력에 포함된 전체 의뢰서번호 → 예상공급가 일괄 계산
+            _t4c_모든번호 = set()
+            for _, row in 이력_t4c.iterrows():
+                if row["업무의뢰서번호목록"]:
+                    try:
+                        _t4c_모든번호.update(int(float(n)) for n in _json3.loads(row["업무의뢰서번호목록"]))
+                    except Exception:
+                        pass
+            _t4c_공급가맵 = calc_공급가맵(_t4c_모든번호)
+
             expanded_rows = []
             for _, row in 이력_t4c.iterrows():
                 if row["업무의뢰서번호목록"]:
@@ -931,6 +1362,7 @@ with tab4:
                             req_no = int(float(n))
                             s = summary_map.get(req_no)
                             if s is not None:
+                                _가액 = _t4c_공급가맵.get(req_no)
                                 expanded_rows.append({
                                     "_이력_id":    int(row["id"]),
                                     "담당자":      str(s["마케팅담당자"]),
@@ -947,7 +1379,7 @@ with tab4:
                                     "용지수량":    int(s["용지_사용량_합"])   if "용지_사용량_합" in s.index and pd.notna(s["용지_사용량_합"]) else 0,
                                     "봉투수량":    int(s["봉투_사용량_합"])   if "봉투_사용량_합" in s.index and pd.notna(s["봉투_사용량_합"]) else 0,
                                     "삽지수량":    int(s["삽지_사용량_합"])   if "삽지_사용량_합" in s.index and pd.notna(s["삽지_사용량_합"]) else 0,
-                                    "예상공급가액": 예상공급가(s),
+                                    "예상공급가액": int(_가액["합계"]) if _가액 and _가액["합계"] > 0 else None,
                                     "발행여부":    "발행완료" if row["발송여부"] == 1 else "발행대기",
                                 })
                     except Exception:
@@ -1036,6 +1468,21 @@ with tab4:
 
                 선택_idx_c = 이력_선택결과[이력_선택결과["선택"] == True].index.tolist()
 
+                # 다운로드 버튼: 발행 완료 후 rerun으로 체크박스가 초기화돼도 유지되어야 하므로 선택_idx_c 블록 밖에 위치
+                if st.session_state.get("t4c_excel_bytes"):
+                    st.divider()
+                    dl_col, _ = st.columns([3, 7])
+                    with dl_col:
+                        # key에 발행 시각을 포함해 발행할 때마다 버튼을 새로 렌더링 (캐시 방지)
+                        dl_key = f"t4c_dl_{st.session_state.get('t4c_dl_version', 0)}"
+                        st.download_button(
+                            label="📥 거래명세서 다운로드",
+                            data=st.session_state["t4c_excel_bytes"],
+                            file_name=st.session_state.get("t4c_excel_filename", "거래명세서.xlsx"),
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key=dl_key,
+                        )
+
                 if 선택_idx_c:
                     st.divider()
                     발행_btn_col, _ = st.columns([2, 8])
@@ -1044,6 +1491,7 @@ with tab4:
 
                     if 발행_클릭:
                         선택_ids = list({int(exp_df.iloc[idx]["_이력_id"]) for idx in 선택_idx_c})
+                        선택번호_발행 = {int(exp_df.iloc[idx]["의뢰서번호"]) for idx in 선택_idx_c}
                         conn = get_conn()
                         conn.executemany(
                             "UPDATE 거래명세서이력 SET 발송여부 = 1, 발송일 = ? WHERE id = ?",
@@ -1052,6 +1500,15 @@ with tab4:
                         conn.commit()
                         conn.close()
                         st.cache_data.clear()
+                        excel_bytes = generate_거래명세서_excel(선택번호_발행, date.today())
+                        if excel_bytes:
+                            from datetime import datetime as _dt
+                            발행시각 = _dt.now().strftime("%Y%m%d_%H%M")
+                            거래처명_발행 = exp_df.iloc[선택_idx_c[0]]["거래처명"]
+                            업무명_발행   = exp_df.iloc[선택_idx_c[0]]["업무명"]
+                            st.session_state["t4c_excel_bytes"]    = excel_bytes
+                            st.session_state["t4c_excel_filename"] = f"{발행시각}_{거래처명_발행}_{업무명_발행}.xlsx"
+                            st.session_state["t4c_dl_version"]     = st.session_state.get("t4c_dl_version", 0) + 1
                         st.success("거래명세서 발행이 완료되었습니다.")
                         st.session_state.t4c_선택버전 += 1
                         st.rerun()

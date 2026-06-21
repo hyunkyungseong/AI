@@ -95,13 +95,13 @@ def add_사업부(df):
 
 def apply_billing_logic(df):
     """
-    업무의뢰서번호 그룹 기준 청구페이지 계산
+    (업무의뢰서번호, 작업명) 그룹 기준 청구페이지 계산 — 작업명별 첫 행에 확정청구페이지 저장
     경우 1: 첫 행만 청구페이지 > 0, 나머지 0 → 첫 행 값 그대로
     경우 2: 2번째 이후 행 중 청구페이지 > 0 존재 → 전체 합산
     경우 3: 모든 행 청구페이지 = 0 → 출력페이지 전체 합산
     """
     groups = []
-    for _, group in df.groupby("업무의뢰서번호", sort=False):
+    for _, group in df.groupby(["업무의뢰서번호", "작업명"], sort=False):
         rest = group["청구페이지"].iloc[1:]
         if group["청구페이지"].sum() == 0:
             billing = group["출력페이지"].sum()

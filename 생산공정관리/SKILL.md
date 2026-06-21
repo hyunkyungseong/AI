@@ -16,6 +16,7 @@
 | SKILL-04 | st.data_editor 선택 상태 유지 | ✅ 2026-06-02 |
 | SKILL-05 | MariaDB 연결 패턴 (pymysql) | ⏳ 미검증 초안 |
 | SKILL-06 | 비개발자용 화면 검증 체크리스트 | ✅ 표준 템플릿 |
+| SKILL-07 | Excel COM 거래명세서 자동 생성 | ✅ 2026-06-21 |
 
 ---
 
@@ -260,6 +261,100 @@ with get_db() as conn:
 - 동작은 "클릭", "입력", "선택" 등 마우스·키보드 행동 단위로 작성
 - 예상 결과는 색상·위치·문구까지 구체적으로 명시 (애매한 표현 금지)
 - 오류 시 대응도 반드시 포함 (비개발자가 혼자 판단할 수 없는 상황 대비)
+
+---
+
+## SKILL-07. Excel COM 거래명세서 자동 생성
+
+**목적:** 원본 xlsx 파일을 훼손 없이 복사하고 가변 데이터만 채워 새 파일로 저장
+
+**검증 상태:** ✅ 완료 (2026-06-21)
+
+**왜 COM 방식인가:**
+- `zipfile + regex` XML 직접 수정: 빠르나 Excel "셀 정보" 복구 오류 지속 발생 (근본 원인 미해결)
+- `openpyxl`: drawing, 명명된 범위 손실
+- **Excel COM**: 느리지만(~10초) 원본 구조 100% 유지, 오류 없음 → 채택
+
+**의존 패키지:**
+```
+pip install pywin32 num2words
+```
+
+**핵심 로직:**
+```python
+import win32com.client as win32
+import os, tempfile
+from num2words import num2words
+
+src_path = os.path.abspath("data/20260507_KB국민카드(이용대금명세서)_발행요청.xlsx")
+tmp_path = os.path.join(tempfile.gettempdir(), "거래명세서_tmp.xlsx")
+
+excel = win32.Dispatch("Excel.Application")
+excel.Visible = False
+excel.DisplayAlerts = False
+try:
+    wb = excel.Workbooks.Open(src_path, ReadOnly=False)
+    ws = wb.Worksheets(2)   # 두 번째 시트 = 거래명세서 양식
+
+    # 헤더
+    ws.Range("B10").Value = 발행일.strftime("%Y-%m-%d")   # 날짜
+    ws.Range("B11").Value = 거래처명
+    ws.Range("B12").Value = 업무명
+    ws.Range("K14").Value = round(총합계)
+    ws.Range("D14").Value = f"금 {num2words(round(총합계), lang='ko')}"  # 원정은 템플릿에 기존 표기
+
+    # 데이터 행 초기화 (16~25행)
+    for r in range(16, 26):
+        for col in ["A", "B", "D", "I", "J", "K"]:
+            ws.Range(f"{col}{r}").Value = None
+
+    # 데이터 쓰기 (품목 순서: 출력비→봉입비→출력자재비→봉입자재비→추가봉입비→삽지비)
+    첫행 = True
+    for i, ((품목, 작업명_key, 단가), v) in enumerate(정렬행):
+        if i >= 10: break
+        r = 16 + i
+        ws.Range(f"A{r}").Value = 코드맵.get(품목, "M")   # P/M/F/E
+        if 첫행:
+            ws.Range(f"B{r}").Value = f"{발행일.month:02d}월{발행일.day:02d}일"
+        품명표시 = f"{품목}({작업명_key})" if 작업명_key else 품목
+        ws.Range(f"D{r}").Value = 품명표시
+        ws.Range(f"I{r}").Value = int(v["수량"])
+        ws.Range(f"J{r}").Value = 단가
+        ws.Range(f"K{r}").Value = round(v["금액"])
+        첫행 = False
+
+    ws.Range("J31").Value = round(총합계)
+
+    # 품명 셀 ShrinkToFit — 범위 지정 시 병합 버그 발생 → 행별 개별 적용 필수
+    for _r in range(16, 26):
+        ws.Range(f"D{_r}").ShrinkToFit = True
+
+    wb.SaveAs(tmp_path, 51)   # 51 = xlOpenXMLWorkbook (.xlsx)
+    wb.Close(False)
+finally:
+    excel.Quit()
+
+with open(tmp_path, "rb") as f:
+    excel_bytes = f.read()   # Streamlit download_button에 전달
+```
+
+**Streamlit 다운로드 버튼 캐시 방지:**
+```python
+# 발행 시마다 key 변경 → 이전 파일 캐시 방지
+st.session_state["t4c_dl_version"] = st.session_state.get("t4c_dl_version", 0) + 1
+
+dl_key = f"t4c_dl_{st.session_state.get('t4c_dl_version', 0)}"
+st.download_button(label="📥 거래명세서 다운로드", data=excel_bytes,
+                   file_name=f"{발행시각}_{거래처명}_{업무명}.xlsx",
+                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                   key=dl_key)
+```
+
+**주의사항:**
+- `excel.Quit()` 를 `finally`에 넣어야 예외 발생 시에도 Excel 프로세스가 남지 않음
+- `SaveAs` 두 번째 인자 `51` = `xlOpenXMLWorkbook` (.xlsx 포맷)
+- COM 방식은 Excel 시작 시간으로 인해 ~10초 소요 — 정상 동작임
+- `ShrinkToFit = True`를 범위(`D16:D25`)로 적용하면 셀 병합 발생 → 반드시 행별 개별 적용
 
 ---
 
