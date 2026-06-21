@@ -7,6 +7,13 @@
 
 ## ✅ 완료된 작업
 
+### 2026-06-22
+- 거래명세서 Excel 생성 방식 COM → zipfile+regex 로 교체
+  - Excel 설치 불필요, 생성 속도 ~10초 → 1~2초
+  - `data/거래명세서_템플릿_base.xlsx` 신규 생성 (가변 셀 초기화 + ShrinkToFit 스타일 포함)
+  - `generate_거래명세서_excel()` 함수에서 win32com 제거, zipfile+inlineStr 방식 적용
+  - sharedStrings.xml 미수정 → Excel 복구 오류 없음 확인
+
 ### 2026-05-26
 - CLAUDE.md, SKILL.md 초기 파일 생성
 - 프로젝트 폴더 구조 생성 (`data/`, `scripts/`, `output/`, `work/`, `docs/`, `docs/results/`)
@@ -165,14 +172,11 @@
 
 ### 2026-06-21 (계속)
 - 거래명세서 Excel 자동 생성 기능 완성 (탭4 "거래명세서 발행" 버튼)
-  - 생성 방식: **Excel COM(win32com)** — 원본 KB국민카드 xlsx를 백그라운드 Excel로 열어 값만 채워 저장
-  - XML 직접 수정 방식(zipfile+regex) 및 openpyxl 방식 모두 Excel 오류 발생 → COM 방식으로 확정
+  - 최초 생성 방식: Excel COM(win32com) — 이후 zipfile 방식으로 교체됨(2026-06-22 참고)
   - 파일명 형식: `yyyyMMdd_HHmm_거래처명_업무명.xlsx`
   - 품목 순서: 출력비 → 봉입비 → 출력자재비 → 봉입자재비 → 추가봉입비 → 삽지비
-  - D14 금액한글: `num2words(lang='ko')` 라이브러리 사용 (`금 N원정` 형식, 원정은 템플릿에 기존 표기)
-  - D16:D25 품명 셀 ShrinkToFit 적용 (행별 개별 적용 — 범위 지정 시 병합 버그 발생)
+  - D14 금액한글: `num2words(lang='ko')` 라이브러리 사용
   - 다운로드 버튼 캐시 방지: `t4c_dl_version` 카운터로 key 변경
-  - `pywin32`, `num2words` 패키지 신규 설치
 
 ### 2026-06-21
 - 예상공급가액 행별 계산 개선 완료

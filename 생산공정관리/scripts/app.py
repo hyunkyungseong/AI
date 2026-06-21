@@ -658,13 +658,13 @@ with tab4:
         return 결과
 
     def generate_거래명세서_excel(의뢰서번호셋, 발행일):
-        """Excel COM(win32com)으로 원본 파일을 직접 열고 값만 채워 저장 — 스타일·이미지 완전 무손상."""
-        import win32com.client as win32
-        import os, tempfile
+        """zipfile+regex로 템플릿 xlsx 가변 셀만 교체 — Excel 불필요, 빠름."""
+        import zipfile, re, os, tempfile
         from pathlib import Path
         from collections import defaultdict
+        from num2words import num2words
 
-        src_path = str(Path(__file__).parent.parent / "data" / "20260507_KB국민카드(이용대금명세서)_발행요청.xlsx")
+        src_path = Path(__file__).parent.parent / "data" / "거래명세서_템플릿_base.xlsx"
 
         # ── 품목 정의 ────────────────────────────────────────────────
         품목순서 = ["출력비", "봉입비", "출력자재비", "봉입자재비", "추가봉입비", "삽지비"]
@@ -712,12 +712,12 @@ with tab4:
             청구     = _r["청구페이지"]
             추가용지 = max(0, 장수 - 봉입건수)
             항목계산 = {
-                "출력비":    (청구,                rates.get("출력단가", 0)),
+                "출력비":    (청구,                  rates.get("출력단가", 0)),
                 "봉입비":    (봉입건수 + 각대대봉투, rates.get("봉입단가", 0)),
-                "출력자재비": (용지,                rates.get("용지제작단가", 0)),
+                "출력자재비": (용지,                  rates.get("용지제작단가", 0)),
                 "봉입자재비": (일반봉투 + 각대대봉투, rates.get("봉투제작단가", 0)),
-                "추가봉입비": (삽지 + 추가용지,    rates.get("추가봉입단가", 0)),
-                "삽지비":    (삽지,                rates.get("삽지제작단가", 0)),
+                "추가봉입비": (삽지 + 추가용지,       rates.get("추가봉입단가", 0)),
+                "삽지비":    (삽지,                   rates.get("삽지제작단가", 0)),
             }
             for 품목, (수량, 단가) in 항목계산.items():
                 if 단가 > 0 and 수량 > 0:
@@ -730,53 +730,58 @@ with tab4:
         총합계 = sum(v["금액"] for _, v in 정렬행)
         구분날짜 = f"{발행일.month:02d}월{발행일.day:02d}일"
 
-        # ── Excel COM으로 파일 열기 → 값 채우기 → 임시파일 저장 → bytes 반환 ──
-        tmp_path = os.path.join(tempfile.gettempdir(), "거래명세서_tmp.xlsx")
-        excel = win32.Dispatch("Excel.Application")
-        excel.Visible = False
-        excel.DisplayAlerts = False
-        try:
-            wb = excel.Workbooks.Open(os.path.abspath(src_path), ReadOnly=False)
-            ws = wb.Worksheets(2)
+        # ── zipfile로 템플릿 복사 → sheet2.xml 가변 셀 교체 → bytes 반환 ──
+        def _esc(text):
+            return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-            # 헤더
-            ws.Range("B10").Value = 발행일.strftime("%Y-%m-%d")
-            ws.Range("B11").Value = 거래처명
-            ws.Range("B12").Value = 업무명
-            from num2words import num2words
-            ws.Range("K14").Value = round(총합계)
-            ws.Range("D14").Value = f"금 {num2words(round(총합계), lang='ko')}"
+        def _set_num(xml, ref, value):
+            s_m = re.search(rf'<c r="{ref}"([^>]*?)/?>', xml)
+            s_attr = re.search(r's="(\d+)"', s_m.group(1)).group(0) if s_m else ''
+            new = f'<c r="{ref}" {s_attr}><v>{value}</v></c>'
+            return re.sub(rf'<c r="{ref}"[^>]*?(?:/>|>.*?</c>)', new, xml, count=1, flags=re.DOTALL)
 
-            # 데이터 행 초기화
-            for r in range(16, 26):
-                for col in ["A", "B", "D", "I", "J", "K"]:
-                    ws.Range(f"{col}{r}").Value = None
+        def _set_str(xml, ref, text):
+            s_m = re.search(rf'<c r="{ref}"([^>]*?)/?>', xml)
+            s_attr = re.search(r's="(\d+)"', s_m.group(1)).group(0) if s_m else ''
+            new = f'<c r="{ref}" {s_attr} t="inlineStr"><is><t>{_esc(text)}</t></is></c>'
+            return re.sub(rf'<c r="{ref}"[^>]*?(?:/>|>.*?</c>)', new, xml, count=1, flags=re.DOTALL)
 
-            # 데이터 쓰기
-            첫행 = True
-            for i, ((품목, 작업명_key, 단가), v) in enumerate(정렬행):
-                if i >= 10: break
-                r = 16 + i
-                ws.Range(f"A{r}").Value = 코드맵.get(품목, "M")
-                if 첫행:
-                    ws.Range(f"B{r}").Value = 구분날짜
-                품명표시 = f"{품목}({작업명_key})" if 작업명_key else 품목
-                ws.Range(f"D{r}").Value = 품명표시
-                ws.Range(f"I{r}").Value = int(v["수량"])
-                ws.Range(f"J{r}").Value = 단가
-                ws.Range(f"K{r}").Value = round(v["금액"])
+        with zipfile.ZipFile(src_path, 'r') as zin:
+            file_map = {name: zin.read(name) for name in zin.namelist()}
+
+        xml = file_map["xl/worksheets/sheet2.xml"].decode("utf-8")
+
+        # 헤더
+        xml = _set_str(xml, "B10", 발행일.strftime("%Y-%m-%d"))
+        xml = _set_str(xml, "B11", 거래처명)
+        xml = _set_str(xml, "B12", 업무명)
+        xml = _set_str(xml, "D14", f"금 {num2words(round(총합계), lang='ko')}")
+        xml = _set_num(xml, "K14", round(총합계))
+        xml = _set_num(xml, "K30", round(총합계))
+        xml = _set_num(xml, "J31", round(총합계))
+
+        # 품목 행 (16~25)
+        첫행 = True
+        for i, ((품목, 작업명_key, 단가), v) in enumerate(정렬행):
+            if i >= 10:
+                break
+            r = 16 + i
+            xml = _set_str(xml, f"A{r}", 코드맵.get(품목, "M"))
+            if 첫행:
+                xml = _set_str(xml, f"B{r}", 구분날짜)
                 첫행 = False
+            품명표시 = f"{품목}({작업명_key})" if 작업명_key else 품목
+            xml = _set_str(xml, f"D{r}", 품명표시)
+            xml = _set_num(xml, f"I{r}", int(v["수량"]))
+            xml = _set_num(xml, f"J{r}", 단가)
+            xml = _set_num(xml, f"K{r}", round(v["금액"]))
 
-            ws.Range("J31").Value = round(총합계)
+        file_map["xl/worksheets/sheet2.xml"] = xml.encode("utf-8")
 
-            # 품명 셀 너비 자동맞춤 — 범위 지정 시 병합 발생하므로 행별 개별 적용
-            for _r in range(16, 26):
-                ws.Range(f"D{_r}").ShrinkToFit = True
-
-            wb.SaveAs(tmp_path, 51)  # 51 = xlOpenXMLWorkbook
-            wb.Close(False)
-        finally:
-            excel.Quit()
+        tmp_path = os.path.join(tempfile.gettempdir(), "거래명세서_tmp.xlsx")
+        with zipfile.ZipFile(tmp_path, 'w', zipfile.ZIP_DEFLATED) as zout:
+            for name, data in file_map.items():
+                zout.writestr(name, data)
 
         with open(tmp_path, "rb") as f:
             return f.read()
