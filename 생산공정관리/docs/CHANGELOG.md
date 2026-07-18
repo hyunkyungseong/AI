@@ -281,3 +281,74 @@
   - 기존 `plan_1단계_MariaDB전환.md`(SQLite→MariaDB)와 `plan_4단계_FastAPI백엔드분리.md`(API 분리)를 병합 — "Streamlit이 DB 직접 접근"하는 중간 단계 생략, 처음부터 FastAPI 경유로 설계
   - `docs/작업현황-대시보드-생성-KNOWLEDGE.md` "최종 배포 목표"·"기술 환경" 섹션을 새 아키텍처로 갱신
   - Python 패키지 설치: `pymysql`, `fastapi`, `python-jose[cryptography]`, `passlib[bcrypt]` (`uvicorn`·`requests`는 이미 설치돼 있었음 확인)
+- 1단계(MariaDB+FastAPI 백엔드) 착수 ✅
+  - 사무실 PC(원격서버) 접근이 당장 불가능해, **로컬 PC에 이 프로젝트 전용 MariaDB를 먼저 설치 후 추후 사무실 PC로 이관**하는 순서로 진행 결정 (기존 사내 10.2 시스템과는 완전히 별개 인스턴스라 버전 무관 확인)
+  - 로컬 PC에 MariaDB Server 11.4.12 + HeidiSQL 설치 완료, `dashboard` DB 생성 (사용자 직접 진행)
+  - `scripts/db_config.py` 신규 (DB 접속정보 템플릿, `.gitignore` 등록 확인) / `scripts/init_db_mariadb.py` 신규 작성 및 실행 → `dashboard` DB에 6개 테이블 생성 확인(운영통계자료·거래처마스터·단가마스터·거래명세서·거래명세서_의뢰서·거래명세서번호_카운터)
+  - 문서 정정: KNOWLEDGE.md 단가마스터 스키마에 누락돼 있던 각대대봉투단가·각대대봉투봉입단가 필드 추가 / 운영통계자료 스키마를 21컬럼→26컬럼+id로 정정(`반제품여부`·자재사용량 4종 누락 발견, `preprocess.py` 실제 출력 기준으로 재확인)
+  - 거래명세서이력 MariaDB 정규화 설계 확정: 기존 SQLite의 JSON-in-TEXT(`업무의뢰서번호목록`) 1테이블 방식을 `거래명세서`(그룹 집계·상태) + `거래명세서_의뢰서`(의뢰서번호 목록, FK) 2테이블로 분리
+  - `plan_1단계_MariaDB전환.md`에 [6단계] "로컬 PC → 사무실 PC 이관" 체크리스트 신규 추가 (mysqldump 백업/복원, utf8mb4 확인, db_config.py의 DB_HOST만 변경)
+  - 2026-06-22 이후 커밋되지 않고 쌓여있던 약 1개월치 작업(탭4 거래명세서 기능 다수 개선분)을 이번 MariaDB 착수 변경분과 함께 일괄 커밋
+  - `scripts/migrate_sqlite_to_mariadb.py` 신규 작성 및 실행 완료 — SQLite(`work/dashboard.db`) → 로컬 MariaDB(`dashboard`) 데이터 이관 (거래처마스터 7행·단가마스터 16행·거래명세서 2행/거래명세서_의뢰서 14행·거래명세서번호_카운터 1행, 재실행 안전한 UPSERT 방식). 이관 후 SQLite 원본과 건수 일치 확인 완료
+  - 스키마 정정: `업무의뢰서번호`가 숫자가 아니라 문자열 식별자임을 확인 → `운영통계자료`·`거래명세서_의뢰서` 두 테이블 모두 INT → VARCHAR(20)로 정정 (`init_db_mariadb.py` 수정, 이미 이관된 `거래명세서_의뢰서` 14행은 `ALTER TABLE`로 안전 변환)
+  - `scripts/preprocess.py`에 `save_to_mariadb()` 추가 — `processed.pkl` 저장은 유지한 채 `운영통계자료.xlsx` 전처리 결과를 MariaDB `운영통계자료` 테이블에도 TRUNCATE & INSERT로 반영(원래 [4단계] 예정 작업을 앞당김). 실행 확인 결과 **36,804행** 반영(기존 KNOWLEDGE.md에 남아있던 17,674행은 오래된 수치로 확인됨 — "데이터 현황" 섹션 갱신 필요, 별도 확인 예정)
+  - 원본 `운영통계자료.xlsx`에 문서화되지 않은 컬럼 2개(`청구페이지-출력페이지`, `출력페이지보다 큰 청구페이지`) 존재 확인 — 사용자 확인 결과 미사용 컬럼, 코드 반영 안 함
+  - KNOWLEDGE.md "데이터 현황" 섹션 최신화 (사용자 확인): 총 행수 17,674→36,804행, 데이터 기간 2026-04-01~05-29→2026-03-02~06-30, 거래처 수 51→62개, 거래처 목록 갱신 (담당자 11명은 변동 없음)
+  - `자재사용현황` 테이블 추가 요청 반영 — `scripts/init_db_mariadb.py`에 7번째 테이블로 추가(`data/자재사용현황.xlsx` 라인 단위 원본 저장, 업무의뢰서번호 VARCHAR(20)), `preprocess.py`의 `load_and_merge_자재()`가 라인 단위 집계 결과도 함께 반환하도록 수정 후 `save_자재사용현황_to_mariadb()` 신규 추가. 실행 결과 5,984행 반영 확인 (MariaDB 테이블 총 7개로 갱신)
+  - 당사 생산공정관리시스템 API 연동 결정 및 구현 완료 — 방향: **Push**(생산공정관리시스템→우리 FastAPI), **건별 실시간**(의뢰서 완료 시 전체 행 한 번에 전송), 필드는 현재 엑셀과 동일 컬럼, 기존 엑셀 배치는 당분간 병행
+    - 가공 로직(반제품·거래처명·사업부·청구페이지·자재조인)을 `scripts/data_transform.py`로 분리해 `preprocess.py`(배치)·`api.py`(실시간) 공유 구조로 리팩터링, 리팩터링 후 `preprocess.py` 재실행해 동일 결과(36,804/5,984행) 확인
+    - `scripts/api.py` 신규: FastAPI 앱 + `/health`(DB 연결 확인) + `POST /운영통계자료수신`(업무의뢰서 단위 수신, 재전송 시 DELETE 후 INSERT로 통째 교체)
+    - 실제 requests 테스트로 확정청구페이지 그룹 계산(150 확인)·재전송 교체(2행→1행) 동작 검증 후 테스트 데이터 삭제
+    - 버그 발견 및 수정: 자재종류 일부만 있는 소량 배치(실시간 API의 전형적 상황)에서 `봉투_사용량` 등 pivot 컬럼이 누락되어 `KeyError` 발생 — `merge_자재()`가 4종 컬럼을 항상 보장하도록 수정 (SKILL-12 신규)
+    - `docs/API규격서.md` 신규 작성 — 당사 생산공정관리시스템 개발 담당자 전달용 요청/응답 스키마 문서
+    - SKILL.md 갱신: SKILL-05(MariaDB 연결 패턴) 상태를 "미검증 초안" → "✅ 완료"로 갱신 (실사용 검증됨), SKILL-12 신규 추가
+  - `GET /summary` API 구현 완료 (조회 API 8번 착수) — **A안**(app.py의 기존 pandas 집계 로직은 그대로 두고, 데이터 공급 방식만 pkl→API로 교체) 채택. `운영통계자료` 원본 행을 사업부 필터(선택)만 적용해 반환. 실제 호출 테스트로 전체 36,804행(약 27MB, 약 2초)·사업부 필터 결과 확인, `docs/API규격서.md`에 반영
+  - 조회 API 8번 완료 — `GET /거래처마스터`(7건)·`GET /단가마스터`(16건)·`GET /거래명세서이력`(14건, 발송여부 필터 지원) 구현 및 테스트. `/미발행목록`·`/발행요청목록` 2개 계획이었으나, 정규화된 `거래명세서`+`거래명세서_의뢰서` JOIN 하나로 두 화면 모두 계산 가능해 `/거래명세서이력` 하나로 통합 (구 SQLite JSON 파싱 방식 불필요해짐). `docs/API규격서.md` 반영
+  - 쓰기 API 9번 완료 — `POST·DELETE /거래처마스터`, `POST /단가마스터`·`PUT /단가마스터/{id}`·`DELETE /단가마스터`, `POST /거래명세서요청`(채번 포함)·`/거래명세서발행`·`/거래명세서발행취소`(추가) 구현
+    - 발견: 공급가액 계산(`calc_공급가맵`)·Excel 생성(`generate_거래명세서_excel`)이 일반봉투/각대대봉투 구분을 위해 자재명 데이터가 필요한데 MariaDB `자재사용현황`엔 없어서, 계산·Excel 생성은 당분간 app.py에 남겨두기로 결정 (plan 6-2에 연결 이슈로 기록)
+    - 실제 DB 대상 테스트: 거래처마스터 저장/삭제, 단가마스터 등록/수정/삭제, 거래명세서요청→발행→발행취소(채번 D-202607-00003) 전체 흐름 확인 후 baseline으로 정확히 복원
+    - 발견(기존 동작, 신규 버그 아님): 단가마스터 UNIQUE 제약이 업무명·작업명 둘 다 NULL(기본단가)일 때 중복 저장을 막지 못함 (NULL끼리는 다르게 취급하는 DB 공통 특성)
+  - 로그인 인증(10번) 완료 — **담당자별 개별 계정** 방식 채택. 신규 `사용자` 테이블(8번째), `scripts/auth.py`(bcrypt 해시·JWT 발급/검증·API 키 검증), `POST /login`, `scripts/create_user.py`(계정 생성 CLI) 추가. `/health`·`/login`·`/운영통계자료수신` 제외 모든 API에 로그인 토큰(JWT) 요구, `/운영통계자료수신`은 사람 로그인이 아닌 시스템 연동이라 별도 고정 API 키(`X-API-Key`)로 분리
+    - `passlib[bcrypt]`가 최신 bcrypt(5.x)와 호환성 버그가 있어 `bcrypt` 라이브러리를 직접 사용하는 방식으로 구현
+    - 실제 계정으로 로그인 성공/실패, 토큰 유효/무효, API 키 유효/무효 시나리오 전부 테스트 후 테스트 계정 삭제
+    - `docs/API규격서.md`, KNOWLEDGE.md "기술 환경" 인증 항목 갱신
+  - **[1단계]·[3단계] 완료** — MariaDB(로컬) + FastAPI 백엔드(조회·쓰기·연동·인증 API) 구축 마무리
+  - **방향 전환 결정:** [4단계](Streamlit을 API 호출 방식으로 전환)를 건너뛰고 **Next.js 프론트엔드로 직행** — 두 작업 규모가 비슷한데 Next.js가 최종 목표에 바로 기여하기 때문. Streamlit(`app.py`)은 수정 없이 지금 상태(SQLite/pkl 직접 접근) 유지, 신규 `plan_5단계_Next.js프론트엔드.md`로 다음 세션에서 착수 예정(시작 화면: 탭1 작업현황요약). app.py를 API 방식으로 바꾸려던 초안 코드는 사용자 판단으로 반영 보류·폐기 — app.py 파일 자체는 수정되지 않음
+    - ⚠️ 데이터 이원화 주의사항 기록: 당사 시스템이 MariaDB에만 실시간 반영하므로 Streamlit(SQLite/pkl)과 Next.js(MariaDB) 화면 숫자가 서서히 달라질 수 있음
+
+### 2026-07-18
+- 5단계(Next.js 프론트엔드) [1단계] 전체 완료 — 탭1(작업현황요약) 화면 완성 ✅
+  - `frontend/` 신규 생성 (Next.js 16.2.10, App Router, TypeScript, Tailwind CSS, React 19.2.4). Node.js v24.14.0 설치 확인
+  - 로그인 연동: httpOnly 쿠키 + BFF(Backend-for-Frontend) 패턴 채택 — Next.js Route Handler(`app/api/login`)가 FastAPI `/login`을 대신 호출하고 토큰을 Next.js 자체 도메인 httpOnly 쿠키에 저장(`lib/fastapi.ts`), FastAPI(`scripts/api.py`)는 코드 수정 없음. Vercel(Next.js)·사무실 PC(FastAPI) 간 Cross-Site 쿠키 설정이 필요 없어짐. `app/login/page.tsx` 로그인 화면 신규
+  - 탭1(작업현황요약) `GET /summary` 연동 — 지표 카드 4개(출력페이지·출력자재사용량·봉입건수·청구페이지, 전월대비 %), 사업부별 비교·전월대비·전년동월대비 막대차트(Recharts, `dataviz` 스킬 검증 팔레트 적용)
+  - 필터를 Streamlit 사이드바 대응 기능으로 신규 구현(원 계획엔 없었으나 사용자 요청으로 포함) — 왼쪽 LNB 배치, 버튼 없는 즉시반응형, 순서는 사업부→조회기간→담당자→거래처→업무명이며 상위 선택이 하위 옵션 목록을 캐스케이딩으로 좁힘. `components/MultiSelectCombo.tsx` 신규(칩 표시 검색형 콤보박스), 패널 접기/펼치기 토글 포함
+  - 기준월 규칙 확정(사용자 지정): 이번 달은 아직 종료되지 않았으므로 항상 "가장 최근에 끝난 달"(오늘 기준 직전월)을 기준월로 사용 — Streamlit의 15일 기준 분기 로직 대신 단순화. 조회기간 기본값은 그 기준월의 1일~말일. 그래도 데이터가 없으면 데이터가 있는 가장 최근 월로 2차 대체
+  - 검증: 실제 계정 로그인 성공/실패 화면 확인, 임시 테스트 계정으로 curl 종단 검증 후 계정 삭제, `npx tsc --noEmit` 통과, 브라우저 화면 테스트(다중선택·캐스케이딩·숨기기) 사용자 확인 완료
+
+### 2026-07-19
+- 5단계 [2단계] 완료 — 탭2(거래처별 현황) 화면 완성 ✅
+  - `lib/useFilters.ts` 신규 — `Dashboard.tsx`에 있던 필터 상태·캐스케이딩 로직을 커스텀 훅으로 분리(탭마다 독립 필터 상태를 갖기 위한 사전 작업)
+  - `components/FilterSidebar.tsx` 신규 — LNB 필터 패널을 `useFilters()` 반환값을 props로 받는 프리젠테이션 컴포넌트로 분리
+  - `components/Dashboard.tsx` 리팩터링 — 탭 전환 상태(`"summary" | "clients"`)와 공통 헤더만 남기고, 각 탭 컴포넌트를 상시 마운트 + CSS(`hidden`)로 숨김 처리(언마운트 시 필터 상태 소실 방지)
+  - `components/Tab1Summary.tsx`·`Tab2Clients.tsx` 신규 — 기존 탭1 내용 이동 + Streamlit `tab2`(사업부·거래처명 그룹 집계, 출력페이지·봉입건수 상위 20 랭킹) 이식
+  - `components/RankedBarChart.tsx`·`lib/format.ts`(`toMillionLabel()`) 신규 — 탭2 전용으로 만들었으나 이후 탭3에서도 재사용
+  - 버그 2건 발견·수정: ① `useFilters.ts`의 "상위 필터 변경 시 하위 선택값 정리" 로직이 `useEffect` 안에서 `setState`를 호출해 Next.js 16 신규 린트 규칙(`react-hooks/set-state-in-effect`) 위반 → 렌더링 중 조정하는 React 공식 패턴으로 교체, ② `RankedBarChart`의 렌더 순서가 배열 순서와 반대로 그려져(오름차순으로 보임) 원인이었던 불필요한 `reverse()` 제거해 내림차순(1위가 맨 위) 정상화
+  - 검증: `npx tsc --noEmit`·`npx eslint .` 통과, 브라우저 화면 테스트(탭 전환·랭킹 정렬·필터 독립성) 사용자 확인 완료
+- 5단계 [3단계] 완료 — 탭3(담당자별 현황) 화면 완성 ✅
+  - `app/page.tsx`·`Dashboard.tsx`의 `운영통계행` 타입에 `등록자`(작업자)·`시간대` 필드 추가(기존 10개 필드로는 부족 — 백엔드는 이미 반환 중이라 프론트 매핑만 추가)
+  - `lib/colors.ts` 신규 — 탭1·탭2에 중복돼 있던 DM/N 사업부 색상(`#2a78d6`/`#008300`) 상수를 통합, 작업자색상(`#e87ba4`, 카테고리 팔레트 3번째 슬롯) 추가
+  - `components/Heatmap.tsx` 신규 — 범용 시퀀셜 히트맵 그리드(surface↔기준색조 보간, 호버/포커스 툴팁), Recharts에 없는 마크라 직접 구현. `dataviz` 스킬 기준으로 색상 결정(임의 지정 없이 카테고리 팔레트 슬롯·시퀀셜 규칙 그대로 적용)
+  - `components/Tab3Staff.tsx` 신규 — Streamlit `tab3` 이식: 마케팅담당자+작업자 통합 막대차트 2개(기존 `RankedBarChart` 재사용, 신규 컴포넌트 불필요) + 시간대별(0~23시) 업무 집중도 히트맵 2개
+  - 검증: `npx tsc --noEmit`·`npx eslint .` 통과, 브라우저 화면 테스트(탭 전환·히트맵 호버·색상 회귀) 사용자 확인 완료
+- 5단계 [4-A] 완료 — 탭4(거래명세서 관리) 백엔드 준비: 자재형태 컬럼 신설 + 계산·Excel 생성 로직 FastAPI 이전 ✅
+  - **결정 배경:** 탭4 이식의 핵심 걸림돌이던 "예상공급가액 계산"·"Excel 생성"이 자재형태(일반봉투/각대대봉투 구분) 데이터 부재로 API에 못 옮겨져 있던 문제(`plan_1단계_MariaDB전환.md` 6번)를, 사용자가 자재형태 컬럼을 실제로 채울 수 있다고 확인해줘서 이번에 완전히 해소
+  - MariaDB `자재사용현황`에 `자재형태`(`VARCHAR(20) NULL`) 컬럼 추가 — `scripts/init_db_mariadb.py`에 기존 테이블도 안전하게 보정하는 `migrate()` 함수 신규(컬럼 존재 여부 확인 후 `ALTER TABLE`, 재실행해도 안전)
+  - `scripts/data_transform.py`의 `merge_자재()`에 `_봉투종류(자재명)` 판별 로직 이식, 라인 상세 테이블(자재사용현황)은 자재형태까지 세분화해서 집계하고 운영통계자료의 4개 사용량 컬럼은 기존처럼 자재형태 무시하고 합산하는 2단계 집계로 분리
+  - `scripts/preprocess.py` 재실행으로 과거 데이터까지 자재형태 일괄 반영(TRUNCATE&INSERT 방식이라 별도 백필 불필요) — 자재사용현황 6,316행(기존 5,984행에서 증가, 봉투가 일반/각대대 2행으로 분리된 결과), 분포는 봉투(일반 2,519·각대대 450)·용지 2,785·삽지 465·미구분 97건
+  - 실시간 수신 경로(`POST /운영통계자료수신`)는 자재명이 없어 구분 불가한 봉투 행을 "일반봉투"로 기본 확정 저장(가장 흔한 케이스를 안전한 기본값으로 채택)
+  - `scripts/billing.py` 신규 — `app.py`의 `calc_공급가맵()`·`generate_거래명세서_excel()`을 코드 변경 없이 그대로 이동(df_all·단가맵·자재map을 인자로 받도록만 파라미터화), `build_단가맵()`·`build_자재map()` 헬퍼 추가. `scripts/app.py`는 이 모듈을 import하는 얇은 래퍼로 교체(Streamlit 동작 완전히 동일 유지, `AppTest`로 무예외 확인)
+  - `scripts/api.py` 신규 엔드포인트 2개: `GET /예상공급가액`(계산 결과를 업무의뢰서 단위로 반환, `/summary`의 A안과 동일 패턴), `GET /거래명세서엑셀/{no}`(언제든 재호출 가능한 Excel 다운로드 — Streamlit의 세션 임시저장 방식보다 개선)
+  - **실제 버그 2건 발견·수정:** ① Starlette가 `{거래명세서번호}`처럼 한글 경로 파라미터명을 인식하지 못해 해당 라우트가 항상 404로 실패하는 문제 발견 — 파라미터명을 영문 `no`로 통일해 해결(다른 API의 `{id}`와 동일한 관례), ② MariaDB `DECIMAL` 컬럼이 pymysql에서 `Decimal`로 반환되는데 `float(0.0)` 누산 변수와 연산 시 `TypeError` 발생 — `build_단가맵()`에서 float 변환 추가해 해결(app.py가 SQLite 조회 후 이미 하던 처리와 통일)
+  - `docs/API규격서.md` 갱신 — 신규 엔드포인트 2개, 자재형태 필드 설명과 "실시간 수신 경로에 자재명 필드가 추가되면 좋겠다"는 요청 메모, 경로 파라미터 영문 표기 관례 반영
+  - 검증: `py_compile` 전체 통과, `preprocess.py` 재실행 후 자재형태 분포 확인, Streamlit `AppTest`로 탭4 포함 전체 무예외 실행 확인, 임시 테스트 계정으로 실제 각대대봉투 보유 의뢰서(91997, BC카드)의 계산값 상세 대조(각대대봉투 56개 반영 확인) 및 기존 발행 건(D-202607-00001) Excel 다운로드·openpyxl 재오픈 확인 후 테스트 계정·임시 파일 정리
+  - [4-B](Next.js 미발행 목록 화면)부터는 다음 세션에서 상세 설계 예정 — `plan_5단계_Next.js프론트엔드.md` 참고

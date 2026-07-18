@@ -1,15 +1,18 @@
 """
 MariaDB(dashboard DB) 초기화 스크립트 — 이 프로젝트 전용 신규 인스턴스
 실행: python scripts/init_db_mariadb.py
-결과: db_config.py에 지정된 DB(기본값 dashboard)에 6개 테이블 생성
+결과: db_config.py에 지정된 DB(기본값 dashboard)에 8개 테이블 생성
 
 테이블 목록:
   1. 운영통계자료      — preprocess.py 산출물(processed.pkl) 대체용 원본+파생 데이터
-  2. 거래처마스터      — 기존 SQLite 구조 동일
-  3. 단가마스터        — 기존 SQLite 구조 동일 (각대대봉투 필드 포함)
-  4. 거래명세서        — 거래명세서 단위 집계·상태 (구 거래명세서이력의 그룹 정보)
-  5. 거래명세서_의뢰서  — 거래명세서에 속한 업무의뢰서번호 (구 업무의뢰서번호목록 JSON-in-TEXT 정규화)
-  6. 거래명세서번호_카운터 — 사업부·연월별 채번 순번 (기존 SQLite 구조 동일)
+  2. 자재사용현황      — data/자재사용현황.xlsx 원본(라인 단위), 운영통계자료의 자재사용량 4컬럼은 이 테이블의 집계값
+                       자재형태(일반봉투/각대대봉투)는 자재종류='봉투' 행에서만 값이 있고 나머지는 NULL (2026-07-19 추가)
+  3. 거래처마스터      — 기존 SQLite 구조 동일
+  4. 단가마스터        — 기존 SQLite 구조 동일 (각대대봉투 필드 포함)
+  5. 거래명세서        — 거래명세서 단위 집계·상태 (구 거래명세서이력의 그룹 정보)
+  6. 거래명세서_의뢰서  — 거래명세서에 속한 업무의뢰서번호 (구 업무의뢰서번호목록 JSON-in-TEXT 정규화)
+  7. 거래명세서번호_카운터 — 사업부·연월별 채번 순번 (기존 SQLite 구조 동일)
+  8. 사용자            — 로그인 계정 (담당자별 개별 계정, 비밀번호는 bcrypt 해시로 저장)
 """
 
 import sys
@@ -51,7 +54,7 @@ def get_db():
             마케팅담당자    VARCHAR(50),
             등록자          VARCHAR(50),
             업무명          VARCHAR(200),
-            업무의뢰서번호  INT,
+            업무의뢰서번호  VARCHAR(20),
             작업일자        DATETIME,
             작업내역서번호  INT,
             작업내역서      VARCHAR(300),
@@ -77,6 +80,20 @@ def get_db():
             INDEX idx_업무의뢰서번호 (업무의뢰서번호),
             INDEX idx_거래처명 (거래처명),
             INDEX idx_연월 (연월)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """,
+
+    "자재사용현황": """
+        CREATE TABLE IF NOT EXISTS 자재사용현황 (
+            id              INT AUTO_INCREMENT PRIMARY KEY,
+            업무의뢰서번호  VARCHAR(20) NOT NULL,
+            작업내역서번호  INT NOT NULL,
+            작업일자        DATE NOT NULL,
+            자재종류        VARCHAR(20) NOT NULL,
+            자재형태        VARCHAR(20) NULL,
+            사용량          INT DEFAULT 0,
+            UNIQUE KEY uk_자재 (업무의뢰서번호, 작업내역서번호, 작업일자, 자재종류, 자재형태),
+            INDEX idx_업무의뢰서번호 (업무의뢰서번호)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """,
 
@@ -133,7 +150,7 @@ def get_db():
         CREATE TABLE IF NOT EXISTS 거래명세서_의뢰서 (
             id              INT AUTO_INCREMENT PRIMARY KEY,
             거래명세서번호  VARCHAR(30) NOT NULL,
-            업무의뢰서번호  INT NOT NULL,
+            업무의뢰서번호  VARCHAR(20) NOT NULL,
             UNIQUE KEY uk_의뢰서 (거래명세서번호, 업무의뢰서번호),
             FOREIGN KEY (거래명세서번호) REFERENCES 거래명세서(거래명세서번호)
                 ON UPDATE CASCADE ON DELETE CASCADE
@@ -148,7 +165,44 @@ def get_db():
             PRIMARY KEY (사업부, 연월)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """,
+
+    "사용자": """
+        CREATE TABLE IF NOT EXISTS 사용자 (
+            id              INT AUTO_INCREMENT PRIMARY KEY,
+            사용자명        VARCHAR(50) NOT NULL UNIQUE,
+            비밀번호_해시   VARCHAR(255) NOT NULL,
+            이름            VARCHAR(50),
+            등록일          DATETIME DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """,
 }
+
+
+def _컬럼_존재(cur, 테이블, 컬럼):
+    cur.execute(
+        """SELECT COUNT(*) AS cnt FROM information_schema.COLUMNS
+           WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s AND COLUMN_NAME = %s""",
+        (cfg.DB_NAME, 테이블, 컬럼),
+    )
+    return cur.fetchone()["cnt"] > 0
+
+
+def migrate():
+    """CREATE TABLE IF NOT EXISTS는 이미 존재하는 테이블을 건드리지 않으므로,
+    이전에 만들어둔 테이블에 뒤늦게 추가된 컬럼은 여기서 ALTER TABLE로 보정한다.
+    이미 컬럼이 있으면(신규 설치 등) 건너뛰어 몇 번을 실행해도 안전하다."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            if not _컬럼_존재(cur, "자재사용현황", "자재형태"):
+                cur.execute("ALTER TABLE 자재사용현황 DROP INDEX uk_자재")
+                cur.execute("ALTER TABLE 자재사용현황 ADD COLUMN 자재형태 VARCHAR(20) NULL AFTER 자재종류")
+                cur.execute(
+                    "ALTER TABLE 자재사용현황 ADD UNIQUE KEY uk_자재 "
+                    "(업무의뢰서번호, 작업내역서번호, 작업일자, 자재종류, 자재형태)"
+                )
+                print("  마이그레이션: 자재사용현황.자재형태 컬럼 추가 완료")
+            else:
+                print("  마이그레이션: 자재사용현황.자재형태 컬럼 이미 존재 (건너뜀)")
 
 
 def main():
@@ -158,6 +212,7 @@ def main():
             for i, (이름, sql) in enumerate(테이블_SQL.items(), 1):
                 cur.execute(sql)
                 print(f"  ({i}/{len(테이블_SQL)}) {이름} 테이블 생성 완료")
+    migrate()
     print("완료")
 
 
