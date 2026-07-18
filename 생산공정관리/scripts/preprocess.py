@@ -32,6 +32,22 @@ def add_client_column(df):
     split = df["작업내역서"].str.split(" - ", n=1, expand=True)
     df["거래처명"]  = split[0].str.strip()
     df["업무명상세"] = split[1].str.strip() if 1 in split.columns else ""
+
+    # S/M/A교재 → 업무명 뒤에 원래 거래처명 추가 후 거래처명 통합
+    교재_mask = df["거래처명"].isin(["S교재", "M교재", "A교재"])
+    df.loc[교재_mask, "업무명"] = (
+        df.loc[교재_mask, "업무명"] + " " + df.loc[교재_mask, "거래처명"]
+    )
+    df.loc[교재_mask, "거래처명"] = "강남대성수능연구소(주)"
+
+    # Paffy교재 → 업무명상세 키워드로 업무명 분기 후 거래처명 치환
+    paffy_mask = df["거래처명"] == "Paffy교재"
+    paffy_모의 = paffy_mask & df["업무명상세"].str.contains("모의고사 시험지", na=False)
+    paffy_omr  = paffy_mask & df["업무명상세"].str.contains("OMR", na=False)
+    df.loc[paffy_모의, "업무명"] = df.loc[paffy_모의, "업무명"] + " 모의고사 시험지"
+    df.loc[paffy_omr,  "업무명"] = df.loc[paffy_omr,  "업무명"] + " OMR"
+    df.loc[paffy_mask, "거래처명"] = "파피(Paffy)"
+
     return df
 
 

@@ -111,13 +111,16 @@ touch docs/CHANGELOG.md
 
 ## 🛠️ 기술 스택 (고정 — 변경 전 반드시 확인)
 
-| 구분 | 현재 | 목표 |
+| 구분 | 현재 | 최종 목표 (2026-07-19 확정) |
 |---|---|---|
 | 언어 | Python 3.12.5 | Python 3.12.5 |
-| 대시보드 | Streamlit 1.58.0 | Streamlit 1.58.0 |
-| 차트 | Plotly 6.7.0 | Plotly 6.7.0 |
-| DB | SQLite (로컬) | SQLite 유지 (MariaDB 전환 후순위 보류) |
-| DB 드라이버 | sqlite3 (내장) | sqlite3 유지 |
+| 프론트엔드 | Streamlit 1.58.0 | Next.js (Vercel 배포) |
+| 백엔드 | (app.py 내장) | FastAPI (`scripts/api.py`) |
+| 차트 | Plotly 6.7.0 | 추후 결정 (Next.js 쪽) |
+| DB | SQLite (로컬) | MariaDB (사무실 PC) |
+| DB 드라이버 | sqlite3 (내장) | pymysql (FastAPI 전용) |
+
+> 상세 로드맵: `.claude/plans/plan_1단계_MariaDB전환.md`, `docs/작업현황-대시보드-생성-KNOWLEDGE.md` "최종 배포 목표"
 
 ## ⚙️ 실행 명령어
 

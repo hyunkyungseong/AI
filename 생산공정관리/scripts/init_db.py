@@ -58,6 +58,13 @@ def create_tables(conn):
             담당자              TEXT,
             등록일              TEXT DEFAULT (datetime('now','localtime'))
         );
+
+        CREATE TABLE IF NOT EXISTS 거래명세서번호_카운터 (
+            사업부     TEXT NOT NULL,
+            연월       TEXT NOT NULL,
+            마지막순번 INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (사업부, 연월)
+        );
     """)
     conn.commit()
 
@@ -141,6 +148,17 @@ def migrate_단가마스터_컬럼(conn):
     conn.commit()
 
 
+def migrate_거래명세서이력_컬럼(conn):
+    """거래명세서이력 신규 컬럼 추가 (없을 때만 ALTER TABLE 실행)"""
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info(거래명세서이력)")
+    existing = {row[1] for row in cur.fetchall()}
+    if "거래명세서번호" not in existing:
+        conn.execute("ALTER TABLE 거래명세서이력 ADD COLUMN 거래명세서번호 TEXT")
+        print("  [마이그레이션] 거래명세서이력.거래명세서번호 컬럼 추가")
+    conn.commit()
+
+
 def parse_요청내용(ws):
     """요청내용 시트에서 거래처 정보 파싱"""
     data = {}
@@ -186,6 +204,7 @@ def main():
     print("[2/3] DB 마이그레이션 확인 중...")
     migrate_db(conn)
     migrate_단가마스터_컬럼(conn)
+    migrate_거래명세서이력_컬럼(conn)
 
     print("[3/3] 거래처 마스터 초기 데이터 적재 중...")
     seed_master(conn)

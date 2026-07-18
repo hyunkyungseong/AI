@@ -1,6 +1,11 @@
 # 플랜: 4단계 — FastAPI 백엔드 분리
 
-> 상태: ⏳ 미착수 | 선행: 1단계 MariaDB 전환 완료 필수
+> ⚠️ **병합됨 (2026-07-19):** 이 플랜의 API 엔드포인트 설계는 `plan_1단계_MariaDB전환.md`로 흡수됨.
+> 최종 목표가 Next.js+FastAPI+MariaDB+Vercel로 커지면서, "Streamlit 유지 + DB 직접 접근"을 거치지 않고
+> **처음부터 FastAPI 경유**로 설계하기로 함 (이중 작업 방지). 실제 체크리스트·진행 상황은 `plan_1단계_MariaDB전환.md`를 참고.
+> 이 파일은 API 엔드포인트 설계 원본 자료로만 보존.
+>
+> 상태: ⏳ 미착수 (병합됨) | 선행: 1단계 MariaDB 전환 완료 필수
 > 목적: DB 직접 접근 로직을 FastAPI API 서버로 분리 → 다중 사용자 트랜잭션 안정성 확보
 > UI: Streamlit 유지 (React 전환은 후순위)
 

@@ -40,6 +40,22 @@ _pkl_mtime = PKL_PATH.stat().st_mtime if PKL_PATH.exists() else 0
 def get_conn():
     return sqlite3.connect(DB_PATH)
 
+def _발급_거래명세서번호(conn, 사업부):
+    """사업부·연월 단위로 순번을 증가시켜 거래명세서번호를 발급 (취소돼도 재사용하지 않음)"""
+    사업부코드 = "D" if 사업부 == "DM사업부" else "N"
+    연월 = date.today().strftime("%Y%m")
+    cur = conn.execute(
+        "SELECT 마지막순번 FROM 거래명세서번호_카운터 WHERE 사업부=? AND 연월=?",
+        (사업부, 연월)
+    )
+    row = cur.fetchone()
+    다음순번 = (row[0] + 1) if row else 1
+    conn.execute("""
+        INSERT INTO 거래명세서번호_카운터 (사업부, 연월, 마지막순번) VALUES (?, ?, ?)
+        ON CONFLICT(사업부, 연월) DO UPDATE SET 마지막순번 = excluded.마지막순번
+    """, (사업부, 연월, 다음순번))
+    return f"{사업부코드}-{연월}-{다음순번:05d}"
+
 def load_master():
     conn = get_conn()
     df = pd.read_sql("SELECT * FROM 거래처마스터 ORDER BY 거래처명", conn)
@@ -104,12 +120,13 @@ def load_자재_summary():
 def build_의뢰서_summary(df):
     first = df.groupby("업무의뢰서번호", sort=False).first().reset_index()
     agg = df.groupby("업무의뢰서번호", sort=False).agg(
-        봉입건수_합=("건수",        "sum"),
-        출력페이지_합=("출력페이지", "sum"),
-        장수_합=("장수",            "sum"),
+        봉입건수_합=("건수",            "sum"),
+        출력페이지_합=("출력페이지",    "sum"),
+        장수_합=("장수",                "sum"),
+        확정청구페이지=("확정청구페이지", "sum"),  # first() 대신 sum — 작업명 복수 시 누락 방지
     ).reset_index()
     자재df = load_자재_summary()
-    result = first[["업무의뢰서번호","거래처명","업무명","작업명","업무명상세","사업부","연월","날짜","마케팅담당자","확정청구페이지"]].merge(agg, on="업무의뢰서번호")
+    result = first[["업무의뢰서번호","거래처명","업무명","작업명","업무명상세","사업부","연월","날짜","마케팅담당자"]].merge(agg, on="업무의뢰서번호")
     if not 자재df.empty:
         자재_의뢰서 = 자재df.groupby("업무의뢰서번호")[["일반봉투_수량","각대대봉투_수량","용지_수량","삽지_수량"]].sum().reset_index()
         자재_의뢰서["봉투_사용량_합"] = 자재_의뢰서["일반봉투_수량"] + 자재_의뢰서["각대대봉투_수량"]
@@ -537,6 +554,69 @@ def _거래처삭제_dialog(거래처_목록):
         if st.button("취소", use_container_width=True, key="dlg_del_cancel"):
             st.rerun()
 
+# ── 발행완료 되돌리기 확인 다이얼로그 ─────────────────────────
+@st.dialog("확인")
+def _발행상태변경_dialog(이력_ids, 선택_건수, 영향_건수):
+    묶음_안내 = (
+        f"\n\n※ 일부 요청이 다른 의뢰서와 함께 묶여있어, 관련 의뢰서를 포함해 총 {영향_건수}건이 함께 처리됩니다."
+        if 영향_건수 > 선택_건수 else ""
+    )
+    st.warning(f"선택한 의뢰서 {선택_건수}건을 발행완료 → 발행대기로 되돌립니다.{묶음_안내}")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("확인", type="primary", use_container_width=True, key="dlg_상태변경_confirm"):
+            conn = get_conn()
+            conn.executemany(
+                "UPDATE 거래명세서이력 SET 발송여부 = 0, 발송일 = NULL WHERE id = ?",
+                [(i,) for i in 이력_ids]
+            )
+            conn.commit()
+            conn.close()
+            st.cache_data.clear()
+            st.rerun()
+    with c2:
+        if st.button("닫기", use_container_width=True, key="dlg_상태변경_cancel"):
+            st.rerun()
+
+# ── 발행요청 부분 취소 확인 다이얼로그 (행 축소 방식) ─────────
+@st.dialog("취소 확인")
+def _부분취소_dialog(변경계획, key_prefix):
+    총_취소건수 = sum(p["취소_건수"] for p in 변경계획)
+    st.warning(f"선택한 의뢰서 {총_취소건수}건의 발행 요청을 취소합니다.")
+    for p in 변경계획:
+        if p["action"] == "delete":
+            st.caption(f"• {p['거래명세서번호']}: 전체 {p['전체_건수']}건 취소 → 요청 자체가 사라지고 미발행 목록으로 복귀")
+        else:
+            st.caption(f"• {p['거래명세서번호']}: {p['취소_건수']}건 취소, {p['전체_건수'] - p['취소_건수']}건 유지 (번호는 그대로 유지됩니다)")
+    st.caption("취소 후 복구할 수 없습니다.")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("확인", type="primary", use_container_width=True, key="dlg_부분취소_confirm"):
+            import json as _json_cancel
+            conn = get_conn()
+            for p in 변경계획:
+                if p["action"] == "delete":
+                    conn.execute("DELETE FROM 거래명세서이력 WHERE id = ?", (p["이력_id"],))
+                else:
+                    conn.execute("""
+                        UPDATE 거래명세서이력
+                        SET 업무의뢰서번호목록 = ?, 품목 = ?, 공급가액 = ?, 세액 = ?, 합계 = ?, 담당자 = ?
+                        WHERE id = ?
+                    """, (
+                        _json_cancel.dumps(p["새_목록"]), p["새_품목"],
+                        p["새_공급가액"], p["새_세액"], p["새_합계"], p["새_담당자"],
+                        p["이력_id"],
+                    ))
+            conn.commit()
+            conn.close()
+            st.cache_data.clear()
+            st.session_state[f"{key_prefix}_선택버전"] = st.session_state.get(f"{key_prefix}_선택버전", 0) + 1
+            st.session_state[f"{key_prefix}_L2_선택버전"] = st.session_state.get(f"{key_prefix}_L2_선택버전", 0) + 1
+            st.rerun()
+    with c2:
+        if st.button("닫기", use_container_width=True, key="dlg_부분취소_cancel"):
+            st.rerun()
+
 # ════════════════════════════════════════════════════════════
 # 탭 4 — 거래명세서 관리
 # ════════════════════════════════════════════════════════════
@@ -546,7 +626,8 @@ with tab4:
     # 거래명세서 요청 완료 후 성공 메시지 + 탭 자동 이동 (2회 rerun 동안 유지)
     if st.session_state.pop("t4_요청완료", False):
         st.session_state["t4_탭이동"] = 2
-        st.success("거래명세서 발행 요청이 완료되었습니다. 발행요청목록 탭을 확인해 주세요.")
+        _발급번호 = st.session_state.pop("t4_요청완료_번호", "")
+        st.success(f"거래명세서 요청이 완료되었습니다. (거래명세서번호: {_발급번호}) 발행요청목록 탭을 확인해 주세요.")
 
     if st.session_state.get("t4_탭이동", 0) > 0:
         st.session_state["t4_탭이동"] -= 1
@@ -671,6 +752,8 @@ with tab4:
         코드맵   = {"출력비": "P", "봉입비": "M", "출력자재비": "F",
                     "봉입자재비": "E", "추가봉입비": "M", "삽지비": "M"}
         순서맵   = {p: i for i, p in enumerate(품목순서)}
+        코드표순서 = ["P", "M", "E", "F", "H", "BB", "AB", "D"]
+        코드순서맵 = {c: i for i, c in enumerate(코드표순서)}
 
         # ── 데이터 계산 ──────────────────────────────────────────────
         _tgt = df_all[df_all["업무의뢰서번호"].apply(
@@ -724,11 +807,19 @@ with tab4:
                     행데이터[(품목, 작업, 단가)]["수량"] += 수량
                     행데이터[(품목, 작업, 단가)]["금액"] += 수량 * 단가
 
-        정렬행 = sorted(행데이터.items(), key=lambda x: (순서맵.get(x[0][0], 99), x[0][1]))
+        정렬행 = sorted(행데이터.items(), key=lambda x: (
+            x[0][1],
+            코드순서맵.get(코드맵.get(x[0][0]), 99),
+            순서맵.get(x[0][0], 99),
+        ))
         if not 정렬행:
             return None
         총합계 = sum(v["금액"] for _, v in 정렬행)
         구분날짜 = f"{발행일.month:02d}월{발행일.day:02d}일"
+
+        # 템플릿 품목 영역은 16~29행(14줄) — 이보다 많으면 29행 뒤에 행을 복제해 끼워넣음
+        기본_품목행수 = 14
+        추가행수 = max(0, len(정렬행) - 기본_품목행수)
 
         # ── zipfile로 템플릿 복사 → sheet2.xml 가변 셀 교체 → bytes 반환 ──
         def _esc(text):
@@ -746,10 +837,71 @@ with tab4:
             new = f'<c r="{ref}" {s_attr} t="inlineStr"><is><t>{_esc(text)}</t></is></c>'
             return re.sub(rf'<c r="{ref}"[^>]*?(?:/>|>.*?</c>)', new, xml, count=1, flags=re.DOTALL)
 
+        def _insert_extra_item_rows(xml, n_extra):
+            """29행 뒤에 품목 행 n_extra개를 복제 삽입하고, 30행 이후(소계·합계·코드표 등)를 n_extra만큼 아래로 민다.
+            복제 원본은 20행(A열·글꼴이 표준인 "정상" 품목 행) — 29행은 A열 셀이 없고 글꼴도 달라 복제 원본으로 부적합."""
+            existing_rows = sorted(
+                {int(r) for r in re.findall(r'<row r="(\d+)"', xml) if int(r) >= 30},
+                reverse=True,
+            )
+            for old_r in existing_rows:
+                new_r = old_r + n_extra
+                xml = re.sub(rf'<row r="{old_r}"', f'<row r="{new_r}"', xml, count=1)
+                xml = re.sub(rf'<c r="([A-Z]+){old_r}"', rf'<c r="\g<1>{new_r}"', xml)
+
+            def _bump_ref(m):
+                def bump(cellref):
+                    col = re.match(r"[A-Z]+", cellref).group(0)
+                    row = int(re.search(r"\d+", cellref).group(0))
+                    return f"{col}{row + n_extra}" if row >= 30 else cellref
+                return f'<mergeCell ref="{":".join(bump(p) for p in m.group(1).split(":"))}"/>'
+
+            xml = re.sub(r'<mergeCell ref="([^"]+)"/>', _bump_ref, xml)
+
+            template_row_m = re.search(r'<row r="20"[^>]*>(.*?)</row>', xml, re.DOTALL)
+            insert_after_m = re.search(r'<row r="29"[^>]*>.*?</row>', xml, re.DOTALL)
+            new_rows = []
+            for k in range(n_extra):
+                new_r = 30 + k
+                cloned_cells = re.sub(r'r="([A-Z]+)20"', rf'r="\g<1>{new_r}"', template_row_m.group(1))
+                new_rows.append(f'<row r="{new_r}" spans="1:17" ht="32.549999999999997" customHeight="1">{cloned_cells}</row>')
+            xml = xml[:insert_after_m.end()] + "".join(new_rows) + xml[insert_after_m.end():]
+
+            new_merges = "".join(
+                f'<mergeCell ref="B{30+k}:C{30+k}"/><mergeCell ref="D{30+k}:G{30+k}"/><mergeCell ref="K{30+k}:M{30+k}"/>'
+                for k in range(n_extra)
+            )
+            xml = re.sub(
+                r'(<mergeCells count=")(\d+)(">)',
+                lambda m: f'{m.group(1)}{int(m.group(2)) + n_extra * 3}{m.group(3)}',
+                xml,
+            )
+            xml = xml.replace("</mergeCells>", new_merges + "</mergeCells>")
+
+            xml = re.sub(
+                r'<dimension ref="([A-Z]+\d+):([A-Z]+)(\d+)"/>',
+                lambda m: f'<dimension ref="{m.group(1)}:{m.group(2)}{int(m.group(3)) + n_extra}"/>',
+                xml,
+            )
+            return xml
+
         with zipfile.ZipFile(src_path, 'r') as zin:
             file_map = {name: zin.read(name) for name in zin.namelist()}
 
         xml = file_map["xl/worksheets/sheet2.xml"].decode("utf-8")
+
+        if 추가행수 > 0:
+            xml = _insert_extra_item_rows(xml, 추가행수)
+            wb_xml = file_map["xl/workbook.xml"].decode("utf-8")
+            wb_xml = re.sub(
+                r'(<definedName name="_xlnm\.Print_Area" localSheetId="1">[^<]+?)\$([A-Z]+)\$(\d+)(</definedName>)',
+                lambda m: f'{m.group(1)}${m.group(2)}${int(m.group(3)) + 추가행수}{m.group(4)}',
+                wb_xml,
+            )
+            file_map["xl/workbook.xml"] = wb_xml.encode("utf-8")
+
+        소계_행 = 30 + 추가행수
+        합계_행 = 31 + 추가행수
 
         # 헤더
         xml = _set_str(xml, "B10", 발행일.strftime("%Y-%m-%d"))
@@ -757,14 +909,12 @@ with tab4:
         xml = _set_str(xml, "B12", 업무명)
         xml = _set_str(xml, "D14", f"금 {num2words(round(총합계), lang='ko')}")
         xml = _set_num(xml, "K14", round(총합계))
-        xml = _set_num(xml, "K30", round(총합계))
-        xml = _set_num(xml, "J31", round(총합계))
+        xml = _set_num(xml, f"K{소계_행}", round(총합계))
+        xml = _set_num(xml, f"J{합계_행}", round(총합계))
 
-        # 품목 행 (16~25)
+        # 품목 행 (16행부터, 필요한 만큼 — 14줄 초과 시 위에서 미리 행을 늘려둠)
         첫행 = True
         for i, ((품목, 작업명_key, 단가), v) in enumerate(정렬행):
-            if i >= 10:
-                break
             r = 16 + i
             xml = _set_str(xml, f"A{r}", 코드맵.get(품목, "M"))
             if 첫행:
@@ -778,6 +928,64 @@ with tab4:
 
         file_map["xl/worksheets/sheet2.xml"] = xml.encode("utf-8")
 
+        # ── 직인 삽입 ──────────────────────────────────────────────
+        # 위치 조정 파라미터 (필요 시 여기만 수정)
+        # 김형석 셀 = M11:N11 병합 (drawing col 12~13, 0-based)
+        # M열(col 12) 너비 ≈ 567,000 EMU / 행 높이 ≈ 413,385 EMU
+        # 직인 크기 1.5cm = 540,000 EMU / N열 너비 ≈ 1,094,000 EMU
+        # 중앙 오프셋 = (1,094,000 - 540,000) / 2 = 277,000 EMU
+        _직인_col_from     = 13       # N열 (drawing 0-based)
+        _직인_colOff_from  = 583000   # 이전(430k) + 153k = "석" 오른쪽 끝 살짝 겹침
+        _직인_row_from     = 10       # Excel 11행 성명 행 (0-based)
+        _직인_rowOff_from  = 0
+        _직인_col_to       = 14       # O열 (N열 초과 — 583k+540k=1,123k > N열 1,094k)
+        _직인_colOff_to    = 29000    # 1,123,000 - 1,094,000 = 29,000 EMU
+        _직인_row_to       = 11       # Excel 12행 (0-based)
+        _직인_rowOff_to    = 127000   # 높이 ≈ 540,000 EMU = 1.5cm
+
+        직인_path = Path(__file__).parent.parent / "data" / "직인.png"
+        if 직인_path.exists():
+            file_map["xl/media/image2.png"] = 직인_path.read_bytes()
+
+            d_rels = file_map["xl/drawings/_rels/drawing1.xml.rels"].decode("utf-8")
+            d_rels = d_rels.replace(
+                "</Relationships>",
+                '<Relationship Id="rId2" '
+                'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" '
+                'Target="../media/image2.png"/></Relationships>'
+            )
+            file_map["xl/drawings/_rels/drawing1.xml.rels"] = d_rels.encode("utf-8")
+
+            seal_anchor = (
+                '<xdr:twoCellAnchor editAs="oneCell">'
+                f'<xdr:from><xdr:col>{_직인_col_from}</xdr:col>'
+                f'<xdr:colOff>{_직인_colOff_from}</xdr:colOff>'
+                f'<xdr:row>{_직인_row_from}</xdr:row>'
+                f'<xdr:rowOff>{_직인_rowOff_from}</xdr:rowOff></xdr:from>'
+                f'<xdr:to><xdr:col>{_직인_col_to}</xdr:col>'
+                f'<xdr:colOff>{_직인_colOff_to}</xdr:colOff>'
+                f'<xdr:row>{_직인_row_to}</xdr:row>'
+                f'<xdr:rowOff>{_직인_rowOff_to}</xdr:rowOff></xdr:to>'
+                '<xdr:pic><xdr:nvPicPr>'
+                '<xdr:cNvPr id="6" name="직인"/>'
+                '<xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr>'
+                '</xdr:nvPicPr>'
+                '<xdr:blipFill>'
+                '<a:blip xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
+                ' r:embed="rId2"/>'
+                '<a:stretch><a:fillRect/></a:stretch>'
+                '</xdr:blipFill>'
+                '<xdr:spPr>'
+                '<a:xfrm><a:off x="0" y="0"/><a:ext cx="838800" cy="838800"/></a:xfrm>'
+                '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>'
+                '</xdr:spPr>'
+                '</xdr:pic><xdr:clientData/>'
+                '</xdr:twoCellAnchor>'
+            )
+            d_xml = file_map["xl/drawings/drawing1.xml"].decode("utf-8")
+            d_xml = d_xml.replace("</xdr:wsDr>", seal_anchor + "</xdr:wsDr>")
+            file_map["xl/drawings/drawing1.xml"] = d_xml.encode("utf-8")
+
         tmp_path = os.path.join(tempfile.gettempdir(), "거래명세서_tmp.xlsx")
         with zipfile.ZipFile(tmp_path, 'w', zipfile.ZIP_DEFLATED) as zout:
             for name, data in file_map.items():
@@ -786,7 +994,7 @@ with tab4:
         with open(tmp_path, "rb") as f:
             return f.read()
 
-    t4a, t4b, t4c = st.tabs(["미발행 목록", "거래처 마스터", "발행요청목록"])
+    t4a, t4b, t4c, t4d = st.tabs(["미발행 목록", "거래처 마스터", "발행요청목록", "발행완료"])
 
     with t4a:
         st.subheader("미발행 업무의뢰서 목록")
@@ -810,31 +1018,6 @@ with tab4:
             lambda x: int(float(x)) if pd.notna(x) else -1
         ).isin(발행요청_번호)].copy()
         미발송 = 미발송.sort_values("날짜", ascending=False)
-
-        # ── 업무의뢰서번호 검색 필터 ─────────────────────────────
-        if "t4a_검색번호" not in st.session_state:
-            st.session_state["t4a_검색번호"] = set()
-        af1, af2, af3 = st.columns([6, 1, 1.3])
-        with af1:
-            t4a_검색입력 = st.text_input(
-                "검색", placeholder="의뢰서번호 붙여넣기  예: 94361|94362|94363",
-                key="t4a_검색입력", label_visibility="collapsed",
-            )
-        with af2:
-            if st.button("검색", key="t4a_검색_btn", use_container_width=True) and t4a_검색입력.strip():
-                st.session_state["t4a_검색번호"] = {n.strip() for n in t4a_검색입력.split("|") if n.strip()}
-        with af3:
-            if st.button("전체 보기", key="t4a_검색초기화_btn", use_container_width=True):
-                st.session_state["t4a_검색번호"] = set()
-
-        t4a_검색번호 = st.session_state["t4a_검색번호"]
-        if t4a_검색번호:
-            미발송_str = 미발송["업무의뢰서번호"].apply(
-                lambda x: str(int(float(x))) if pd.notna(x) else ""
-            )
-            미발송 = 미발송[미발송_str.isin(t4a_검색번호)]
-            if 미발송.empty:
-                st.warning(f"검색한 의뢰서번호 {len(t4a_검색번호)}건이 미발행 목록에 없습니다.")
 
         # 공용 calc_공급가맵 사용 (탭 밖에서 정의됨)
         미발송_번호셋 = set(
@@ -881,6 +1064,8 @@ with tab4:
             "삽지수량":       pd.to_numeric(미발송_r.get("삽지_사용량_합", 0),   errors="coerce").values,
             "예상공급가액":   pd.to_numeric(미발송_r["예상공급가액"],             errors="coerce").values,
         })
+
+        요청_클릭 = st.button("거래명세서 요청", type="primary", key="t4_요청_btn")
 
         # 전체선택 체크박스 (선택 컬럼 헤더 역할) + 미발송 건수
         cb_c, cnt_c = st.columns([1.5, 8.5])
@@ -929,6 +1114,63 @@ with tab4:
         선택_idx = 선택결과[선택결과["선택"] == True].index.tolist()
         선택된 = 미발송_r.iloc[선택_idx]
 
+        # 선택된 항목 중 단가 미등록 의뢰서번호 목록 (빈 선택에도 안전)
+        미등록_번호목록 = 선택된[선택된["예상공급가액"].isna()]["업무의뢰서번호_str"].tolist()
+
+        # 사업부 혼합 여부 (거래명세서번호는 사업부 하나에만 귀속되어야 함)
+        선택_사업부목록 = 선택된["사업부"].unique().tolist()
+        사업부_혼합 = len(선택_사업부목록) > 1
+
+        if 요청_클릭:
+            if 선택된.empty:
+                st.warning("선택된 항목이 없습니다.")
+            elif 미등록_번호목록:
+                st.warning(
+                    f"단가 미등록 의뢰서 {len(미등록_번호목록)}건이 선택에 포함되어 있습니다. "
+                    f"거래처 마스터 탭에서 단가를 입력해 주세요.\n\n"
+                    f"미등록 의뢰서번호: {', '.join(미등록_번호목록)}"
+                )
+            elif 사업부_혼합:
+                st.warning(
+                    f"선택한 항목의 사업부가 서로 다릅니다 ({', '.join(선택_사업부목록)}). "
+                    f"사업부를 통일해서 선택해 주세요."
+                )
+            else:
+                import json as _json_req
+                번호목록  = 선택된["업무의뢰서번호_str"].tolist()
+                거래처    = 선택된["거래처명"].iloc[0]
+                사업부    = 선택된["사업부"].iloc[0]
+                담당자들  = ", ".join(선택된["마케팅담당자"].unique())
+                품목들    = ", ".join(선택된["업무명"].unique())
+                총공급_req = 선택된["예상공급가액"].sum()
+                세액_amt  = int(총공급_req * 0.1)
+                합계_amt  = int(총공급_req + 세액_amt)
+
+                conn = get_conn()
+                거래명세서번호 = _발급_거래명세서번호(conn, 사업부)
+                conn.execute("""
+                    INSERT INTO 거래명세서이력
+                        (거래처명, 업무의뢰서번호목록, 발행일자, 품목,
+                         공급가액, 세액, 합계, 발송여부, 담당자, 거래명세서번호)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                """, (
+                    거래처,
+                    _json_req.dumps(번호목록),
+                    str(date.today()),
+                    품목들,
+                    int(총공급_req),
+                    세액_amt,
+                    합계_amt,
+                    담당자들,
+                    거래명세서번호,
+                ))
+                conn.commit()
+                conn.close()
+                st.cache_data.clear()
+                st.session_state["t4_요청완료"] = True
+                st.session_state["t4_요청완료_번호"] = 거래명세서번호
+                st.rerun()
+
         if not 선택된.empty:
             st.divider()
 
@@ -940,28 +1182,7 @@ with tab4:
             총공급 = 총공급_s.sum() if 총공급_s.notna().all() else None
             총공급str = f"{int(총공급):,}원" if 총공급 is not None else "단가 미등록"
 
-            # ── 선택된 업무의뢰서 타이틀 + 복사
             st.markdown("**선택된 업무의뢰서**")
-
-            # 공백 제거한 번호 목록 (파이프 구분자)
-            번호목록 = "|".join(n.strip() for n in 선택된["업무의뢰서번호_str"].tolist())
-            components.html(f"""
-<div style="display:flex;align-items:center;gap:10px;padding:4px 0;font-family:sans-serif;">
-  <button id="cpBtn"
-    onclick="var txt=document.getElementById('numTxt').textContent.replace(/\\s+/g,'');
-             navigator.clipboard.writeText(txt)
-               .then(function(){{document.getElementById('cpBtn').textContent='✅ 복사됨';}})
-               .catch(function(){{alert('복사 실패');}});"
-    style="cursor:pointer;padding:4px 14px;border-radius:4px;border:1px solid #bbb;
-           background:#f0f2f6;font-size:0.82rem;white-space:nowrap;">
-    📋 복사
-  </button>
-  <code id="numTxt"
-    style="font-size:0.83rem;background:#f0f2f6;padding:4px 10px;
-           border-radius:4px;flex:1;word-break:break-all;">
-    {번호목록}
-  </code>
-</div>""", height=46)
 
             # 자재 수량 합계
             총봉투 = int(선택된["봉투_사용량_합"].sum()) if "봉투_사용량_합" in 선택된.columns else 0
@@ -983,52 +1204,17 @@ with tab4:
                 unsafe_allow_html=True,
             )
 
-            # 선택된 항목 중 단가 미등록 의뢰서번호 목록
-            미등록_번호목록 = 선택된[선택된["예상공급가액"].isna()]["업무의뢰서번호_str"].tolist()
-
-            btn_col, warn_col = st.columns([2, 8])
-            with btn_col:
-                요청_클릭 = st.button("거래명세서 요청", type="primary",
-                                      disabled=bool(미등록_번호목록),
-                                      help="단가가 등록된 경우에만 활성화됩니다.")
-            with warn_col:
-                if 미등록_번호목록:
-                    st.warning(
-                        f"단가 미등록 의뢰서 {len(미등록_번호목록)}건이 선택에 포함되어 있습니다. "
-                        f"거래처 마스터 탭에서 단가를 입력해 주세요.\n\n"
-                        f"미등록 의뢰서번호: {', '.join(미등록_번호목록)}"
-                    )
-
-            if 요청_클릭:
-                import json as _json_req
-                번호목록  = 선택된["업무의뢰서번호_str"].tolist()
-                거래처    = 선택된["거래처명"].iloc[0]
-                담당자들  = ", ".join(선택된["마케팅담당자"].unique())
-                품목들    = ", ".join(선택된["업무명"].unique())
-                세액_amt  = int(총공급 * 0.1)
-                합계_amt  = int(총공급 + 세액_amt)
-
-                conn = get_conn()
-                conn.execute("""
-                    INSERT INTO 거래명세서이력
-                        (거래처명, 업무의뢰서번호목록, 발행일자, 품목,
-                         공급가액, 세액, 합계, 발송여부, 담당자)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
-                """, (
-                    거래처,
-                    _json_req.dumps(번호목록),
-                    str(date.today()),
-                    품목들,
-                    int(총공급),
-                    세액_amt,
-                    합계_amt,
-                    담당자들,
-                ))
-                conn.commit()
-                conn.close()
-                st.cache_data.clear()
-                st.session_state["t4_요청완료"] = True
-                st.rerun()
+            if 미등록_번호목록:
+                st.warning(
+                    f"단가 미등록 의뢰서 {len(미등록_번호목록)}건이 선택에 포함되어 있습니다. "
+                    f"거래처 마스터 탭에서 단가를 입력해 주세요.\n\n"
+                    f"미등록 의뢰서번호: {', '.join(미등록_번호목록)}"
+                )
+            if 사업부_혼합:
+                st.warning(
+                    f"선택한 항목의 사업부가 서로 다릅니다 ({', '.join(선택_사업부목록)}). "
+                    f"사업부를 통일해서 선택해 주세요."
+                )
 
             # ── 세부내역 (용지/봉투/삽지는 의뢰서 단위 합계라 행별 표기 불가 → 합계 텍스트에서 확인)
             st.markdown("**선택 항목 세부 내역**")
@@ -1156,13 +1342,54 @@ with tab4:
                 단가df = load_단가마스터()
                 해당_단가 = 단가df[단가df["거래처명"] == 선택_거래처_단가].copy()
 
+                # ── 단가 form 공용 JS: Enter→다음필드, 클릭 시 전체선택 ──
+                components.html("""<script>
+(function(){
+    try {
+        var win = window.parent;
+        var doc = win.document;
+
+        // 탭 이동 후 재진입 시에도 동작하도록: 기존 리스너 제거 후 재등록
+        function handleEnterKey(e){
+            if (e.key !== 'Enter' || e.target.tagName !== 'INPUT') return;
+            if (e.target.closest('[role="gridcell"]')) return;
+            var container = e.target.closest('[data-testid="stForm"]')
+                         || e.target.closest('form');
+            if (!container) return;
+            var inputs = Array.from(container.querySelectorAll(
+                'input[type="number"]:not([disabled]),input[type="text"]:not([disabled])'
+            )).filter(function(el){ return !el.closest('[role="gridcell"]'); });
+            var idx = inputs.indexOf(e.target);
+            if (idx > -1 && idx < inputs.length - 1){
+                e.preventDefault();
+                inputs[idx+1].focus();
+            }
+        }
+
+        function handleClickSelect(e){
+            if (e.target.tagName === 'INPUT' && e.target.type === 'number'){
+                setTimeout(function(){ e.target.select(); }, 50);
+            }
+        }
+
+        if (win._단가keydown) win.removeEventListener('keydown', win._단가keydown, true);
+        win._단가keydown = handleEnterKey;
+        win.addEventListener('keydown', win._단가keydown, true);
+
+        if (win._단가click) doc.removeEventListener('click', win._단가click, true);
+        win._단가click = handleClickSelect;
+        doc.addEventListener('click', win._단가click, true);
+
+    } catch(err){}
+})();
+</script>""", height=0)
+
                 # ── 기존 단가 목록 ──────────────────────────────
                 st.markdown("##### 등록된 단가 목록")
-                st.caption("단가만 수정 가능합니다. 업무명·작업명 변경이 필요하면 삭제 후 재등록하세요.")
+                st.caption("수정·삭제할 행을 체크박스로 선택하세요. 업무명·작업명 변경이 필요하면 삭제 후 재등록하세요.")
 
                 if 해당_단가.empty:
                     st.info("등록된 단가가 없습니다. 아래에서 추가하세요.")
-                    edited_단가 = pd.DataFrame()
                 else:
                     _표시컬럼 = [c for c in ["id","업무명","작업명","출력단가","봉입단가","추가봉입단가","각대대봉투봉입단가","용지제작단가","봉투제작단가","삽지제작단가","각대대봉투단가","비고"] if c in 해당_단가.columns]
                     표시df = 해당_단가[_표시컬럼].copy()
@@ -1171,23 +1398,24 @@ with tab4:
                     표시df["비고"]   = 표시df["비고"].fillna("")
                     표시df.insert(0, "선택", False)
 
+                    # 체크박스만 편집 가능, 나머지 모두 읽기 전용
                     edited_단가 = st.data_editor(
                         표시df,
                         num_rows="fixed",
                         column_config={
-                            "선택":         st.column_config.CheckboxColumn("선택", default=False),
-                            "id":           None,
-                            "업무명":       st.column_config.TextColumn("업무명",   disabled=True),
-                            "작업명":       st.column_config.TextColumn("작업명",   disabled=True),
-                            "출력단가":     st.column_config.NumberColumn("출력단가(원)",     min_value=0, default=0, format="%.2f"),
-                            "봉입단가":     st.column_config.NumberColumn("봉입단가(원)",     min_value=0, default=0, format="%.2f"),
-                            "추가봉입단가": st.column_config.NumberColumn("추가봉입단가(원)", min_value=0, default=0, format="%.2f"),
-                            "용지제작단가": st.column_config.NumberColumn("용지제작단가(원)", min_value=0, default=0, format="%.2f"),
-                            "각대대봉투봉입단가": st.column_config.NumberColumn("수작업 단가(원)",      min_value=0, default=0, format="%.2f"),
-                            "봉투제작단가":    st.column_config.NumberColumn("봉투제작단가(원)",      min_value=0, default=0, format="%.2f"),
-                            "삽지제작단가":    st.column_config.NumberColumn("삽지제작단가(원)",      min_value=0, default=0, format="%.2f"),
-                            "각대대봉투단가":  st.column_config.NumberColumn("각대대봉투단가(원)",    min_value=0, default=0, format="%.2f"),
-                            "비고":            st.column_config.TextColumn("비고"),
+                            "선택":              st.column_config.CheckboxColumn("선택", default=False),
+                            "id":                None,
+                            "업무명":            st.column_config.TextColumn("업무명",            disabled=True),
+                            "작업명":            st.column_config.TextColumn("작업명",            disabled=True),
+                            "출력단가":          st.column_config.NumberColumn("출력단가(원)",     min_value=0, default=0, format="%.2f", disabled=True),
+                            "봉입단가":          st.column_config.NumberColumn("봉입단가(원)",     min_value=0, default=0, format="%.2f", disabled=True),
+                            "추가봉입단가":      st.column_config.NumberColumn("추가봉입단가(원)", min_value=0, default=0, format="%.2f", disabled=True),
+                            "각대대봉투봉입단가":st.column_config.NumberColumn("수작업 단가(원)",  min_value=0, default=0, format="%.2f", disabled=True),
+                            "용지제작단가":      st.column_config.NumberColumn("용지제작단가(원)", min_value=0, default=0, format="%.2f", disabled=True),
+                            "봉투제작단가":      st.column_config.NumberColumn("봉투제작단가(원)", min_value=0, default=0, format="%.2f", disabled=True),
+                            "삽지제작단가":      st.column_config.NumberColumn("삽지제작단가(원)", min_value=0, default=0, format="%.2f", disabled=True),
+                            "각대대봉투단가":    st.column_config.NumberColumn("각대대봉투단가(원)",min_value=0, default=0, format="%.2f", disabled=True),
+                            "비고":              st.column_config.TextColumn("비고",              disabled=True),
                         },
                         use_container_width=True,
                         hide_index=True,
@@ -1195,37 +1423,52 @@ with tab4:
                     )
 
                     선택된_단가행 = edited_단가.loc[edited_단가["선택"] == True]
-                    dsave_c, ddel_c, _ = st.columns([1, 1, 8])
+                    삭제_ids = 선택된_단가행["id"].dropna().tolist() if not 선택된_단가행.empty else []
 
-                    with dsave_c:
-                        if st.button("저장", type="primary", key="단가_save"):
+                    # ── 선택 행 수정 폼 ──────────────────────────
+                    if len(선택된_단가행) == 1:
+                        row    = 선택된_단가행.iloc[0]
+                        row_id = int(row["id"])
+                        st.markdown("##### 선택된 단가 수정")
+                        with st.form("단가_행수정_form", enter_to_submit=False):
+                            p1, p2, p3, p4 = st.columns(4)
+                            with p1: e_출력     = st.number_input("출력단가(원)",     min_value=0.0, value=float(row.get("출력단가")          or 0), step=0.01, format="%.2f", key=f"단가_edit_출력_{row_id}")
+                            with p2: e_봉입     = st.number_input("봉입단가(원)",     min_value=0.0, value=float(row.get("봉입단가")          or 0), step=0.01, format="%.2f", key=f"단가_edit_봉입_{row_id}")
+                            with p3: e_추가     = st.number_input("추가봉입단가(원)", min_value=0.0, value=float(row.get("추가봉입단가")      or 0), step=0.01, format="%.2f", key=f"단가_edit_추가_{row_id}")
+                            with p4: e_각대봉입 = st.number_input("수작업 단가(원)",  min_value=0.0, value=float(row.get("각대대봉투봉입단가") or 0), step=0.01, format="%.2f", key=f"단가_edit_각대봉입_{row_id}")
+                            p5, p6, p7, p8 = st.columns(4)
+                            with p5: e_용지     = st.number_input("용지제작단가(원)",   min_value=0.0, value=float(row.get("용지제작단가")   or 0), step=0.01, format="%.2f", key=f"단가_edit_용지_{row_id}")
+                            with p6: e_봉투     = st.number_input("봉투제작단가(원)",   min_value=0.0, value=float(row.get("봉투제작단가")   or 0), step=0.01, format="%.2f", key=f"단가_edit_봉투_{row_id}")
+                            with p7: e_삽지     = st.number_input("삽지제작단가(원)",   min_value=0.0, value=float(row.get("삽지제작단가")   or 0), step=0.01, format="%.2f", key=f"단가_edit_삽지_{row_id}")
+                            with p8: e_각대봉투 = st.number_input("각대대봉투단가(원)", min_value=0.0, value=float(row.get("각대대봉투단가") or 0), step=0.01, format="%.2f", key=f"단가_edit_각대봉투_{row_id}")
+                            e_비고 = st.text_input("비고", value=str(row.get("비고") or ""), key=f"단가_edit_비고_{row_id}")
+                            저장_클릭 = st.form_submit_button("저장", type="primary")
+
+                        if 저장_클릭:
                             from datetime import date as _date
                             today = str(_date.today())
                             conn = get_conn()
-                            for _, r in edited_단가.iterrows():
-                                if pd.isna(r["id"]):
-                                    continue
-                                conn.execute("""
-                                    UPDATE 단가마스터
-                                    SET 출력단가=?, 봉입단가=?, 추가봉입단가=?,
-                                        용지제작단가=?, 봉투제작단가=?, 삽지제작단가=?,
-                                        각대대봉투단가=?, 각대대봉투봉입단가=?, 비고=?, 수정일=?
-                                    WHERE id=?
-                                """, (r["출력단가"] or 0, r["봉입단가"] or 0,
-                                      r["추가봉입단가"] or 0, r["용지제작단가"] or 0,
-                                      r["봉투제작단가"] or 0, r["삽지제작단가"] or 0,
-                                      r.get("각대대봉투단가") or 0, r.get("각대대봉투봉입단가") or 0,
-                                      r["비고"] if r["비고"] != "" else None,
-                                      today, int(r["id"])))
+                            conn.execute("""
+                                UPDATE 단가마스터
+                                SET 출력단가=?, 봉입단가=?, 추가봉입단가=?,
+                                    용지제작단가=?, 봉투제작단가=?, 삽지제작단가=?,
+                                    각대대봉투단가=?, 각대대봉투봉입단가=?, 비고=?, 수정일=?
+                                WHERE id=?
+                            """, (e_출력, e_봉입, e_추가, e_용지, e_봉투, e_삽지,
+                                  e_각대봉투, e_각대봉입,
+                                  e_비고 if e_비고 != "" else None,
+                                  today, row_id))
                             conn.commit()
                             conn.close()
                             st.cache_data.clear()
                             st.success("저장되었습니다.")
                             st.rerun()
+                    elif len(선택된_단가행) > 1:
+                        st.info("수정은 한 번에 한 행만 가능합니다. 하나만 선택해 주세요.")
 
-                    with ddel_c:
-                        삭제_ids = 선택된_단가행["id"].dropna().tolist() if not 선택된_단가행.empty else []
-                        if st.button("삭제", key="단가_del_btn", disabled=not 삭제_ids):
+                    # ── 삭제 ─────────────────────────────────────
+                    if 삭제_ids:
+                        if st.button(f"선택 항목 삭제 ({len(삭제_ids)}건)", type="secondary", key="단가_삭제버튼"):
                             conn = get_conn()
                             for _id in 삭제_ids:
                                 conn.execute("DELETE FROM 단가마스터 WHERE id=?", (int(_id),))
@@ -1244,17 +1487,17 @@ with tab4:
 
                 add_c1, add_c2 = st.columns(2)
                 with add_c1:
-                    선택_업무명 = st.selectbox(
+                    선택_업무명_단가 = st.selectbox(
                         "업무명",
                         업무명목록,
                         key="단가_add_업무명",
                         help="선택하지 않으면 거래처 전체 기본단가로 등록됩니다.",
                     )
                 with add_c2:
-                    if 선택_업무명 == "(기본단가 — 선택 안 함)":
+                    if 선택_업무명_단가 == "(기본단가 — 선택 안 함)":
                         작업명목록 = ["(기본단가 — 선택 안 함)"]
                     else:
-                        filtered_작업 = 거래처_df[거래처_df["업무명"] == 선택_업무명]
+                        filtered_작업 = 거래처_df[거래처_df["업무명"] == 선택_업무명_단가]
                         작업명목록 = ["(기본단가 — 선택 안 함)"] + sorted(filtered_작업["작업명"].dropna().unique().tolist())
                     선택_작업명 = st.selectbox(
                         "작업명",
@@ -1263,21 +1506,23 @@ with tab4:
                         help="선택하지 않으면 업무명 단위 기본단가로 등록됩니다.",
                     )
 
-                p1, p2, p3, p4 = st.columns(4)
-                with p1: add_출력 = st.number_input("출력단가(원)",     min_value=0.0, value=None, step=0.01, format="%.2f", placeholder="0.00", key="단가_add_출력")
-                with p2: add_봉입 = st.number_input("봉입단가(원)",     min_value=0.0, value=None, step=0.01, format="%.2f", placeholder="0.00", key="단가_add_봉입")
-                with p3: add_추가 = st.number_input("추가봉입단가(원)", min_value=0.0, value=None, step=0.01, format="%.2f", placeholder="0.00", key="단가_add_추가")
-                with p4: add_각대봉입 = st.number_input("수작업 단가(원)", min_value=0.0, value=None, step=0.01, format="%.2f", placeholder="0.00", key="단가_add_각대봉입")
-                p5, p6, p7, p8 = st.columns(4)
-                with p5: add_용지 = st.number_input("용지제작단가(원)", min_value=0.0, value=None, step=0.01, format="%.2f", placeholder="0.00", key="단가_add_용지")
-                with p6: add_봉투 = st.number_input("봉투제작단가(원)", min_value=0.0, value=None, step=0.01, format="%.2f", placeholder="0.00", key="단가_add_봉투")
-                with p7: add_삽지 = st.number_input("삽지제작단가(원)", min_value=0.0, value=None, step=0.01, format="%.2f", placeholder="0.00", key="단가_add_삽지")
-                with p8: add_각대봉투 = st.number_input("각대대봉투단가(원)", min_value=0.0, value=None, step=0.01, format="%.2f", placeholder="0.00", key="단가_add_각대봉투")
-                add_비고 = st.text_input("비고", key="단가_add_비고")
+                with st.form("단가_추가_form", enter_to_submit=False):
+                    p1, p2, p3, p4 = st.columns(4)
+                    with p1: add_출력 = st.number_input("출력단가(원)",     min_value=0.0, value=None, step=0.01, format="%.2f", placeholder="0.00", key="단가_add_출력")
+                    with p2: add_봉입 = st.number_input("봉입단가(원)",     min_value=0.0, value=None, step=0.01, format="%.2f", placeholder="0.00", key="단가_add_봉입")
+                    with p3: add_추가 = st.number_input("추가봉입단가(원)", min_value=0.0, value=None, step=0.01, format="%.2f", placeholder="0.00", key="단가_add_추가")
+                    with p4: add_각대봉입 = st.number_input("수작업 단가(원)", min_value=0.0, value=None, step=0.01, format="%.2f", placeholder="0.00", key="단가_add_각대봉입")
+                    p5, p6, p7, p8 = st.columns(4)
+                    with p5: add_용지 = st.number_input("용지제작단가(원)", min_value=0.0, value=None, step=0.01, format="%.2f", placeholder="0.00", key="단가_add_용지")
+                    with p6: add_봉투 = st.number_input("봉투제작단가(원)", min_value=0.0, value=None, step=0.01, format="%.2f", placeholder="0.00", key="단가_add_봉투")
+                    with p7: add_삽지 = st.number_input("삽지제작단가(원)", min_value=0.0, value=None, step=0.01, format="%.2f", placeholder="0.00", key="단가_add_삽지")
+                    with p8: add_각대봉투 = st.number_input("각대대봉투단가(원)", min_value=0.0, value=None, step=0.01, format="%.2f", placeholder="0.00", key="단가_add_각대봉투")
+                    add_비고 = st.text_input("비고", key="단가_add_비고")
+                    추가_클릭 = st.form_submit_button("추가", type="primary")
 
-                if st.button("추가", type="primary", key="단가_add_btn"):
+                if 추가_클릭:
                     from datetime import date as _date
-                    _업무명 = None if 선택_업무명 == "(기본단가 — 선택 안 함)" else 선택_업무명
+                    _업무명 = None if 선택_업무명_단가 == "(기본단가 — 선택 안 함)" else 선택_업무명_단가
                     _작업명 = None if 선택_작업명 == "(기본단가 — 선택 안 함)" else 선택_작업명
                     conn = get_conn()
                     try:
@@ -1298,8 +1543,13 @@ with tab4:
                     finally:
                         conn.close()
 
-    with t4c:
-        st.subheader("발행요청목록")
+    def _render_발행_섹션(발송여부_target, key_prefix, action_mode):
+        _k_검색번호 = f"{key_prefix}_검색번호"
+        _k_전체선택 = f"{key_prefix}_전체선택"
+        _k_선택버전 = f"{key_prefix}_선택버전"
+        _k_excel_bytes = f"{key_prefix}_excel_bytes"
+        _k_excel_filename = f"{key_prefix}_excel_filename"
+        _k_dl_version = f"{key_prefix}_dl_version"
 
         # ── 의뢰서번호 검색 (승인자용) ────────────────────────
         sc1, sc2, sc3 = st.columns([6, 1, 1.3])
@@ -1307,37 +1557,31 @@ with tab4:
             검색_입력 = st.text_input(
                 "검색",
                 placeholder="의뢰서번호 붙여넣기  예: 94361|94362|94363",
-                key="t4c_검색입력",
+                key=f"{key_prefix}_검색입력",
                 label_visibility="collapsed",
             )
         with sc2:
-            검색_클릭 = st.button("검색", key="t4c_검색_btn", use_container_width=True)
+            검색_클릭 = st.button("검색", key=f"{key_prefix}_검색_btn", use_container_width=True)
         with sc3:
-            검색_초기화 = st.button("전체 보기", key="t4c_검색초기화_btn", use_container_width=True)
+            검색_초기화 = st.button("전체 보기", key=f"{key_prefix}_검색초기화_btn", use_container_width=True)
 
         if 검색_클릭 and 검색_입력.strip():
-            st.session_state["t4c_검색번호"] = {
+            st.session_state[_k_검색번호] = {
                 n.strip() for n in 검색_입력.split("|") if n.strip()
             }
         if 검색_초기화:
-            st.session_state.pop("t4c_검색번호", None)
+            st.session_state.pop(_k_검색번호, None)
 
-        검색번호 = st.session_state.get("t4c_검색번호", set())
+        검색번호 = st.session_state.get(_k_검색번호, set())
 
         이력_t4c = load_이력()
 
-        # 사이드바 필터 적용 (거래처·담당자만)
+        # 발행 상태(발행대기/발행완료) 필터
         if not 이력_t4c.empty:
-            if 선택_거래처:
-                이력_t4c = 이력_t4c[이력_t4c["거래처명"].isin(선택_거래처)]
-            if 선택_담당자:
-                이력_t4c = 이력_t4c[이력_t4c["담당자"].apply(
-                    lambda d: any(dm in str(d) for dm in 선택_담당자) if pd.notna(d) else False
-                )]
-            이력_t4c = 이력_t4c.reset_index(drop=True)
+            이력_t4c = 이력_t4c[이력_t4c["발송여부"] == 발송여부_target].reset_index(drop=True)
 
         if 이력_t4c.empty:
-            st.info("발행요청 이력이 없습니다.")
+            st.info("표시할 항목이 없습니다.")
         else:
             # 거래명세서이력 → 업무의뢰서 단위로 펼치기 (미발행목록과 동일 구조)
             import json as _json3
@@ -1370,6 +1614,7 @@ with tab4:
                                 _가액 = _t4c_공급가맵.get(req_no)
                                 expanded_rows.append({
                                     "_이력_id":    int(row["id"]),
+                                    "거래명세서번호": str(row["거래명세서번호"]) if pd.notna(row["거래명세서번호"]) else "",
                                     "담당자":      str(s["마케팅담당자"]),
                                     "의뢰서번호":  str(req_no),
                                     "사업부":      str(s["사업부"]),
@@ -1393,12 +1638,30 @@ with tab4:
             if not expanded_rows:
                 st.info("표시할 항목이 없습니다.")
             else:
-                if "t4c_전체선택" not in st.session_state:
-                    st.session_state.t4c_전체선택 = False
-                if "t4c_선택버전" not in st.session_state:
-                    st.session_state.t4c_선택버전 = 0
+                if _k_전체선택 not in st.session_state:
+                    st.session_state[_k_전체선택] = False
+                if _k_선택버전 not in st.session_state:
+                    st.session_state[_k_선택버전] = 0
 
                 exp_df = pd.DataFrame(expanded_rows)
+
+                # 사이드바 전체 필터 적용 (사업부·기간·거래처·담당자·업무명)
+                if 선택_사업부:
+                    exp_df = exp_df[exp_df["사업부"].isin(선택_사업부)]
+                exp_df = exp_df[(exp_df["작업일자"] >= 시작_str) & (exp_df["작업일자"] <= 종료_str)]
+                if 선택_거래처:
+                    exp_df = exp_df[exp_df["거래처명"].isin(선택_거래처)]
+                if 선택_담당자:
+                    exp_df = exp_df[exp_df["담당자"].apply(
+                        lambda d: any(dm in str(d) for dm in 선택_담당자) if pd.notna(d) else False
+                    )]
+                if 선택_업무명:
+                    exp_df = exp_df[exp_df["업무명"].isin(선택_업무명)]
+                exp_df = exp_df.reset_index(drop=True)
+
+                if exp_df.empty:
+                    st.info("조건에 맞는 항목이 없습니다.")
+                    return
 
                 # 검색 필터 적용
                 if 검색번호:
@@ -1410,51 +1673,97 @@ with tab4:
                         st.info(f"🔍 검색 결과 {len(exp_df_filtered):,}건  (전체 {len(exp_df):,}건)")
                         exp_df = exp_df_filtered.reset_index(drop=True)
 
-                display_c = pd.DataFrame({
-                    "선택":       st.session_state.t4c_전체선택,
-                    "No":         range(1, len(exp_df) + 1),
-                    "담당자":     exp_df["담당자"].values,
-                    "의뢰서번호": exp_df["의뢰서번호"].values,
-                    "사업부":     exp_df["사업부"].values,
-                    "거래처명":   exp_df["거래처명"].values,
-                    "업무명":     exp_df["업무명"].values,
-                    "업무명상세": exp_df["업무명상세"].values,
-                    "작업일자":   exp_df["작업일자"].values,
-                    "청구페이지": pd.to_numeric(exp_df["청구페이지"], errors="coerce").values,
-                    "장수":       pd.to_numeric(exp_df["장수"],       errors="coerce").values,
-                    "봉입건수":   pd.to_numeric(exp_df["봉입건수"],   errors="coerce").values,
-                    "용지수량":    pd.to_numeric(exp_df["용지수량"],    errors="coerce").values,
-                    "봉투수량":    pd.to_numeric(exp_df["봉투수량"],    errors="coerce").values,
-                    "삽지수량":    pd.to_numeric(exp_df["삽지수량"],    errors="coerce").values,
-                    "예상공급가액": pd.to_numeric(exp_df["예상공급가액"], errors="coerce").values,
-                    "발행여부":    exp_df["발행여부"].values,
+                # ── 레벨1: 거래명세서번호 + 업무명 기준 합산 요약 ──────
+                그룹_df = exp_df.groupby(["_이력_id", "업무명"], as_index=False).agg(
+                    거래명세서번호=("거래명세서번호", "first"),
+                    사업부=("사업부", "first"),
+                    거래처명=("거래처명", "first"),
+                    발행여부=("발행여부", "first"),
+                    담당자=("담당자", lambda s: ", ".join(sorted(set(s)))),
+                    의뢰서건수=("의뢰서번호", "count"),
+                    청구페이지=("청구페이지", "sum"),
+                    장수=("장수", "sum"),
+                    봉입건수=("봉입건수", "sum"),
+                    용지수량=("용지수량", "sum"),
+                    봉투수량=("봉투수량", "sum"),
+                    삽지수량=("삽지수량", "sum"),
+                    예상공급가액=("예상공급가액", lambda s: s.sum() if s.notna().all() else None),
+                )
+
+                display_1 = pd.DataFrame({
+                    "선택":       st.session_state[_k_전체선택],
+                    "No":         range(1, len(그룹_df) + 1),
+                    "거래명세서번호": 그룹_df["거래명세서번호"].values,
+                    "사업부":     그룹_df["사업부"].values,
+                    "거래처명":   그룹_df["거래처명"].values,
+                    "업무명":     그룹_df["업무명"].values,
+                    "담당자":     그룹_df["담당자"].values,
+                    "의뢰서건수": 그룹_df["의뢰서건수"].values,
+                    "청구페이지": pd.to_numeric(그룹_df["청구페이지"], errors="coerce").values,
+                    "장수":       pd.to_numeric(그룹_df["장수"],       errors="coerce").values,
+                    "봉입건수":   pd.to_numeric(그룹_df["봉입건수"],   errors="coerce").values,
+                    "용지수량":    pd.to_numeric(그룹_df["용지수량"],    errors="coerce").values,
+                    "봉투수량":    pd.to_numeric(그룹_df["봉투수량"],    errors="coerce").values,
+                    "삽지수량":    pd.to_numeric(그룹_df["삽지수량"],    errors="coerce").values,
+                    "예상공급가액": pd.to_numeric(그룹_df["예상공급가액"], errors="coerce").values,
+                    "발행여부":    그룹_df["발행여부"].values,
                 })
 
                 cb_c2, cnt_c2 = st.columns([1.5, 8.5])
                 with cb_c2:
-                    새_t4c_전체선택 = st.checkbox(
+                    새_전체선택 = st.checkbox(
                         "선택 (전체)",
-                        value=st.session_state.t4c_전체선택,
-                        key="t4c_전체선택_cb",
+                        value=st.session_state[_k_전체선택],
+                        key=f"{key_prefix}_전체선택_cb",
                     )
                 with cnt_c2:
-                    st.caption(f"발행요청 {len(display_c):,}건")
+                    st.caption(f"발행{action_mode} {len(display_1):,}건 (의뢰서 {len(exp_df):,}건)")
 
-                if 새_t4c_전체선택 != st.session_state.t4c_전체선택:
-                    st.session_state.t4c_전체선택 = 새_t4c_전체선택
-                    st.session_state.t4c_선택버전 += 1
+                if 새_전체선택 != st.session_state[_k_전체선택]:
+                    st.session_state[_k_전체선택] = 새_전체선택
+                    st.session_state[_k_선택버전] += 1
                     st.rerun()
 
-                이력_선택결과 = st.data_editor(
-                    display_c,
+                # ── 액션 버튼 (그리드 위) ──────────────────────────
+                if action_mode == "대기":
+                    발행_btn_col, 취소_btn_col, _ = st.columns([2, 2, 6])
+                    with 발행_btn_col:
+                        발행_클릭 = st.button("거래명세서 발행", type="primary", key=f"{key_prefix}_발행_btn")
+                    with 취소_btn_col:
+                        취소_클릭 = st.button("취소", key=f"{key_prefix}_취소_btn")
+                    되돌리기_클릭 = False
+                else:
+                    발행_클릭 = False
+                    취소_클릭 = False
+                    _has_dl = bool(st.session_state.get(_k_excel_bytes))
+                    if _has_dl:
+                        되돌리기_btn_col, dl_btn_col, _ = st.columns([2, 3, 5])
+                    else:
+                        되돌리기_btn_col, _ = st.columns([2, 8])
+                    with 되돌리기_btn_col:
+                        되돌리기_클릭 = st.button("발행 취소", key=f"{key_prefix}_되돌리기_btn")
+                    if _has_dl:
+                        with dl_btn_col:
+                            dl_key = f"{key_prefix}_dl_{st.session_state.get(_k_dl_version, 0)}"
+                            st.download_button(
+                                label="📥 거래명세서 다운로드",
+                                data=st.session_state[_k_excel_bytes],
+                                file_name=st.session_state.get(_k_excel_filename, "거래명세서.xlsx"),
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                key=dl_key,
+                            )
+
+                레벨1_선택결과 = st.data_editor(
+                    display_1,
                     column_config={
                         "선택":       st.column_config.CheckboxColumn("선택",       pinned=True),
                         "No":         st.column_config.NumberColumn("No",           format="%d",  pinned=True),
-                        "담당자":     st.column_config.TextColumn("담당자",         pinned=True),
-                        "의뢰서번호": st.column_config.TextColumn("의뢰서번호",     pinned=True),
+                        "거래명세서번호": st.column_config.TextColumn("거래명세서번호", pinned=True),
                         "사업부":     st.column_config.TextColumn("사업부",         pinned=True),
                         "거래처명":   st.column_config.TextColumn("거래처명",       pinned=True),
                         "업무명":     st.column_config.TextColumn("업무명",         pinned=True),
+                        "담당자":     st.column_config.TextColumn("담당자",         pinned=True),
+                        "의뢰서건수": st.column_config.NumberColumn("의뢰서건수",   format="%,d"),
                         "청구페이지": st.column_config.NumberColumn("청구페이지",   format="%,d"),
                         "장수":       st.column_config.NumberColumn("장수",         format="%,d"),
                         "봉입건수":   st.column_config.NumberColumn("봉입건수",     format="%,d"),
@@ -1463,44 +1772,77 @@ with tab4:
                         "삽지수량":    st.column_config.NumberColumn("삽지수량",     format="%,d"),
                         "예상공급가액": st.column_config.NumberColumn("예상공급가액", format="%,d"),
                     },
-                    disabled=["No","담당자","의뢰서번호","사업부","거래처명","업무명","업무명상세",
-                              "작업일자","청구페이지","장수","봉입건수","용지수량","봉투수량","삽지수량","예상공급가액","발행여부"],
+                    disabled=["No","거래명세서번호","사업부","거래처명","업무명","담당자","의뢰서건수",
+                              "청구페이지","장수","봉입건수","용지수량","봉투수량","삽지수량","예상공급가액","발행여부"],
                     hide_index=True,
                     use_container_width=True,
                     height=380,
-                    key=f"이력_선택_{st.session_state.t4c_선택버전}",
+                    key=f"레벨1_{key_prefix}_{st.session_state[_k_선택버전]}",
                 )
 
-                선택_idx_c = 이력_선택결과[이력_선택결과["선택"] == True].index.tolist()
+                선택_idx_1 = 레벨1_선택결과[레벨1_선택결과["선택"] == True].index.tolist()
 
-                # 다운로드 버튼: 발행 완료 후 rerun으로 체크박스가 초기화돼도 유지되어야 하므로 선택_idx_c 블록 밖에 위치
-                if st.session_state.get("t4c_excel_bytes"):
-                    st.divider()
-                    dl_col, _ = st.columns([3, 7])
-                    with dl_col:
-                        # key에 발행 시각을 포함해 발행할 때마다 버튼을 새로 렌더링 (캐시 방지)
-                        dl_key = f"t4c_dl_{st.session_state.get('t4c_dl_version', 0)}"
-                        st.download_button(
-                            label="📥 거래명세서 다운로드",
-                            data=st.session_state["t4c_excel_bytes"],
-                            file_name=st.session_state.get("t4c_excel_filename", "거래명세서.xlsx"),
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            key=dl_key,
-                        )
+                def _취소_변경계획(대상_df):
+                    """대상_df(_이력_id·의뢰서번호·거래명세서번호 컬럼 포함) → 이력별 delete/update 계획 리스트"""
+                    계획 = []
+                    for _이력_id, _grp in 대상_df.groupby("_이력_id"):
+                        _이력_id = int(_이력_id)
+                        취소_번호_set = set(_grp["의뢰서번호"])
+                        원본_row = 이력_t4c[이력_t4c["id"] == _이력_id].iloc[0]
+                        원본_목록 = _json3.loads(원본_row["업무의뢰서번호목록"])
+                        원본_목록_norm = [str(int(float(n))) for n in 원본_목록]
+                        남을_목록 = [n for n, nn in zip(원본_목록, 원본_목록_norm) if nn not in 취소_번호_set]
+                        항목 = {
+                            "이력_id": _이력_id,
+                            "거래명세서번호": _grp["거래명세서번호"].iloc[0],
+                            "취소_건수": len(_grp),
+                            "전체_건수": len(원본_목록),
+                        }
+                        if not 남을_목록:
+                            항목["action"] = "delete"
+                        else:
+                            남을_int = {int(n) for n in 남을_목록}
+                            남을_요약 = [summary_map[n] for n in 남을_int if n in summary_map]
+                            공급가맵_남은 = calc_공급가맵(남을_int)
+                            공급가액 = sum(v["합계"] for v in 공급가맵_남은.values())
+                            항목["action"] = "update"
+                            항목["새_목록"] = 남을_목록
+                            항목["새_품목"] = ", ".join(sorted({s["업무명"] for s in 남을_요약}))
+                            항목["새_담당자"] = ", ".join(sorted({s["마케팅담당자"] for s in 남을_요약}))
+                            항목["새_공급가액"] = int(공급가액)
+                            항목["새_세액"] = int(공급가액 * 0.1)
+                            항목["새_합계"] = 항목["새_공급가액"] + 항목["새_세액"]
+                        계획.append(항목)
+                    return 계획
 
-                if 선택_idx_c:
+                if not 선택_idx_1 and (발행_클릭 or 취소_클릭 or 되돌리기_클릭):
+                    st.warning("선택된 항목이 없습니다.")
+
+                if 선택_idx_1:
                     st.divider()
-                    발행_btn_col, _ = st.columns([2, 8])
-                    with 발행_btn_col:
-                        발행_클릭 = st.button("거래명세서 발행", type="primary", key="t4c_발행_btn")
+                    선택된_이력_ids = list({int(그룹_df.iloc[idx]["_이력_id"]) for idx in 선택_idx_1})
+                    선택_건수 = int(그룹_df.iloc[선택_idx_1]["의뢰서건수"].sum())
+                    영향_건수 = int(exp_df["_이력_id"].isin(선택된_이력_ids).sum())
+
+                    if action_mode == "대기" and 취소_클릭:
+                        레벨1_대상 = set(zip(
+                            그룹_df.iloc[선택_idx_1]["_이력_id"],
+                            그룹_df.iloc[선택_idx_1]["업무명"],
+                        ))
+                        취소_대상_df = exp_df[
+                            exp_df.apply(lambda r: (r["_이력_id"], r["업무명"]) in 레벨1_대상, axis=1)
+                        ]
+                        _부분취소_dialog(_취소_변경계획(취소_대상_df), key_prefix)
+
+                    if action_mode == "완료" and 되돌리기_클릭:
+                        _발행상태변경_dialog(선택된_이력_ids, 선택_건수=선택_건수, 영향_건수=영향_건수)
 
                     if 발행_클릭:
-                        선택_ids = list({int(exp_df.iloc[idx]["_이력_id"]) for idx in 선택_idx_c})
-                        선택번호_발행 = {int(exp_df.iloc[idx]["의뢰서번호"]) for idx in 선택_idx_c}
+                        선택번호_발행 = set(exp_df[exp_df["_이력_id"].isin(선택된_이력_ids)]["의뢰서번호"].astype(int))
                         conn = get_conn()
                         conn.executemany(
                             "UPDATE 거래명세서이력 SET 발송여부 = 1, 발송일 = ? WHERE id = ?",
-                            [(str(date.today()), id_) for id_ in 선택_ids]
+                            [(str(date.today()), id_) for id_ in 선택된_이력_ids]
                         )
                         conn.commit()
                         conn.close()
@@ -1509,82 +1851,186 @@ with tab4:
                         if excel_bytes:
                             from datetime import datetime as _dt
                             발행시각 = _dt.now().strftime("%Y%m%d_%H%M")
-                            거래처명_발행 = exp_df.iloc[선택_idx_c[0]]["거래처명"]
-                            업무명_발행   = exp_df.iloc[선택_idx_c[0]]["업무명"]
-                            st.session_state["t4c_excel_bytes"]    = excel_bytes
-                            st.session_state["t4c_excel_filename"] = f"{발행시각}_{거래처명_발행}_{업무명_발행}.xlsx"
-                            st.session_state["t4c_dl_version"]     = st.session_state.get("t4c_dl_version", 0) + 1
+                            거래처명_발행 = 그룹_df.iloc[선택_idx_1[0]]["거래처명"]
+                            업무명_발행   = 그룹_df.iloc[선택_idx_1[0]]["업무명"]
+                            # 발행완료 화면 쪽 네임스페이스에 저장 → 다운로드 버튼은 발행완료 탭에서만 노출
+                            st.session_state["t4d_excel_bytes"]    = excel_bytes
+                            st.session_state["t4d_excel_filename"] = f"{발행시각}_{거래처명_발행}_{업무명_발행}.xlsx"
+                            st.session_state["t4d_dl_version"]     = st.session_state.get("t4d_dl_version", 0) + 1
                         st.success("거래명세서 발행이 완료되었습니다.")
-                        st.session_state.t4c_선택버전 += 1
+                        st.session_state[_k_선택버전] += 1
                         st.rerun()
 
-                    st.subheader("선택된 업무의뢰서")
+                    # ── 레벨2: 선택된 그룹에 속한 의뢰서번호별 목록 (드릴다운 전용) ──
+                    st.subheader("선택된 거래명세서 — 의뢰서 목록")
 
-                    # 합계 — 미발행 목록과 동일한 텍스트 한 줄 형식
-                    선택_exp = exp_df.iloc[선택_idx_c]
-                    _장수 = int(선택_exp["장수"].sum())
-                    _봉입 = int(선택_exp["봉입건수"].sum())
-                    _청구 = int(선택_exp["청구페이지"].sum())
-                    _용지 = int(선택_exp["용지수량"].sum())
-                    _봉투 = int(선택_exp["봉투수량"].sum())
-                    _삽지 = int(선택_exp["삽지수량"].sum())
-                    _추가용지 = (_장수 - _봉입) if (_장수 > 0 and _봉입 > 0) else 0
-                    _공급_s = 선택_exp["예상공급가액"]
-                    _공급 = int(_공급_s.sum()) if _공급_s.notna().all() else None
-                    _공급str = f"{_공급:,}원" if _공급 is not None else "단가 미등록"
-                    st.markdown(
-                        f"<p style='font-size:1.05rem;font-weight:bold;margin:4px 0;'>"
-                        f"청구페이지: {_청구:,} &nbsp;|&nbsp; "
-                        f"봉입건수: {_봉입:,} &nbsp;|&nbsp; "
-                        f"장수: {_장수:,} &nbsp;|&nbsp; "
-                        f"봉투: {_봉투:,} &nbsp;|&nbsp; "
-                        f"용지: {_용지:,} &nbsp;|&nbsp; "
-                        f"추가용지: {_추가용지:,} &nbsp;|&nbsp; "
-                        f"삽지: {_삽지:,} &nbsp;|&nbsp; "
-                        f"예상공급가액: {_공급str}</p>",
-                        unsafe_allow_html=True,
+                    레벨2_대상 = set(zip(
+                        그룹_df.iloc[선택_idx_1]["_이력_id"],
+                        그룹_df.iloc[선택_idx_1]["업무명"],
+                    ))
+                    레벨2_exp = exp_df[
+                        exp_df.apply(lambda r: (r["_이력_id"], r["업무명"]) in 레벨2_대상, axis=1)
+                    ].reset_index(drop=True)
+
+                    _k_L2_전체선택 = f"{key_prefix}_L2_전체선택"
+                    _k_L2_선택버전 = f"{key_prefix}_L2_선택버전"
+                    if _k_L2_전체선택 not in st.session_state:
+                        st.session_state[_k_L2_전체선택] = False
+                    if _k_L2_선택버전 not in st.session_state:
+                        st.session_state[_k_L2_선택버전] = 0
+
+                    display_2 = pd.DataFrame({
+                        "선택":       st.session_state[_k_L2_전체선택],
+                        "No":         range(1, len(레벨2_exp) + 1),
+                        "거래명세서번호": 레벨2_exp["거래명세서번호"].values,
+                        "담당자":     레벨2_exp["담당자"].values,
+                        "의뢰서번호": 레벨2_exp["의뢰서번호"].values,
+                        "사업부":     레벨2_exp["사업부"].values,
+                        "거래처명":   레벨2_exp["거래처명"].values,
+                        "업무명":     레벨2_exp["업무명"].values,
+                        "업무명상세": 레벨2_exp["업무명상세"].values,
+                        "작업일자":   레벨2_exp["작업일자"].values,
+                        "청구페이지": pd.to_numeric(레벨2_exp["청구페이지"], errors="coerce").values,
+                        "장수":       pd.to_numeric(레벨2_exp["장수"],       errors="coerce").values,
+                        "봉입건수":   pd.to_numeric(레벨2_exp["봉입건수"],   errors="coerce").values,
+                        "용지수량":    pd.to_numeric(레벨2_exp["용지수량"],    errors="coerce").values,
+                        "봉투수량":    pd.to_numeric(레벨2_exp["봉투수량"],    errors="coerce").values,
+                        "삽지수량":    pd.to_numeric(레벨2_exp["삽지수량"],    errors="coerce").values,
+                        "예상공급가액": pd.to_numeric(레벨2_exp["예상공급가액"], errors="coerce").values,
+                    })
+
+                    cb_l2, cnt_l2 = st.columns([1.5, 8.5])
+                    with cb_l2:
+                        새_L2_전체선택 = st.checkbox(
+                            "선택 (전체)",
+                            value=st.session_state[_k_L2_전체선택],
+                            key=f"{key_prefix}_L2_전체선택_cb",
+                        )
+                    with cnt_l2:
+                        st.caption(f"의뢰서 {len(display_2):,}건")
+
+                    if 새_L2_전체선택 != st.session_state[_k_L2_전체선택]:
+                        st.session_state[_k_L2_전체선택] = 새_L2_전체선택
+                        st.session_state[_k_L2_선택버전] += 1
+                        st.rerun()
+
+                    L2_취소_클릭 = False
+                    if action_mode == "대기":
+                        L2_취소_btn_col, _ = st.columns([2, 8])
+                        with L2_취소_btn_col:
+                            L2_취소_클릭 = st.button("취소", key=f"{key_prefix}_L2_취소_btn")
+
+                    레벨2_선택결과 = st.data_editor(
+                        display_2,
+                        column_config={
+                            "선택":       st.column_config.CheckboxColumn("선택",       pinned=True),
+                            "No":         st.column_config.NumberColumn("No",           format="%d",  pinned=True),
+                            "거래명세서번호": st.column_config.TextColumn("거래명세서번호", pinned=True),
+                            "담당자":     st.column_config.TextColumn("담당자",         pinned=True),
+                            "의뢰서번호": st.column_config.TextColumn("의뢰서번호",     pinned=True),
+                            "사업부":     st.column_config.TextColumn("사업부",         pinned=True),
+                            "거래처명":   st.column_config.TextColumn("거래처명",       pinned=True),
+                            "업무명":     st.column_config.TextColumn("업무명",         pinned=True),
+                            "청구페이지": st.column_config.NumberColumn("청구페이지",   format="%,d"),
+                            "장수":       st.column_config.NumberColumn("장수",         format="%,d"),
+                            "봉입건수":   st.column_config.NumberColumn("봉입건수",     format="%,d"),
+                            "용지수량":    st.column_config.NumberColumn("용지수량",     format="%,d"),
+                            "봉투수량":    st.column_config.NumberColumn("봉투수량",     format="%,d"),
+                            "삽지수량":    st.column_config.NumberColumn("삽지수량",     format="%,d"),
+                            "예상공급가액": st.column_config.NumberColumn("예상공급가액", format="%,d"),
+                        },
+                        disabled=["No","거래명세서번호","담당자","의뢰서번호","사업부","거래처명","업무명","업무명상세",
+                                  "작업일자","청구페이지","장수","봉입건수","용지수량","봉투수량","삽지수량","예상공급가액"],
+                        hide_index=True,
+                        use_container_width=True,
+                        height=320,
+                        key=f"레벨2_{key_prefix}_{sorted(선택_idx_1)}_{st.session_state[_k_L2_선택버전]}",
                     )
 
-                    선택번호_int_c = {int(exp_df.iloc[idx]["의뢰서번호"]) for idx in 선택_idx_c}
+                    선택_idx_2 = 레벨2_선택결과[레벨2_선택결과["선택"] == True].index.tolist()
 
-                    NUM_COLS_C = ["장수","건수","출력페이지","청구페이지"]
-                    세부_c = df_all[
-                        df_all["업무의뢰서번호"].apply(
-                            lambda x: int(float(x)) if pd.notna(x) else -1
-                        ).isin(선택번호_int_c)
-                    ].copy()
-                    세부_c["업무의뢰서번호"] = 세부_c["업무의뢰서번호"].apply(
-                        lambda x: str(int(float(x))) if pd.notna(x) else ""
-                    )
-                    세부_c = 세부_c[["업무의뢰서번호","거래처명","작업일자","업무명","업무명상세","작업내역서상세","P수"] + NUM_COLS_C].reset_index(drop=True)
+                    if action_mode == "대기" and L2_취소_클릭:
+                        if not 선택_idx_2:
+                            st.warning("선택된 항목이 없습니다.")
+                        else:
+                            _부분취소_dialog(_취소_변경계획(레벨2_exp.iloc[선택_idx_2]), key_prefix)
 
-                    if len(선택번호_int_c) > 1:
-                        rows_c = []
-                        for req_no, grp in 세부_c.groupby("업무의뢰서번호", sort=False):
-                            rows_c.append(grp)
-                            sub = {col: "" for col in 세부_c.columns}
-                            sub["업무의뢰서번호"] = req_no
-                            sub["업무명"] = "▶ 소계"
-                            for c in NUM_COLS_C:
-                                sub[c] = grp[c].sum()
-                            rows_c.append(pd.DataFrame([sub]))
-                        세부_c = pd.concat(rows_c, ignore_index=True)
+                    if 선택_idx_2:
+                        # ── 레벨3: 선택된 의뢰서번호의 원본 작업내역 상세 ──
+                        st.subheader("선택된 업무의뢰서 상세")
 
-                    세부_c.insert(0, "No", range(1, len(세부_c) + 1))
+                        선택_exp = 레벨2_exp.iloc[선택_idx_2]
+                        _장수 = int(선택_exp["장수"].sum())
+                        _봉입 = int(선택_exp["봉입건수"].sum())
+                        _청구 = int(선택_exp["청구페이지"].sum())
+                        _용지 = int(선택_exp["용지수량"].sum())
+                        _봉투 = int(선택_exp["봉투수량"].sum())
+                        _삽지 = int(선택_exp["삽지수량"].sum())
+                        _추가용지 = (_장수 - _봉입) if (_장수 > 0 and _봉입 > 0) else 0
+                        _공급_s = 선택_exp["예상공급가액"]
+                        _공급 = int(_공급_s.sum()) if _공급_s.notna().all() else None
+                        _공급str = f"{_공급:,}원" if _공급 is not None else "단가 미등록"
+                        st.markdown(
+                            f"<p style='font-size:1.05rem;font-weight:bold;margin:4px 0;'>"
+                            f"청구페이지: {_청구:,} &nbsp;|&nbsp; "
+                            f"봉입건수: {_봉입:,} &nbsp;|&nbsp; "
+                            f"장수: {_장수:,} &nbsp;|&nbsp; "
+                            f"봉투: {_봉투:,} &nbsp;|&nbsp; "
+                            f"용지: {_용지:,} &nbsp;|&nbsp; "
+                            f"추가용지: {_추가용지:,} &nbsp;|&nbsp; "
+                            f"삽지: {_삽지:,} &nbsp;|&nbsp; "
+                            f"예상공급가액: {_공급str}</p>",
+                            unsafe_allow_html=True,
+                        )
 
-                    def _style_c(row):
-                        if row["업무명"] == "▶ 소계":
-                            return ["font-weight:bold"] * len(row)
-                        return [""] * len(row)
+                        선택번호_int_c = {int(x) for x in 선택_exp["의뢰서번호"]}
 
-                    styled_c = 세부_c.style.apply(_style_c, axis=1).format(
-                        {c: "{:,.0f}" for c in NUM_COLS_C}, na_rep=""
-                    )
-                    st.dataframe(styled_c, use_container_width=True, height=320, hide_index=True,
-                                 column_config={
-                                     "No":         st.column_config.NumberColumn("No",         pinned=True),
-                                     "업무의뢰서번호": st.column_config.TextColumn("업무의뢰서번호", pinned=True),
-                                     "거래처명":   st.column_config.TextColumn("거래처명",      pinned=True),
-                                     "작업일자":   st.column_config.TextColumn("작업일자",      pinned=True),
-                                     "업무명":     st.column_config.TextColumn("업무명",        pinned=True),
-                                 })
+                        NUM_COLS_C = ["장수","건수","출력페이지","청구페이지"]
+                        세부_c = df_all[
+                            df_all["업무의뢰서번호"].apply(
+                                lambda x: int(float(x)) if pd.notna(x) else -1
+                            ).isin(선택번호_int_c)
+                        ].copy()
+                        세부_c["업무의뢰서번호"] = 세부_c["업무의뢰서번호"].apply(
+                            lambda x: str(int(float(x))) if pd.notna(x) else ""
+                        )
+                        세부_c = 세부_c[["업무의뢰서번호","거래처명","작업일자","업무명","업무명상세","작업내역서상세","P수"] + NUM_COLS_C].reset_index(drop=True)
+
+                        if len(선택번호_int_c) > 1:
+                            rows_c = []
+                            for req_no, grp in 세부_c.groupby("업무의뢰서번호", sort=False):
+                                rows_c.append(grp)
+                                sub = {col: "" for col in 세부_c.columns}
+                                sub["업무의뢰서번호"] = req_no
+                                sub["업무명"] = "▶ 소계"
+                                for c in NUM_COLS_C:
+                                    sub[c] = grp[c].sum()
+                                rows_c.append(pd.DataFrame([sub]))
+                            세부_c = pd.concat(rows_c, ignore_index=True)
+
+                        세부_c.insert(0, "No", range(1, len(세부_c) + 1))
+
+                        def _style_c(row):
+                            if row["업무명"] == "▶ 소계":
+                                return ["font-weight:bold"] * len(row)
+                            return [""] * len(row)
+
+                        styled_c = 세부_c.style.apply(_style_c, axis=1).format(
+                            {c: "{:,.0f}" for c in NUM_COLS_C}, na_rep=""
+                        )
+                        st.dataframe(styled_c, use_container_width=True, height=320, hide_index=True,
+                                     column_config={
+                                         "No":         st.column_config.NumberColumn("No",         pinned=True),
+                                         "업무의뢰서번호": st.column_config.TextColumn("업무의뢰서번호", pinned=True),
+                                         "거래처명":   st.column_config.TextColumn("거래처명",      pinned=True),
+                                         "작업일자":   st.column_config.TextColumn("작업일자",      pinned=True),
+                                         "업무명":     st.column_config.TextColumn("업무명",        pinned=True),
+                                     })
+
+    with t4c:
+        st.subheader("발행요청목록")
+        _render_발행_섹션(0, "t4c", "대기")
+
+    with t4d:
+        st.subheader("발행완료")
+        _render_발행_섹션(1, "t4d", "완료")
