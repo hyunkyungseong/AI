@@ -6,6 +6,8 @@ import InvoiceFilterSidebar from "./InvoiceFilterSidebar";
 import InvoiceSelectionTable from "./InvoiceSelectionTable";
 import InvoiceSelectionSummaryBar from "./InvoiceSelectionSummaryBar";
 import InvoiceDetailTable from "./InvoiceDetailTable";
+import InvoicePreviewDialog from "./InvoicePreviewDialog";
+import type { 미리보기결과 } from "./InvoicePreviewDialog";
 import { useInvoiceFilters } from "@/lib/useInvoiceFilters";
 import type { 미발행행, 운영통계행, 발행행 } from "./Dashboard";
 
@@ -36,6 +38,12 @@ export default function Tab4Invoice({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [banner, setBanner] = useState<배너 | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // 미리보기 팝업(2026-07-20 신규) — "거래명세서 요청" 클릭 시 바로 저장하지 않고 먼저 이 상태를
+  // 채워 InvoicePreviewDialog를 띄운다. 실제 저장(POST /api/invoice-request)은 그 팝업의
+  // "확정" 클릭(handleConfirmSubmit)에서만 일어난다.
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewData, setPreviewData] = useState<미리보기결과 | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
 
   // 검증·요청 payload는 화면에 보이는 filters.base5가 아니라 rows(전체) 기준으로 계산한다 —
   // 필터를 바꿔도 이미 체크한 항목의 선택은 유지되므로, 화면에 안 보이는 선택 항목도 포함돼야 한다.
@@ -66,7 +74,9 @@ export default function Tab4Invoice({
     [filters.base5]
   );
 
-  async function handleRequest() {
+  // "거래명세서 요청" 클릭 → 검증(기존과 동일) → 미리보기 API 호출 → 통과하면 팝업 오픈.
+  // 여기서는 아직 아무것도 저장하지 않는다.
+  async function handlePreviewClick() {
     if (selectedRows.length === 0) {
       setBanner({ type: "warning", text: "선택된 항목이 없습니다." });
       return;
@@ -85,6 +95,31 @@ export default function Tab4Invoice({
       return;
     }
 
+    setPreviewLoading(true);
+    setBanner(null);
+    try {
+      const res = await fetch("/api/invoice-preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 의뢰서번호_목록: selectedRows.map((r) => r.의뢰서번호) }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setBanner({ type: "error", text: data.detail ?? "미리보기 처리 중 오류가 발생했습니다." });
+        return;
+      }
+      setPreviewData(data);
+      setPreviewOpen(true);
+    } catch {
+      setBanner({ type: "error", text: "서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요." });
+    } finally {
+      setPreviewLoading(false);
+    }
+  }
+
+  // 미리보기 팝업의 "확정" 클릭 시에만 실행 — 기존 handleRequest()의 payload 구성·POST·후처리를
+  // 그대로 옮긴 것으로, 저장 이후 동작(목록 반영·배너)은 이전과 동일하다.
+  async function handleConfirmSubmit() {
     const 공급가액 = selectedRows.reduce((s, r) => s + (r.예상공급가액 ?? 0), 0);
     const 세액 = Math.round(공급가액 * 0.1);
     const payload = {
@@ -99,7 +134,6 @@ export default function Tab4Invoice({
     };
 
     setSubmitting(true);
-    setBanner(null);
     try {
       const res = await fetch("/api/invoice-request", {
         method: "POST",
@@ -108,6 +142,7 @@ export default function Tab4Invoice({
       });
       const data = await res.json();
       if (!res.ok) {
+        setPreviewOpen(false);
         setBanner({ type: "error", text: data.detail ?? "요청 처리 중 오류가 발생했습니다." });
         return;
       }
@@ -115,12 +150,21 @@ export default function Tab4Invoice({
       setRows((prev) => prev.filter((r) => !제거대상.has(r.의뢰서번호)));
       onIssued(selectedRows.map((r) => ({ ...r, 거래명세서번호: data.거래명세서번호, 발송여부: 0 })));
       setSelected(new Set());
+      setPreviewOpen(false);
+      setPreviewData(null);
       setBanner({ type: "success", text: `거래명세서 요청이 완료되었습니다. (거래명세서번호: ${data.거래명세서번호})` });
     } catch {
+      setPreviewOpen(false);
       setBanner({ type: "error", text: "서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요." });
     } finally {
       setSubmitting(false);
     }
+  }
+
+  function handlePreviewClose() {
+    if (submitting) return;
+    setPreviewOpen(false);
+    setPreviewData(null);
   }
 
   return (
@@ -145,11 +189,11 @@ export default function Tab4Invoice({
           <div className="space-y-2">
             <button
               type="button"
-              onClick={handleRequest}
-              disabled={submitting}
+              onClick={handlePreviewClick}
+              disabled={previewLoading}
               className="rounded-md bg-gray-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-gray-700 disabled:opacity-50 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-gray-300"
             >
-              {submitting ? "요청 중..." : "거래명세서 요청"}
+              {previewLoading ? "불러오는 중..." : "거래명세서 요청"}
             </button>
             {selectedRows.length > 0 && <InvoiceSelectionSummaryBar selectedRows={selectedRows} />}
           </div>
@@ -168,6 +212,14 @@ export default function Tab4Invoice({
           )}
         </div>
       </main>
+
+      <InvoicePreviewDialog
+        open={previewOpen}
+        data={previewData}
+        submitting={submitting}
+        onConfirm={handleConfirmSubmit}
+        onClose={handlePreviewClose}
+      />
     </>
   );
 }

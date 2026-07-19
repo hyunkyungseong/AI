@@ -20,6 +20,7 @@ FastAPI 백엔드 서버
   GET  /발행목록             — /미발행목록과 대칭(이미 요청된 의뢰서 대상) + 거래명세서번호·발송여부 포함
                               (2026-07-19 신규, Next.js 탭4 "발행요청목록"·"발행완료" 화면 공용, billing.py 재사용)
   GET  /거래명세서엑셀/{no} — 거래명세서 Excel 파일 다운로드, 언제든 재호출 가능 (2026-07-19 신규, billing.py 재사용, no=거래명세서번호)
+  POST /거래명세서미리보기  — 채번 전 의뢰서번호_목록으로 품목·합계 JSON 미리보기 (2026-07-20 신규, billing.build_품목행() 재사용, Next.js 탭4 전용)
   POST /운영통계자료수신     — 당사 생산공정관리시스템 Push 수신 (업무의뢰서 단위, 실시간)
 
   POST   /거래처마스터       — 거래처 1건 신규 등록 (2026-07-19 전체교체→단건생성으로 변경, Next.js [4-D])
@@ -47,7 +48,7 @@ from typing import List, Optional
 import pandas as pd
 import pymysql
 from fastapi import FastAPI, HTTPException, Query, Depends, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 sys.path.insert(0, str(Path(__file__).parent))
 import db_config as cfg
@@ -94,6 +95,8 @@ def health():
 
 
 class 로그인요청(BaseModel):
+    model_config = ConfigDict(title="LoginRequest")  # Swagger 표시용 영문 별명 — 필드명은 한글 그대로
+
     사용자명: str
     비밀번호: str
 
@@ -486,9 +489,69 @@ def 거래명세서엑셀(no: str):
     )
 
 
+class 거래명세서미리보기_요청(BaseModel):
+    model_config = ConfigDict(title="InvoicePreviewRequest")  # Swagger 표시용 영문 별명 — 필드명은 한글 그대로
+
+    의뢰서번호_목록: List[str]
+
+
+@app.post("/거래명세서미리보기", dependencies=인증필요)
+def 거래명세서미리보기(요청: 거래명세서미리보기_요청):
+    """
+    아직 채번 전인 의뢰서번호_목록으로 품목·수량·단가·금액·합계를 미리 계산해 JSON으로 반환
+    (Excel 생성 없음, DB 쓰기 없음). GET /거래명세서엑셀/{no}와 DB 조회 패턴은 동일하지만,
+    이미 발급된 거래명세서번호 대신 화면에서 방금 체크한 의뢰서번호를 직접 받는다는 점만 다르다.
+    billing.build_품목행()을 그대로 재사용 — generate_거래명세서_excel()이 만드는 것과
+    동일한 품목 그룹·정렬 기준(2026-07-20, [4단계] 종료 후 재검토했던 미리보기 기능).
+    """
+    if not 요청.의뢰서번호_목록:
+        raise HTTPException(status_code=400, detail="의뢰서번호_목록이 비어 있습니다")
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            자리표시자 = ", ".join(["%s"] * len(요청.의뢰서번호_목록))
+            cur.execute(
+                f"SELECT 업무의뢰서번호, 작업명, 거래처명, 업무명, 확정청구페이지, 건수, 장수 "
+                f"FROM 운영통계자료 WHERE 업무의뢰서번호 IN ({자리표시자})",
+                요청.의뢰서번호_목록,
+            )
+            원본행 = cur.fetchall()
+
+            cur.execute("SELECT * FROM 단가마스터")
+            단가행 = cur.fetchall()
+            자재행 = _자재map_조회(cur, 요청.의뢰서번호_목록)
+
+    if not 원본행:
+        raise HTTPException(status_code=404, detail="해당 업무의뢰서 데이터를 운영통계자료에서 찾을 수 없습니다")
+
+    df_all = pd.DataFrame(원본행)
+    단가df = pd.DataFrame(단가행) if 단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명"])
+    자재df = pd.DataFrame(자재행) if 자재행 else pd.DataFrame(columns=["업무의뢰서번호", "작업이름", "자재종류", "자재형태", "사용량"])
+
+    단가맵 = billing.build_단가맵(단가df)
+    자재map = billing.build_자재map(자재df)
+    의뢰서번호셋 = {int(float(x)) for x in 요청.의뢰서번호_목록}
+
+    정렬행, 총합계, 거래처명, 업무명, _코드맵 = billing.build_품목행(df_all, 단가맵, 자재map, 의뢰서번호셋)
+    if not 정렬행:
+        raise HTTPException(status_code=500, detail="미리보기 생성 실패 — 해당 업무의뢰서에 등록된 단가가 없을 수 있습니다")
+
+    return {
+        "거래처명": 거래처명,
+        "업무명": 업무명,
+        "품목": [
+            {"품목": 품목, "작업명": 작업명_key, "수량": v["수량"], "단가": 단가, "금액": v["금액"]}
+            for (품목, 작업명_key, 단가), v in 정렬행
+        ],
+        "총합계": round(총합계),
+    }
+
+
 # ── 거래처마스터 쓰기 API ──────────────────────────────────────
 
 class 거래처행(BaseModel):
+    model_config = ConfigDict(title="ClientCreateRequest")  # Swagger 표시용 영문 별명 — 필드명은 한글 그대로
+
     거래처명: str
     사업자등록번호: Optional[str] = None
     수신이메일: Optional[str] = None
@@ -523,6 +586,8 @@ def 거래처마스터_추가(거래처: 거래처행):
 
 
 class 거래처행_수정(BaseModel):
+    model_config = ConfigDict(title="ClientUpdateRequest")  # Swagger 표시용 영문 별명 — 필드명은 한글 그대로
+
     사업자등록번호: Optional[str] = None
     수신이메일: Optional[str] = None
     비고: Optional[str] = None
@@ -557,6 +622,8 @@ def 거래처마스터_삭제(거래처명: List[str] = Query(...)):
 # ── 단가마스터 쓰기 API ────────────────────────────────────────
 
 class 단가마스터_신규(BaseModel):
+    model_config = ConfigDict(title="PricingCreateRequest")  # Swagger 표시용 영문 별명 — 필드명은 한글 그대로
+
     거래처명: str
     업무명: Optional[str] = None
     작업명: Optional[str] = None
@@ -608,6 +675,8 @@ def 단가마스터_추가(단가: 단가마스터_신규):
 
 
 class 단가마스터_수정(BaseModel):
+    model_config = ConfigDict(title="PricingUpdateRequest")  # Swagger 표시용 영문 별명 — 필드명은 한글 그대로
+
     출력단가: float = 0
     봉입단가: float = 0
     추가봉입단가: float = 0
@@ -665,6 +734,8 @@ def _발급_거래명세서번호(cur, 사업부: str) -> str:
 
 
 class 거래명세서요청_요청(BaseModel):
+    model_config = ConfigDict(title="InvoiceRequestBody")  # Swagger 표시용 영문 별명 — 필드명은 한글 그대로
+
     거래처명: str
     사업부: str
     담당자: str
@@ -726,6 +797,8 @@ def 거래명세서요청(요청: 거래명세서요청_요청):
 
 
 class 거래명세서번호_요청(BaseModel):
+    model_config = ConfigDict(title="InvoiceNumberRequest")  # Swagger 표시용 영문 별명 — 필드명은 한글 그대로
+
     거래명세서번호: str
 
 
@@ -760,6 +833,8 @@ def 거래명세서발행취소(요청: 거래명세서번호_요청):
 
 
 class 거래명세서부분취소_요청(BaseModel):
+    model_config = ConfigDict(title="InvoicePartialCancelRequest")  # Swagger 표시용 영문 별명 — 필드명은 한글 그대로
+
     거래명세서번호: str
     의뢰서번호_목록: List[str]
 
@@ -863,6 +938,8 @@ def 거래명세서부분취소(요청: 거래명세서부분취소_요청):
 # ── 운영통계자료수신 요청/응답 스키마 ──────────────────────────────
 
 class 운영통계행(BaseModel):
+    model_config = ConfigDict(title="OperationRecord")  # Swagger 표시용 영문 별명 — 필드명은 한글 그대로
+
     마케팅담당자: str
     등록자: str
     업무명: str
@@ -880,14 +957,54 @@ class 운영통계행(BaseModel):
 
 
 class 자재행(BaseModel):
+    model_config = ConfigDict(title="MaterialUsageRecord")  # Swagger 표시용 영문 별명 — 필드명은 한글 그대로
+
     작업내역서번호: int
     작업일자: str
     자재종류: str
     작업명: Optional[str] = None  # 2026-07-19 추가 — 아직 실제로 보내주는 곳 없음(API규격서.md 요청 메모 참고)
+    자재명: Optional[str] = None  # 2026-07-19 추가 — 보내주면 merge_자재()가 _봉투종류()로 자동 분류
+    자재형태: Optional[str] = None  # 2026-07-19 추가 — 이미 분류된 값(예: 일반봉투/각대대봉투, 향후 소·중·대봉투 등)을 직접 보내는 경우, 자재명보다 우선 적용
     사용량: int = 0
 
 
 class 운영통계수신요청(BaseModel):
+    # /docs(Swagger)의 "Example Value"가 자재사용현황=[] 기본값을 그대로 보여줘 자재명·자재형태 필드가
+    # 안 보인다는 문제가 있었음(2026-07-19) — docs/API규격서.md 예시와 동일한 값으로 명시해 해결
+    model_config = ConfigDict(
+        title="OperationDataSubmitRequest",  # Swagger 표시용 영문 별명 — 필드명은 한글 그대로
+        json_schema_extra={
+            "example": {
+                "업무의뢰서번호": "93690",
+                "운영통계": [{
+                    "마케팅담당자": "강서윤",
+                    "등록자": "강서윤",
+                    "업무명": "정기청구서",
+                    "작업일자": "2026-07-19 10:00:00",
+                    "작업내역서번호": 12345,
+                    "작업내역서": "거래처명 - 업무상세내용",
+                    "작업명": "개인일반",
+                    "작업내역서상세": "상세 설명 (선택)",
+                    "반제품여부": "N",
+                    "P수": "1P",
+                    "장수": 100,
+                    "건수": 50,
+                    "출력페이지": 100,
+                    "청구페이지": 100,
+                }],
+                "자재사용현황": [{
+                    "작업내역서번호": 12345,
+                    "작업일자": "2026-07-19",
+                    "자재종류": "봉투",
+                    "작업명": "개인일반",
+                    "자재명": "일반봉투 100매",
+                    "자재형태": "일반봉투",
+                    "사용량": 50,
+                }],
+            }
+        },
+    )
+
     업무의뢰서번호: str
     운영통계: List[운영통계행]
     자재사용현황: List[자재행] = []

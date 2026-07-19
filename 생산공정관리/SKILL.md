@@ -26,6 +26,10 @@
 | SKILL-14 | MariaDB DECIMAL(pymysql) 계산 시 float 변환 필수 | ✅ 2026-07-19 |
 | SKILL-15 | Next.js Route Handler 폴더명도 반드시 영문(ASCII) | ✅ 2026-07-19 |
 | SKILL-16 | Next.js 화면 제목 영역 sticky 고정 패턴 (제목 블록) + 표 헤더 전용 박스 스크롤 패턴 | ✅ 완료 (2026-07-19 표 헤더까지 해결) |
+| SKILL-17 | Playwright로 이 프로젝트 화면 테스트 시 `:visible` 필수 (상시 마운트+hidden 탭 구조) | ✅ 2026-07-20 |
+| SKILL-18 | Next.js에서 인증 필요한 바이너리 파일(Excel 등) 다운로드 프록시 패턴 | ✅ 2026-07-20 |
+| SKILL-19 | FastAPI Pydantic 한글 클래스명 — Swagger 예시/표시 개선과 한계 | ✅ 2026-07-20 |
+| SKILL-20 | 계산 로직 리팩터링 시 바이트 단위 회귀 검증 (git show + importlib) | ✅ 2026-07-20 |
 
 ---
 
@@ -734,6 +738,145 @@ CSS `position: sticky`는 **"가장 가까운, overflow가 visible이 아닌 조
 - `max-h-[60vh]`는 화면 대비 적당한 값으로 고정 — 표 내용이 이보다 작으면 스크롤바 없이 그냥 내용 높이만큼만 박스가 줄어듦(정상)
 - **트레이드오프(사용자 확인 후 채택):** 표 영역이 "페이지 전체와 하나로 이어지는 스크롤"이 아니라 **표마다 자체 스크롤바를 가진 독립 박스**가 됨. JS로 스크롤 위치를 직접 계산해 페이지 전체가 하나로 스크롤되는 느낌을 유지하는 대안도 있었으나(가로 스크롤 동기화까지 필요해 코드 복잡도·엣지케이스 부담이 커서), 이 프로젝트는 CSS만으로 안정적으로 해결되는 이 방식을 선택함
 - **진단 방법(같은 부류의 sticky 버그를 다시 만나면):** 코드 추론만으로는 한계가 있음 — Playwright(또는 실제 브라우저 개발자도구)로 `getBoundingClientRect()`를 스크롤 전/후 비교해서, 문제의 sticky 요소가 실제로 창을 기준으로 붙는지, 아니면 특정 조상 요소를 기준으로 고정된 오프셋만큼 떨어진 채 그 조상과 함께 흘러가는지부터 확인할 것. 후자라면 그 조상 중 `overflow`가 `visible`이 아닌 것을 찾아 원인으로 의심.
+
+---
+
+## SKILL-17. Playwright로 이 프로젝트 화면 테스트 시 `:visible` 필수
+
+**목적:** 이 프로젝트의 Next.js 탭 구조(상시 마운트 + `hidden` 클래스로 숨김, SKILL-16 관련 배경과 동일한 이유 — 필터 상태 보존)를 모른 채 Playwright locator를 짜면, 화면에 안 보이는 다른(숨겨진) 탭의 동일한 엘리먼트를 잘못 찾아 `waitFor({state:"visible"})`가 영원히 타임아웃되는 문제 방지
+
+**검증 상태:** ✅ 완료 (2026-07-20, 거래명세서 미리보기 기능 종단 검증 중 실제로 걸려서 발견)
+
+**문제 상황:**
+- `Dashboard.tsx`(탭1~4)·`Tab4.tsx`(미발행목록/발행요청목록/발행완료) 전부 "탭을 언마운트하지 않고 CSS로만 숨김" 패턴을 씀 — 그래서 로그인 직후에도 페이지 DOM에는 `<table>`·체크박스·"거래처" 필터 라벨 등이 **여러 벌** 동시에 존재함(현재 보이는 탭 것 + 숨겨진 나머지 탭 것들)
+- `page.locator('table tbody tr').first()` 처럼 짜면 Playwright는 DOM 순서상 첫 번째 요소를 고르는데, 그게 숨겨진 탭 소속이면 `checked`가 아니라 `waitFor({state:"visible"})`에서 "element is not visible" 상태로 계속 재시도만 하다 타임아웃(기본 30초~)남 — 에러 메시지에 "not visible"이라고 나오지만 셀렉터 자체는 문법적으로 멀쩡해서 원인 파악이 헷갈림
+
+**핵심 규칙:**
+```js
+// 나쁜 예 — 숨겨진 탭의 동일 구조를 먼저 찾을 수 있음
+const checkbox = page.locator('table tbody tr').first().locator('input[type="checkbox"]');
+
+// 좋은 예 — :visible 가상 클래스로 현재 보이는 탭만 한정
+const checkbox = page.locator('table tbody tr:visible').first().locator('input[type="checkbox"]');
+
+// 라벨 기반 검색도 동일하게 적용
+const 거래처Label = page.locator('label:visible', { hasText: /^거래처$/ });
+```
+
+**주의사항:**
+- `getByRole`/`getByText`도 기본적으로 visibility를 걸러주지 않음 — `.first()`가 숨겨진 요소를 고를 수 있다는 점은 동일하게 적용됨
+- 버튼처럼 페이지에 정말 하나만 있는 요소(예: "로그인" 제출 버튼)는 이 문제가 없음 — 여러 탭에 걸쳐 반복되는 구조(표, 필터 사이드바)에서만 신경 쓰면 됨
+- 클릭 액션이 "element intercepts pointer events" 에러로 실패하면(다른 원인) 이미 열린 모달이 그 요소를 가리고 있다는 신호 — 이 문제와는 별개이니 혼동하지 말 것(둘 다 겪었음, 거래명세서 미리보기 검증 과정 참고)
+
+---
+
+## SKILL-18. Next.js에서 인증 필요한 바이너리 파일(Excel 등) 다운로드 프록시 패턴
+
+**목적:** FastAPI의 파일 다운로드 API가 JWT(Authorization 헤더)로 보호돼 있어 브라우저가 그 주소를 직접 열 수 없을 때(httpOnly 쿠키는 브라우저가 자동으로 FastAPI 헤더로 바꿔주지 않음), Next.js Route Handler로 우회하는 방법
+
+**검증 상태:** ✅ 완료 (2026-07-20, `GET /거래명세서엑셀/{no}` 다운로드 버튼 추가 시 최초 적용)
+
+**핵심 로직:**
+```ts
+// frontend/app/api/invoice-excel/[no]/route.ts
+import { NextResponse } from "next/server";
+import { fastapiFetch } from "@/lib/fastapi";  // httpOnly 쿠키 → Authorization 헤더 변환(서버 전용)
+
+export async function GET(_request: Request, { params }: RouteContext<"/api/invoice-excel/[no]">) {
+  const { no } = await params;
+  const res = await fastapiFetch(`/거래명세서엑셀/${encodeURIComponent(no)}`);
+
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({ detail: "다운로드 처리 중 오류가 발생했습니다" }));
+    return NextResponse.json(data, { status: res.status });
+  }
+
+  const buf = await res.arrayBuffer();  // JSON 프록시(res.json())와 다르게 바이너리 그대로 전달
+  return new NextResponse(buf, {
+    status: 200,
+    headers: {
+      "Content-Type": res.headers.get("Content-Type") ?? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "Content-Disposition": res.headers.get("Content-Disposition") ?? `attachment; filename="${no}.xlsx"`,
+    },
+  });
+}
+```
+```tsx
+{/* 화면에서는 그냥 일반 링크로 연결 — Next.js Route Handler는 같은 출처(same-origin)라 브라우저가
+    직접 네비게이션할 때 httpOnly 쿠키를 자동으로 함께 보내므로 fetch()나 JS가 따로 필요 없음 */}
+<a href={`/api/invoice-excel/${encodeURIComponent(no)}`} download>다운로드</a>
+```
+
+**주의사항:**
+- 동적 라우트 폴더명(`[no]`)은 영문이어야 하는 SKILL-15와 무관하게 이미 영문이라 문제 없음 — 폴더명 자체를 한글로 쓰지 않도록 계속 주의
+- 이 Next.js 버전(16.2.10)은 Route Handler의 `params`가 항상 Promise라 `await params`가 필요함(`node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/dynamic-routes.md` 참고) — 타입은 `RouteContext<'/api/경로/[param]'>` 헬퍼를 씀
+- 검증: 임시 로그인 계정으로 Next.js 자체 `/api/login`에 로그인해 세션 쿠키를 받은 뒤, 같은 세션으로 이 프록시를 호출해 실제 xlsx 바이트가 정상 크기로 오는지 확인(FastAPI를 직접 호출하는 게 아니라 반드시 Next.js 경유로 테스트해야 쿠키→헤더 변환까지 검증됨)
+
+---
+
+## SKILL-19. FastAPI Pydantic 한글 클래스명 — Swagger 예시/표시 개선과 한계
+
+**목적:** `/docs`(Swagger UI)에서 요청 스키마가 안 예쁘게 보이는 두 가지 서로 다른 문제(① 기본값 때문에 예시가 빈 배열로 보임 ② 한글 클래스명 때문에 내부 스키마 이름이 뭉개짐)를 각각 정확히 구분해서 고치는 방법과, 못 고치는 부분을 미리 알아두기
+
+**검증 상태:** ✅ 완료 (2026-07-19~20, `POST /운영통계자료수신` 문서 다듬는 과정에서 실제 발견)
+
+**문제 1 — 선택 필드에 기본값(`= []`)이 있으면 Swagger "Example Value"가 그 기본값을 그대로 보여줌:**
+```python
+# 나쁜 예 — Swagger가 "Example Value"에 자재사용현황: [] 를 그대로 표시(실제 필드가 있어도 안 보임)
+class 운영통계수신요청(BaseModel):
+    자재사용현황: List[자재행] = []
+
+# 좋은 예 — model_config로 원하는 예시를 직접 지정
+class 운영통계수신요청(BaseModel):
+    model_config = ConfigDict(json_schema_extra={"example": {"자재사용현황": [{"자재형태": "일반봉투", ...}]}})
+    자재사용현황: List[자재행] = []
+```
+
+**문제 2 — 클래스명이 한글이면 Swagger가 스키마를 서로 연결하는 내부 `$ref` 컴포넌트 이름이 밑줄로 뭉개짐(예: `api____________3`, `__main________________3`):**
+```python
+class 운영통계수신요청(BaseModel):
+    model_config = ConfigDict(title="OperationDataSubmitRequest")  # 화면 표시용 별명 — 필드명은 한글 그대로
+```
+- **된 것:** 스키마의 `title` 속성이 영문으로 채워짐 — Swagger가 중첩 스키마를 펼칠 때 이 `title`을 라벨로 쓰는 위치는 영문으로 보임
+- **안 된 것:** `title`은 `$ref` 컴포넌트 키 이름 자체를 바꾸지 못함(Pydantic이 이 키를 `모듈명.클래스명` 기준으로 따로 생성) — `/docs` 하단 "Schemas" 전체 목록·URL 앵커는 여전히 뭉개진 이름일 수 있음
+- **완전히 고치려면:** 클래스명 자체를 영문으로 바꿔야 함(`class 운영통계수신요청` → `class OperationDataSubmitRequest`) — 코드 전체에서 그 클래스를 참조하는 타입힌트까지 다 같이 바꿔야 하는 더 큰 작업이라, 이 프로젝트는 아직 `title`만 추가한 상태로 남겨둠(사용자 확인 후 보류)
+
+**주의사항:**
+- 필드명(`업무의뢰서번호` 등 실제 JSON key)은 이 작업과 전혀 무관 — 절대 안 바뀜, 바꿀 필요도 없음. `title`은 순수하게 문서/화면 표시용 별명일 뿐
+- 확인 방법: `app.openapi()`를 직접 호출해 `schema['components']['schemas']`의 키(뭉개짐 여부)와 각 값의 `'title'`(개선 여부)을 따로 찍어봐야 두 문제를 안 헷갈림
+
+---
+
+## SKILL-20. 계산 로직 리팩터링 시 바이트 단위 회귀 검증 (git show + importlib)
+
+**목적:** `generate_거래명세서_excel()`처럼 결과물이 복잡한(zipfile/XML 조작) 함수 내부 계산 블록을 별도 함수로 분리하는 "순수 리팩터링"을 할 때, "로직이 한 글자도 안 바뀌었다"는 걸 코드 리뷰가 아니라 실제 실행 결과로 증명하는 방법
+
+**검증 상태:** ✅ 완료 (2026-07-20, `billing.py`에서 `build_품목행()` 분리 시 적용)
+
+**핵심 로직:**
+```python
+import importlib.util, hashlib
+
+# 1. 커밋된(리팩터링 전) 버전을 별도 파일로 뽑아서 독립 모듈로 로드
+# (git show HEAD:./scripts/billing.py > billing_old.py 로 미리 저장해둠)
+spec = importlib.util.spec_from_file_location("billing_old", "billing_old.py")
+billing_old = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(billing_old)
+billing_old.BASE_DIR = Path(r"d:\실제\프로젝트\경로")  # __file__ 기준 상대경로가 임시 파일 위치로 잘못 잡히므로 보정
+billing_old.템플릿_PATH = billing_old.BASE_DIR / "data" / "거래명세서_템플릿_base.xlsx"
+
+# 2. 실제 운영 데이터(예: 이미 발행된 거래명세서 1건)로 신·구 버전 둘 다 실행
+bytes_old = billing_old.generate_거래명세서_excel(df_all, 단가맵, 자재map, 의뢰서번호셋, 발행일)
+bytes_new = billing.generate_거래명세서_excel(df_all, 단가맵, 자재map, 의뢰서번호셋, 발행일)  # 리팩터링 후(현재 import)
+
+# 3. 바이트 자체를 비교(sha256이면 로그에 남기기도 편함)
+assert bytes_old == bytes_new
+```
+
+**주의사항:**
+- `importlib.util.spec_from_file_location`으로 로드한 모듈은 `__file__`이 실제 로드된 경로(스크래치 폴더 등)를 가리키므로, 그 모듈이 `Path(__file__).parent`처럼 상대경로로 참조하는 리소스(템플릿 xlsx 등)가 있으면 로드 직후 해당 경로 변수를 실제 프로젝트 경로로 직접 덮어써야 함 — 안 그러면 `FileNotFoundError`가 리팩터링과 무관하게 발생해서 헷갈림
+- DB에서 읽어온 실제 데이터로 검증해야 의미가 있음(가짜 데이터는 특정 분기를 안 타서 회귀를 놓칠 수 있음) — 이 프로젝트는 이미 발행된 거래명세서 번호를 그대로 재사용(읽기 전용 SELECT만 하므로 DB 오염 없음)
+- 이 기법은 Excel처럼 "출력 형식이 결과물 검증을 어렵게 만드는" 함수에 특히 유용 — JSON을 반환하는 함수는 그냥 값 비교(`==`)로 충분해서 이렇게까지 할 필요 없음
 
 ---
 

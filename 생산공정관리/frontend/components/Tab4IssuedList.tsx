@@ -348,6 +348,7 @@ export default function Tab4IssuedList({
             selected={selected1}
             onToggleRow={toggleGroup}
             onToggleAll={toggleAllGroups}
+            showDownload={mode === "완료"}
           />
 
           {selected1.size > 0 && (

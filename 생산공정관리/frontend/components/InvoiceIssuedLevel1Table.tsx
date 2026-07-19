@@ -8,6 +8,7 @@ type Props = {
   selected: Set<string>;
   onToggleRow: (key: string) => void;
   onToggleAll: (checked: boolean) => void;
+  showDownload?: boolean;
 };
 
 type RowProps = {
@@ -15,11 +16,12 @@ type RowProps = {
   index: number;
   checked: boolean;
   onToggle: (key: string) => void;
+  showDownload?: boolean;
 };
 
 // InvoiceSelectionTable.tsx의 React.memo Row 패턴 재사용 — 체크박스 하나 토글할 때 전체 행이
 // 다시 그려지는 성능 문제를 막기 위해 각 행에 checked(boolean) 스칼라만 전달한다([4-B]에서 실측 검증됨).
-const Row = memo(function Row({ group: g, index, checked, onToggle }: RowProps) {
+const Row = memo(function Row({ group: g, index, checked, onToggle, showDownload }: RowProps) {
   return (
     <tr className="border-t border-gray-100 dark:border-gray-800">
       <td className="px-3 py-1.5">
@@ -64,11 +66,32 @@ const Row = memo(function Row({ group: g, index, checked, onToggle }: RowProps) 
           `${g.예상공급가액.toLocaleString()}원`
         )}
       </td>
+      {showDownload && (
+        <td className="px-3 py-1.5">
+          <a
+            href={`/api/invoice-excel/${encodeURIComponent(g.거래명세서번호)}`}
+            download
+            className="text-blue-600 hover:underline dark:text-blue-400"
+          >
+            다운로드
+          </a>
+        </td>
+      )}
     </tr>
   );
 });
 
-export default function InvoiceIssuedLevel1Table({ groups, selected, onToggleRow, onToggleAll }: Props) {
+// showDownload=true(발행완료 탭 전용, Streamlit 시절과 동일한 배치 — CHANGELOG 2026-07-17 "다운로드
+// 버튼... 발행완료 탭 전용으로 이동" 참고)면 마지막 열에 거래명세서번호 단위 다운로드 링크를 추가한다.
+// 체크박스 선택과 무관하게 행마다 바로 내려받을 수 있어, 그룹(거래명세서번호+업무명) 여러 개를 선택했을 때
+// "어느 파일을 받는 건지" 모호해지는 문제 없이 항상 명확하다.
+export default function InvoiceIssuedLevel1Table({
+  groups,
+  selected,
+  onToggleRow,
+  onToggleAll,
+  showDownload = false,
+}: Props) {
   const 전체선택됨 = groups.length > 0 && groups.every((g) => selected.has(g.key));
 
   return (
@@ -98,15 +121,25 @@ export default function InvoiceIssuedLevel1Table({ groups, selected, onToggleRow
             <th className="px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300">봉투수량</th>
             <th className="px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300">삽지수량</th>
             <th className="px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300">예상공급가액</th>
+            {showDownload && (
+              <th className="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-300">다운로드</th>
+            )}
           </tr>
         </thead>
         <tbody>
           {groups.map((g, i) => (
-            <Row key={g.key} group={g} index={i} checked={selected.has(g.key)} onToggle={onToggleRow} />
+            <Row
+              key={g.key}
+              group={g}
+              index={i}
+              checked={selected.has(g.key)}
+              onToggle={onToggleRow}
+              showDownload={showDownload}
+            />
           ))}
           {groups.length === 0 && (
             <tr>
-              <td colSpan={15} className="px-3 py-6 text-center text-xs text-gray-400">
+              <td colSpan={showDownload ? 16 : 15} className="px-3 py-6 text-center text-xs text-gray-400">
                 조건에 맞는 항목이 없습니다.
               </td>
             </tr>

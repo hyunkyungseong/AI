@@ -129,6 +129,8 @@ touch docs/CHANGELOG.md
 데이터 갱신 후 실행  : 데이터갱신_후_실행.bat
 전처리만 실행        : python scripts/preprocess.py
 문법 검사            : python -m py_compile scripts/app.py
+API 서버 실행        : API서버_실행.bat  (FastAPI, localhost:8000)
+API 서버 재시작      : API서버_재시작.bat (포트 8000 프로세스만 종료 후 재기동 — 코드 수정 후 반영 시 사용)
 ```
 
 ## 📏 코딩 규칙
