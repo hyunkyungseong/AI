@@ -33,6 +33,7 @@ def load_자재_raw():
     자재df = 자재df.rename(columns={
         "업무의뢰서코드": "업무의뢰서번호",
         "작업내역서코드": "작업내역서번호",
+        "작업이름": "작업명",
     })
     자재df["업무의뢰서번호"] = 자재df["업무의뢰서번호"].astype(int)
     자재df["작업내역서번호"] = 자재df["작업내역서번호"].astype(int)
@@ -73,8 +74,8 @@ def save_자재사용현황_to_mariadb(자재_long):
 
     값목록 = [dt.자재_행_변환(r) for _, r in 자재_long.iterrows()]
     sql = """
-        INSERT INTO 자재사용현황 (업무의뢰서번호, 작업내역서번호, 작업일자, 자재종류, 자재형태, 사용량)
-        VALUES (%s, %s, %s, %s, %s, %s)
+        INSERT INTO 자재사용현황 (업무의뢰서번호, 작업내역서번호, 작업명, 작업일자, 자재종류, 자재형태, 사용량)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
     """
 
     conn = pymysql.connect(

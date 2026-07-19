@@ -391,3 +391,41 @@ def build_자재map(자재df):
         자재map.setdefault(key, {"일반봉투_수량": 0, "각대대봉투_수량": 0, "용지_수량": 0, "삽지_수량": 0})
         자재map[key][r["_컬럼"]] = int(r["사용량"])
     return 자재map
+
+
+def build_의뢰서_summary(df_all, 자재df):
+    """운영통계자료(df_all)를 업무의뢰서번호 단위로 집계 — app.py의 동명 함수(124~143행)와 동일 로직.
+    자재 데이터만 api.py의 _자재map_조회() 결과 형태(라인 단위: 업무의뢰서번호·작업이름·자재종류·자재형태·사용량)를
+    받아 의뢰서 단위로 재집계한다(app.py는 load_자재_summary()로 로컬 엑셀을 직접 읽지만 계산 결과는 동일).
+
+    df_all 필요 컬럼: 업무의뢰서번호·거래처명·업무명·작업명·업무명상세·사업부·연월·날짜·마케팅담당자·
+                      확정청구페이지·건수·출력페이지·장수
+    반환 컬럼: 업무의뢰서번호, 거래처명, 업무명, 작업명, 업무명상세, 사업부, 연월, 날짜, 마케팅담당자,
+              봉입건수_합, 출력페이지_합, 장수_합, 확정청구페이지,
+              봉투_사용량_합, 용지_사용량_합, 삽지_사용량_합 (전부 int)
+    """
+    first = df_all.groupby("업무의뢰서번호", sort=False).first().reset_index()
+    agg = df_all.groupby("업무의뢰서번호", sort=False).agg(
+        봉입건수_합=("건수", "sum"),
+        출력페이지_합=("출력페이지", "sum"),
+        장수_합=("장수", "sum"),
+        확정청구페이지=("확정청구페이지", "sum"),
+    ).reset_index()
+    result = first[["업무의뢰서번호", "거래처명", "업무명", "작업명", "업무명상세",
+                     "사업부", "연월", "날짜", "마케팅담당자"]].merge(agg, on="업무의뢰서번호")
+
+    if 자재df is not None and not 자재df.empty:
+        z = 자재df.copy()
+        z["_컬럼"] = z["자재종류"].map({"봉투": "봉투_사용량_합", "용지": "용지_사용량_합", "삽지": "삽지_사용량_합"})
+        z = z[z["_컬럼"].notna()]
+        if not z.empty:
+            자재_의뢰서 = z.groupby(["업무의뢰서번호", "_컬럼"])["사용량"].sum().unstack(fill_value=0).reset_index()
+            result = result.merge(자재_의뢰서, on="업무의뢰서번호", how="left")
+
+    # SKILL-12: 자재종류 일부만 등장하는 소량 결과(사업부 필터 등)에서는 특정 자재종류 컬럼 자체가
+    # 안 생길 수 있으므로 항상 3개 컬럼을 보장한다.
+    for c in ("봉투_사용량_합", "용지_사용량_합", "삽지_사용량_합"):
+        if c not in result.columns:
+            result[c] = 0
+        result[c] = result[c].fillna(0).astype(int)
+    return result

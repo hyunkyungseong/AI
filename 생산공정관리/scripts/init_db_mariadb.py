@@ -88,11 +88,12 @@ def get_db():
             id              INT AUTO_INCREMENT PRIMARY KEY,
             업무의뢰서번호  VARCHAR(20) NOT NULL,
             작업내역서번호  INT NOT NULL,
+            작업명          VARCHAR(200) NULL,
             작업일자        DATE NOT NULL,
             자재종류        VARCHAR(20) NOT NULL,
             자재형태        VARCHAR(20) NULL,
             사용량          INT DEFAULT 0,
-            UNIQUE KEY uk_자재 (업무의뢰서번호, 작업내역서번호, 작업일자, 자재종류, 자재형태),
+            UNIQUE KEY uk_자재 (업무의뢰서번호, 작업내역서번호, 작업명, 작업일자, 자재종류, 자재형태),
             INDEX idx_업무의뢰서번호 (업무의뢰서번호)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """,
@@ -203,6 +204,17 @@ def migrate():
                 print("  마이그레이션: 자재사용현황.자재형태 컬럼 추가 완료")
             else:
                 print("  마이그레이션: 자재사용현황.자재형태 컬럼 이미 존재 (건너뜀)")
+
+            if not _컬럼_존재(cur, "자재사용현황", "작업명"):
+                cur.execute("ALTER TABLE 자재사용현황 DROP INDEX uk_자재")
+                cur.execute("ALTER TABLE 자재사용현황 ADD COLUMN 작업명 VARCHAR(200) NULL AFTER 작업내역서번호")
+                cur.execute(
+                    "ALTER TABLE 자재사용현황 ADD UNIQUE KEY uk_자재 "
+                    "(업무의뢰서번호, 작업내역서번호, 작업명, 작업일자, 자재종류, 자재형태)"
+                )
+                print("  마이그레이션: 자재사용현황.작업명 컬럼 추가 완료")
+            else:
+                print("  마이그레이션: 자재사용현황.작업명 컬럼 이미 존재 (건너뜀)")
 
 
 def main():

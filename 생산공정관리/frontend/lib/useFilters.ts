@@ -22,7 +22,7 @@ function lastDayOfMonth(ym: string): string {
   return toISODate(new Date(y, m, 0));
 }
 
-function uniqSorted(values: string[]): string[] {
+export function uniqSorted(values: string[]): string[] {
   return Array.from(new Set(values.filter(Boolean))).sort((a, b) => a.localeCompare(b, "ko"));
 }
 
@@ -43,7 +43,7 @@ function defaultRange(rows: 운영통계행[]) {
 // useEffect로 커밋 후 지우는 대신 렌더링 중 바로 조정하는 방식(React 공식 권장 패턴,
 // react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes) —
 // 깜빡임 없이 즉시 반영되고, "setState in effect" 린트 경고도 발생하지 않는다.
-function usePrunedSelection(selected: string[], options: string[], setSelected: (next: string[]) => void): string[] {
+export function usePrunedSelection(selected: string[], options: string[], setSelected: (next: string[]) => void): string[] {
   const [prevOptions, setPrevOptions] = useState(options);
   if (options !== prevOptions) {
     setPrevOptions(options);

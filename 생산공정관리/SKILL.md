@@ -24,6 +24,8 @@
 | SKILL-12 | 배치→실시간 API 전환 시 pivot 컬럼 누락 방지 | ✅ 2026-07-19 |
 | SKILL-13 | FastAPI 경로 파라미터명은 반드시 영문(ASCII) | ✅ 2026-07-19 |
 | SKILL-14 | MariaDB DECIMAL(pymysql) 계산 시 float 변환 필수 | ✅ 2026-07-19 |
+| SKILL-15 | Next.js Route Handler 폴더명도 반드시 영문(ASCII) | ✅ 2026-07-19 |
+| SKILL-16 | Next.js 화면 제목 영역 sticky 고정 패턴 (제목 블록) + 표 헤더 전용 박스 스크롤 패턴 | ✅ 완료 (2026-07-19 표 헤더까지 해결) |
 
 ---
 
@@ -637,6 +639,101 @@ print(route.path_regex.pattern)
 - 증상은 코드 경로에 따라 다르게 나타남(`int` 누산이면 안 터지고 `float` 누산이면 터짐) — "같은 데이터인데 이 함수만 에러난다"고 성급히 로직 차이를 의심하기보다, 먼저 두 함수의 **누산 변수 초기값 타입**부터 비교해볼 것
 - pymysql의 `DictCursor`는 컬럼 타입을 그대로 보존해서 반환함(`INT`→`int`, `DECIMAL`→`Decimal`, `DATE`→`datetime.date`) — SQLite(타입 느슨함)에서 MariaDB로 옮긴 코드가 있다면, 숫자 계산이 들어가는 지점마다 이 차이를 한 번씩 점검할 가치가 있음
 - `float(x or 0)` 형태로 변환하면 `None`(NULL)도 함께 0으로 안전 처리됨 — `float(None)`은 `TypeError`가 나므로 반드시 `or 0`을 붙일 것
+
+---
+
+## SKILL-15. Next.js Route Handler 폴더명도 반드시 영문(ASCII)
+
+**목적:** `frontend/app/api/{한글이름}/route.ts`처럼 App Router API 경로 폴더명을 한글로 쓰면 라우팅이 항상 실패(404)하는 문제 방지
+
+**검증 상태:** ✅ 완료 (2026-07-19, `app/api/거래명세서요청/route.ts` 신규 추가 중 실제 발견)
+
+**문제 상황:**
+- SKILL-13(FastAPI)에서는 "경로의 고정 부분은 한글이어도 되고, `{}` 안의 파라미터 이름만 영문이면 된다"는 규칙을 확인했었음 — 이번에도 같은 관례가 통할 거라 생각하고 Next.js Route Handler를 `app/api/거래명세서요청/route.ts`(고정 세그먼트, 파라미터 아님)로 만들었으나 **완전히 다른 결과**가 나옴
+- Next.js(Turbopack, 16.2.10) App Router는 한글 폴더명 자체를 라우트로 아예 인식하지 못함 — 개발 서버를 완전히 재시작해도, URL을 UTF-8 percent-encoding(`%EA%B1%B0...`)해서 호출해도 항상 404
+- `.next/dev/server/app/api/` 빌드 산출물을 확인해보면 영문 라우트(`login`)는 컴파일되어 있지만 한글 라우트는 아예 생성 시도조차 안 됨 — Turbopack의 파일시스템 라우트 탐색 단계에서부터 걸러짐
+- 브라우저에서 호출한 `fetch()`는 이 404 HTML 페이지를 받아 `res.json()` 파싱에 실패하면서 catch 블록으로 빠져 "서버에 연결할 수 없습니다" 같은 애매한 오류 메시지로 표시됨 — 실제 원인(라우팅 실패)과 증상(네트워크 오류처럼 보임)이 동떨어져 있어 원인 파악이 까다로움
+
+**핵심 규칙:**
+```
+# 나쁜 예 — Route Handler 폴더명이 한글 → 항상 404
+frontend/app/api/거래명세서요청/route.ts
+
+# 좋은 예 — 폴더명만 영문으로, 내부에서 호출하는 FastAPI 쪽 경로는 한글 그대로 둬도 무방
+frontend/app/api/invoice-request/route.ts
+  → 내부에서 fastapiFetch("/거래명세서요청", ...) 호출 (FastAPI 쪽은 SKILL-13 규칙대로 정상 동작)
+```
+
+**진단 방법 (같은 증상 재현 시):**
+1. 브라우저/프론트 코드에서는 "서버에 연결할 수 없습니다" 류의 catch-all 오류만 보임 — 먼저 해당 Route Handler를 직접 `curl -i -X POST http://localhost:3000/api/{경로}`로 호출해 실제 상태 코드부터 확인 (404 HTML이면 이 문제, JSON 401/400/500이면 다른 원인)
+2. `.next/dev/server/app/api/` (또는 프로덕션 빌드면 `.next/server/app/api/`) 아래에 해당 라우트 폴더가 실제로 생성됐는지 확인 — 없으면 라우트 자체가 인식되지 않은 것
+3. URL을 percent-encoding해서 다시 호출해봐도 결과가 같다면 인코딩 문제가 아니라 라우터가 폴더명 자체를 못 읽는 것
+
+**주의사항:**
+- SKILL-13(FastAPI/Starlette)과 절대 같은 규칙으로 착각하지 말 것 — 프레임워크마다 한글 경로 지원 범위가 다르므로, 새 프레임워크에 처음 한글 경로를 쓸 때는 반드시 실제로 호출해서 검증할 것
+- Next.js Route Handler(`app/api/**/route.ts`)뿐 아니라 일반 페이지 라우트(`app/**/page.tsx`)도 동일한 제약이 있을 가능성이 높음 — 아직 실측하지 않았으나 새로 한글 페이지 경로가 필요해지면 이 스킬부터 참고해서 먼저 검증할 것
+- 이 프로젝트의 API 경로 자체(FastAPI, 예: `/거래명세서요청`)는 한글을 그대로 쓰는 게 기존 관례이므로, "Next.js Route Handler 폴더명만 영문, 그 안에서 프록시하는 FastAPI 경로 문자열은 한글 유지"로 역할을 분리해서 기억할 것
+
+---
+
+## SKILL-16. Next.js 화면 제목 영역 sticky 고정 패턴 + 표 헤더 전용 박스 스크롤
+
+**목적:** 표가 길어 스크롤이 필요한 화면에서 제목·안내문구·액션 버튼(+선택 요약)이 스크롤을 따라 사라지지 않고 화면 위쪽에 계속 보이도록 고정 — 사용자 요청으로 향후 신규 화면에도 기본 적용하는 표준 패턴으로 채택 (2026-07-19, `Tab4Invoice.tsx`·`Tab4IssuedList.tsx`에 최초 적용)
+
+**검증 상태:** ✅ 완료 (2026-07-19 제목 블록 sticky 완료, 표 헤더(thead)까지 이어붙이는 부분도 같은 날 최종 해결)
+
+**핵심 규칙:**
+```tsx
+<main className="flex flex-1 flex-col">
+  <div className="sticky top-0 z-10 space-y-3 border-b border-gray-200 bg-background px-6 py-4 dark:border-gray-800">
+    {/* 제목, 부제(조회 결과 N건 등), 배너, 액션 버튼 — 항상 보여야 할 것만 */}
+    <div className="flex flex-wrap items-start justify-between gap-4">
+      <div>
+        <h1>...</h1>
+        <p>...</p>
+      </div>
+      {/* 선택 요약처럼 우측에 붙일 인라인 정보가 있으면 여기 */}
+    </div>
+  </div>
+
+  <div className="space-y-4 p-6">
+    {/* 표·상세 등 스크롤되는 실제 콘텐츠 */}
+  </div>
+</main>
+```
+
+- **`bg-background` 필수**: `app/globals.css`의 `@theme inline { --color-background: var(--background); }`으로 등록된 Tailwind v4 토큰 — 라이트(`#ffffff`)/다크(`#0a0a0a`) 실제 페이지 배경과 항상 정확히 일치해서, sticky 블록이 스크롤되는 콘텐츠를 확실히 가려준다. `bg-white dark:bg-gray-900` 같은 카드용 배경색을 쓰면 미묘하게 색이 달라 보이거나 다크모드 대응을 따로 신경써야 함.
+- **`overflow-y-auto`를 `<main>`에 걸지 말 것**: 이 프로젝트는 최상위 레이아웃이 `min-h-screen`(고정 높이 아님)이라 내부 요소에 `overflow-y-auto`를 걸어도 실제로는 스크롤이 발생하지 않음(높이가 애초에 제한 안 됨) — 죽은 코드가 됨. 스크롤은 항상 window(문서) 레벨에서 일어나므로 `position: sticky`도 window 기준으로 자연스럽게 동작한다.
+- **탭 전환 시 스크롤 위치 공유 주의**: Dashboard.tsx/Tab4.tsx 둘 다 탭을 상시 마운트 + `hidden` 클래스로 숨기는 패턴(필터 상태 보존 목적)이라, 스크롤도 window 하나를 모든 탭이 공유한다. 탭을 바꿔도 스크롤 위치가 초기화되지 않는 건 sticky 도입 이전부터 있던 기존 동작이라 이번에 새로 생긴 문제 아님 — 알고 있을 것.
+- **z-index**: 이번엔 sticky 블록이 화면당 1개뿐이라 `z-10`이면 충분. 나중에 sticky를 여러 단(예: 상위 탭 네비게이션까지 sticky)으로 쌓으면 위쪽일수록 큰 z-index를 줘야 함.
+
+**주의사항:**
+- 선택 요약처럼 내용量이 가변적인 컴포넌트를 제목 옆에 인라인으로 붙일 땐 부모에 `flex-wrap`을 줘서 좁은 화면에서 줄바꿈되게 해야 함(`justify-between`만 있으면 좁을 때 겹칠 수 있음).
+
+### 확장 — 표 `<thead>`까지 이어붙여 고정하기 — ✅ 해결 (2026-07-19, Playwright로 실제 브라우저 실측 후 확정)
+
+**이전 시도(ResizeObserver로 `stickyTop` 측정 후 `<thead style={{top: stickyTop}}>`, `overflow-y-clip` 추가) 둘 다 실패했던 진짜 원인이 실측으로 확정됨:**
+
+CSS `position: sticky`는 **"가장 가까운, overflow가 visible이 아닌 조상"을 기준으로 계산되며, 그 조상이 실제로 스크롤되는지 여부와 무관하게 무조건 그 조상이 기준이 된다**(MDN에 명시된 동작). 표를 감싼 `overflow-x-auto` wrapper div가 정확히 이 조건에 해당해서, `<thead>`의 sticky가 **창(window) 스크롤이 아니라 이 wrapper div를 기준**으로 계산되고 있었다. 그런데 이 wrapper는 내부적으로 스크롤되는 일이 없으므로(스크롤은 항상 창 레벨), thead는 실제로 "붙는" 게 아니라 **wrapper 상단에서 `stickyTop`px 떨어진 자리에 고정된 채로 창 스크롤을 그대로 따라 흘러갔다.** Playwright로 스크롤 전/후 `getBoundingClientRect()`를 실측한 결과, 스크롤을 아무리 내려도 `thead.top - wrapper.top` 값이 정확히 `stickyTop`(88px)으로 고정돼 있음을 확인해 이 메커니즘을 확정함(부가로 `ResizeObserver`의 기본 `contentRect`가 padding·border를 제외한 값이라 `stickyTop` 자체도 33px 부족했던 것도 함께 발견).
+
+**결론: 가로 스크롤이 필요한 표(`overflow-x-auto`)와 "창 스크롤에 붙는 thead"를 동시에 만족하는 순수 CSS 방법은 없다** — sticky는 항상 가장 가까운 오버플로 조상에 종속되기 때문. 대신, **표 자신을 높이 제한된 독립 스크롤 박스로 만들어(`max-height` + `overflow-auto`, 가로·세로 모두), thead가 그 박스 자기 자신을 기준으로 `top: 0`에 붙게 하는 방식**으로 전환해 해결했다 — 이 경우 박스 자신이 진짜로 스크롤되는 조상이므로 sticky가 스펙대로 정확히 동작한다. `ResizeObserver`/`stickyTop` 측정 코드 전체가 필요 없어져 코드도 더 단순해졌다.
+
+**표 컴포넌트의 최종 형태 (`InvoiceSelectionTable.tsx` 등 4개 표 공통)**
+```tsx
+<div className="max-h-[60vh] overflow-auto rounded-lg border border-gray-200 dark:border-gray-800">
+  <table className="whitespace-nowrap text-sm">
+    <thead className="sticky top-0 z-[5] bg-gray-50 dark:bg-gray-900">
+      {/* ... */}
+    </thead>
+    <tbody>{/* ... */}</tbody>
+  </table>
+</div>
+```
+- `stickyTop` prop, `useElementHeight` 훅(`frontend/lib/useElementHeight.ts`) 전부 제거 — 더 이상 제목 블록 높이를 측정해서 넘겨줄 필요가 없다(thead가 자기 박스 기준 `top:0`이라 항상 정확함)
+- 제목 블록 자체의 sticky(`Tab4Invoice.tsx`/`Tab4IssuedList.tsx`의 `sticky top-0`, 창 스크롤 기준)는 그대로 유지 — 이건 애초에 overflow 조상이 없어서 원래도 정상 동작하고 있었음
+- `max-h-[60vh]`는 화면 대비 적당한 값으로 고정 — 표 내용이 이보다 작으면 스크롤바 없이 그냥 내용 높이만큼만 박스가 줄어듦(정상)
+- **트레이드오프(사용자 확인 후 채택):** 표 영역이 "페이지 전체와 하나로 이어지는 스크롤"이 아니라 **표마다 자체 스크롤바를 가진 독립 박스**가 됨. JS로 스크롤 위치를 직접 계산해 페이지 전체가 하나로 스크롤되는 느낌을 유지하는 대안도 있었으나(가로 스크롤 동기화까지 필요해 코드 복잡도·엣지케이스 부담이 커서), 이 프로젝트는 CSS만으로 안정적으로 해결되는 이 방식을 선택함
+- **진단 방법(같은 부류의 sticky 버그를 다시 만나면):** 코드 추론만으로는 한계가 있음 — Playwright(또는 실제 브라우저 개발자도구)로 `getBoundingClientRect()`를 스크롤 전/후 비교해서, 문제의 sticky 요소가 실제로 창을 기준으로 붙는지, 아니면 특정 조상 요소를 기준으로 고정된 오프셋만큼 떨어진 채 그 조상과 함께 흘러가는지부터 확인할 것. 후자라면 그 조상 중 `overflow`가 `visible`이 아닌 것을 찾아 원인으로 의심.
 
 ---
 
