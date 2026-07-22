@@ -9,9 +9,9 @@
 
 | 항목 | 내용 |
 |---|---|
-| **현재 단계** | 1단계(MariaDB+FastAPI 백엔드) 완료 → 5단계(Next.js 프론트엔드) [1]~[4-F] 전체 완료(2026-07-19) → **2026-07-20 추가 작업 완료**: 생산공정관리시스템 전달용 API 문서 분리(`docs/API규격서_생산공정관리시스템전달용.md`), 실시간 API 자재형태(봉투 구분) 수신 지원([Phase 1], 소·중·대봉투 확장은 `.claude/plans/plan_봉투크기단가확장.md`의 [Phase 2]로 보류), 거래명세서 미리보기 기능(요청 클릭→미리보기→확정), 발행완료 화면 거래명세서 다운로드 버튼 누락 수정. Streamlit(`app.py`)은 당분간 계속 병행 사용(사용자 확정). 상세: `.claude/plans/plan_5단계_Next.js프론트엔드.md`, `docs/CHANGELOG.md` 2026-07-20 항목 |
+| **현재 단계** | 1단계(MariaDB+FastAPI 백엔드) 완료 → 5단계(Next.js 프론트엔드) [1]~[4-F] 전체 완료(2026-07-19) → 2026-07-20 추가 작업(API 문서 분리, 자재형태 실시간 수신 지원, 거래명세서 미리보기·다운로드) → **2026-07-20 MariaDB+FastAPI를 사무실 PC로 이관 완료(브라우저 최종 확인까지 완료)**. Streamlit(`app.py`)은 당분간 계속 병행 사용(사용자 확정). 상세: `.claude/plans/plan_1단계_MariaDB전환.md` [6단계](완료), `docs/CHANGELOG.md` 2026-07-20 항목 |
 | **핵심 데이터** | `data/운영통계자료.xlsx` 36,804행·15컬럼(+파생 11컬럼), `data/자재사용현황.xlsx` |
-| **DB 현황** | MariaDB(로컬, `dashboard` DB) — Streamlit은 여전히 SQLite(`work/dashboard.db`)·pkl 직접 사용(병행) |
+| **DB·API 서버 위치 (2026-07-20 갱신)** | **사무실 PC**(`192.168.30.201`) — MariaDB(`dashboard` DB, 로컬 접속 전용)+FastAPI(**포트 8001**, 사무실 PC의 기존 서비스 "ibx dashboard"가 8000을 이미 점유해 우회) 함께 배치. 로컬 PC의 Next.js(`frontend/.env.local`)가 이 주소로 접속. 로컬 PC MariaDB·API서버(포트 8000)는 안전장치로 그대로 유지(미삭제). Streamlit은 여전히 SQLite(`work/dashboard.db`)·pkl 직접 사용(병행) |
 | **주요 파생컬럼** | 거래처명(파싱), 청구페이지(3규칙), 반제품여부(봉입건수=0), 자재형태(일반봉투/각대대봉투, 2026-07-19 추가) |
 | **공급가액 공식** | 출력료 + 봉입료 + 추가봉입비 + 용지제작비 + 봉투제작비 + 삽지제작비 |
 | **검색 단위** | 업무의뢰서번호(PK, VARCHAR(20) 문자열 식별자 — INT 아님, float→int 변환은 pkl 쪽 레거시 값에서만 필요) |
@@ -123,32 +123,34 @@ pip install Pillow==11.2.1
 
 ## 🚀 최종 배포 목표
 
-> ⚠️ **현재 단계:** 로컬 MariaDB+FastAPI 백엔드 구축 완료 → **Next.js 프론트엔드 진행 중** — 탭1(작업현황요약)·탭2(거래처별현황)·탭3(담당자별현황) 화면 완료, 탭4(거래명세서 관리)는 백엔드 준비([4-A]: 자재형태 컬럼+계산/Excel 로직 FastAPI 이전) 완료 후 화면 구현([4-B] 이후) 착수 예정
+> ⚠️ **현재 단계:** Next.js 5단계 [1]~[4-F] 전체 완료(2026-07-19) → **MariaDB+FastAPI를 사무실 PC로 이관 완료(2026-07-20, 브라우저 최종 확인까지 완료)** — 아래 "서버 위치" 참고
 > **최종 목표 (2026-07-19 확정):** Next.js(Vercel 배포) + FastAPI + MariaDB로 전체 재구축
-> **전환 방식 (2026-07-19 수정):** ~~백엔드 구축 → Streamlit을 API 호출 방식으로 전환 → Next.js~~ 대신, **Streamlit(app.py)을 API 호출 방식으로 바꾸는 중간 단계는 건너뛰고 Next.js로 직행**하기로 결정 (규모가 비슷한 작업이라 최종 목표에 바로 기여하는 쪽 선택). Streamlit은 지금 상태(SQLite/pkl 직접 접근) 그대로 유지하며, Next.js 화면을 탭 단위로 하나씩 완성해 그 영역을 대체
-> **서버 위치:** 사무실 PC 계속 사용 (MariaDB·FastAPI 상주). **보안:** 사내 전용, 로그인 필요 (거래처 단가·매출 등 민감정보) — 로그인(담당자별 개별 계정) 구현 완료
+> **전환 방식 (2026-07-19 수정):** ~~백엔드 구축 → Streamlit을 API 호출 방식으로 전환 → Next.js~~ 대신, **Streamlit(app.py)을 API 호출 방식으로 바꾸는 중간 단계는 건너뛰고 Next.js로 직행**하기로 결정. Streamlit은 지금 상태(SQLite/pkl 직접 접근) 그대로 유지하며, Next.js 화면을 탭 단위로 하나씩 완성해 그 영역을 대체
+> **서버 위치 (2026-07-20 갱신 — 목표 달성):** MariaDB·FastAPI 모두 **사무실 PC(`192.168.30.201`)로 이관 완료**. FastAPI는 원래 목표대로 포트 8000이 아니라 **포트 8001**로 동작 중(사무실 PC에 이미 있던 다른 서비스 "ibx dashboard"가 8000 사용 중이라 우회, `API서버_실행_사무실PC.bat` 참고). **보안:** 사내 전용, 로그인 필요 — 로그인(담당자별 개별 계정) 구현 완료, MariaDB는 사무실 PC 내부(`127.0.0.1`) 접속만 허용해 포트 3306은 네트워크에 노출하지 않음
 > **⚠️ 데이터 이원화:** 당사 생산공정관리시스템이 `/운영통계자료수신`으로 MariaDB에만 실시간 반영 → Streamlit(SQLite/pkl 기준)과 Next.js(MariaDB 기준) 화면 숫자가 서서히 달라질 수 있음 (의도된 "당분간 병행" 상태)
 > **Vercel 배포 시점 결정(2026-07-19):** 지금 바로 배포 연동하지 않고, 로컬에서 화면을 더 다듬은 뒤 배포하기로 함
-> 상세 체크리스트: `.claude/plans/plan_1단계_MariaDB전환.md`(백엔드, 완료) / `.claude/plans/plan_5단계_Next.js프론트엔드.md`(프론트엔드, 다음 진행)
+> 상세 체크리스트: `.claude/plans/plan_1단계_MariaDB전환.md`(백엔드, [6단계] 이관 거의 완료) / `.claude/plans/plan_5단계_Next.js프론트엔드.md`(프론트엔드, 완료)
 
-### 목표 아키텍처
+### 아키텍처 (2026-07-20 갱신 — 현재 실제 상태)
 ```
-[현재 — 백엔드 완료, 로컬 PC에서 개발 중]
-  로컬 PC
+  사무실 PC (192.168.30.201)
   ├── MariaDB (운영통계·자재사용현황[자재형태 컬럼 포함]·거래처마스터·단가마스터·거래명세서[정규화]·사용자 등 8개 테이블)
-  ├── FastAPI (scripts/api.py, port 8000, 로그인 인증 포함) → MariaDB
-  │     └── scripts/billing.py(신규) — 금액 계산·Excel 생성 공용 모듈, app.py와 공유
-  ├── 당사 생산공정관리시스템 → POST /운영통계자료수신 (실시간 Push)
-  ├── Streamlit(app.py) → 여전히 SQLite(work/dashboard.db)·processed.pkl 직접 접근(병행 운영), 계산·Excel 로직만 billing.py로 이전(동작 동일)
-  └── Next.js(frontend/) → FastAPI 호출 — 탭1·2·3 완료, 탭4(거래명세서 관리) 백엔드 준비 완료·화면 구현 예정
+  │     └── 127.0.0.1(로컬 접속)만 허용 — 포트 3306 네트워크 미노출
+  ├── FastAPI (scripts/api.py, **port 8001**, 로그인 인증 포함) → MariaDB(127.0.0.1)
+  │     └── scripts/billing.py — 금액 계산·Excel 생성 공용 모듈
+  ├── 당사 생산공정관리시스템 → POST /운영통계자료수신 (실시간 Push, 인터넷 경유 접속 방식은 별도 확정 필요)
+  └── 실행: API서버_실행_사무실PC.bat (포트 8001 전용, 기존 API서버_실행.bat은 포트 8000 고정이라 이 PC에선 사용 불가)
 
-[최종 목표 — Next.js + Vercel]
+  로컬 PC (개발용)
+  ├── MariaDB·FastAPI(포트 8000) — 안전장치로 그대로 유지(미삭제), 현재는 미사용
+  ├── Streamlit(app.py) → 여전히 SQLite(work/dashboard.db)·processed.pkl 직접 접근(병행 운영)
+  └── Next.js(frontend/) → frontend/.env.local의 FASTAPI_URL=http://192.168.30.201:8001로 사무실 PC FastAPI 호출
+
+[다음 — Vercel 배포 시]
   Vercel (Next.js 화면, GitHub 연동 자동배포)
-        │  HTTPS (Cloudflare Tunnel 경유)
+        │  HTTPS (Cloudflare Tunnel 경유, 미착수)
         ▼
-  사무실 PC
-  ├── FastAPI (로그인 인증) → MariaDB
-  └── Next.js 전환이 끝난 탭부터 Streamlit 제거, 미전환 탭만 당분간 병행 운영
+  사무실 PC (위 구조 그대로 재사용)
 ```
 
 ### 접속 방법 (배포 후)
@@ -296,9 +298,11 @@ scripts/preprocess.py                  scripts/api.py
 | 외부 연결 | — | Cloudflare Tunnel | Vercel → 사무실 PC FastAPI 호출 |
 | 이메일 발송 | smtplib (미구현) | smtplib | 거래명세서 이메일 발송 |
 
-- **현재 실행:** `대시보드_실행.bat` 더블클릭 → `http://localhost:8501`
-- **중간 단계 실행 (백엔드 구축 후):** FastAPI(`scripts/api.py`, port 8000) 먼저 기동 → Streamlit이 API 호출
-- **최종 목표:** Next.js 화면(Vercel) → Cloudflare Tunnel → 사무실 PC FastAPI → MariaDB
+- **Streamlit 실행 (병행 유지 중):** `대시보드_실행.bat` 더블클릭 → `http://localhost:8501` (SQLite/pkl 직접 사용, 사무실 PC 이관과 무관)
+- **Next.js 실행 (2026-07-20 갱신):** `frontend`에서 `npm run dev` → `http://localhost:3000`, 내부적으로 사무실 PC FastAPI(`http://192.168.30.201:8001`, `frontend/.env.local`)를 호출
+- **사무실 PC FastAPI 실행:** `API서버_실행_사무실PC.bat`(포트 8001 전용 — 이 PC는 기존 서비스와 충돌해 표준 `API서버_실행.bat`의 포트 8000 사용 불가)
+- **로컬 PC FastAPI(포트 8000):** 이관 후 미사용 상태로 유지(안전장치) — 필요 시에만 `API서버_실행.bat`로 기동
+- **최종 목표:** Next.js 화면(Vercel) → Cloudflare Tunnel(미착수) → 사무실 PC FastAPI → MariaDB (서버 위치는 이미 달성, Vercel·Tunnel만 남음)
 
 ---
 

@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul
 cd /d "%~dp0"
 
 echo [1단계] 실행 중인 API 서버(포트 8000) 종료 중...

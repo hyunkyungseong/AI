@@ -110,16 +110,18 @@ Streamlit app.py → requests → FastAPI(api.py, port 8000) → MariaDB
 
 - [ ] 16. Cloudflare Tunnel 설치·구성 (무료, 공인 IP·포트포워딩 노출 없이 HTTPS 주소 확보) — 사용자 동의 필요
 
-## [6단계] 로컬 PC → 사무실 PC(원격서버) 이관
+## [6단계] 로컬 PC → 사무실 PC(원격서버) 이관 — ✅ 완료 (2026-07-20)
 
-> 사무실 PC 접근이 가능해지면 진행. 코드는 거의 그대로 두고 접속 정보·데이터만 옮기는 작업.
+> 사무실 PC 원격 데스크톱 접속 가능해져 실제 이관 진행. 사용자가 사무실 PC 화면에서 직접 실행, Claude는 단계별 명령어 안내 + 로컬 PC 쪽 작업 담당.
+> 상세 진행 기록: `docs/CHANGELOG.md` 2026-07-20 항목
 
-- [ ] 17. 사무실 PC에 로컬과 동일 버전의 MariaDB 설치 (버전 차이 시 복원 오류 가능)
-- [ ] 18. 로컬 DB 백업 (`mysqldump` 또는 HeidiSQL "내보내기") → 사무실 PC에서 복원 ("가져오기")
-      - 문자셋 `utf8mb4` 일치 확인 (한글 깨짐 방지)
-      - 로컬 개발 중 쌓인 테스트 데이터는 이관 전 정리(삭제) 후 실사용 데이터만 이관
-- [ ] 19. `scripts/db_config.py`의 `DB_HOST`(및 필요 시 계정 정보)를 사무실 PC 기준으로 변경 — 이 외 코드 수정 불필요
-- [ ] 20. 사무실 PC에서 FastAPI(`api.py`) 기동 후 `/health` 및 주요 API 정상 응답 확인
+- [x] 17. 사무실 PC에 MariaDB **11.4.x** 설치 완료(로컬과 동일 계열), `dashboard` DB(utf8mb4) + 전용 계정 생성 완료(HeidiSQL로 진행)
+- [x] 18. 로컬 DB 백업(`mysqldump.exe --default-character-set=utf8mb4`) → 사무실 PC에서 `mysql.exe`로 복원 완료 — 8개 테이블 행수 전부 정확히 일치 확인(이관 전 로컬에 테스트 데이터 없었음, 별도 정리 불필요했음)
+- [x] 19. `scripts/db_config.py`는 로컬 파일을 **그대로 복사**해서 사용(FTP로 전송) — `DB_HOST`가 이미 `127.0.0.1`이라 수정 자체가 불필요했음(MariaDB·FastAPI가 같은 사무실 PC에 있어 로컬 접속)
+- [x] 20. 사무실 PC에서 FastAPI 기동 + `/health` 확인 완료 — **단, 포트 8000이 그 PC에 이미 떠 있던 다른 서비스("ibx dashboard", httpd.exe)와 충돌**해서 **포트 8001**로 대신 실행(`uvicorn scripts.api:app --host 0.0.0.0 --port 8001`, 전용 배치파일 `API서버_실행_사무실PC.bat` 신규 작성). 방화벽에 8001 인바운드 규칙 추가, 사무실 PC LAN IP `192.168.30.201` 확인
+- [x] 21. (신규) 로컬 PC `frontend/.env.local`의 `FASTAPI_URL`을 `http://192.168.30.201:8001`로 변경, Next.js 재시작. 로컬→사무실 PC LAN 직접 연결(`curl .../health`) 성공 확인
+- [x] 22. 사용자가 실제 브라우저(`http://localhost:3000`)로 로그인 → 작업 현황 요약·거래명세서 관리 화면에서 사무실 PC 데이터가 이관 전(로컬)과 동일하게 표시됨을 확인(2026-07-20) — 데이터를 그대로 복사한 이관이므로 "달라지지 않고 동일한 것"이 정확한 성공 기준
+- [ ] 23. (향후) 로컬 MariaDB·API서버(포트 8000)는 당장 삭제하지 않고 안전장치로 유지 중 — 사무실 PC 운영이 며칠 안정화되면 정리 여부 재상의
 
 ---
 

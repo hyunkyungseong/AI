@@ -88,10 +88,14 @@ export default function Tab4IssuedList({
     [groups]
   );
 
-  // 레벨1에서 체크된 그룹에 속하는 의뢰서(운영통계자료 원본 라인이 아니라 발행행 단위) 목록
+  // 레벨1에서 체크된 그룹에 속하는 의뢰서(운영통계자료 원본 라인이 아니라 발행행 단위) 목록.
+  // 반드시 filters.base5(레벨1 집계와 동일한 필터 적용된 소스)에서 걸러야 한다 — scoped(필터 미적용
+  // 전체)에서 걸렀더니, 레벨1 합계는 필터링된 일부만 더하는데 레벨2 상세는 필터와 무관하게 그
+  // 거래명세서번호+업무명에 속한 전체가 나와버려서 "레벨1 합계 ≠ 레벨2 항목 합"이 되는 버그가
+  // 있었다(2026-07-22 실사용 중 발견 — 발행완료 화면 봉입건수가 실제와 다르게 보인다는 제보).
   const level2Rows = useMemo(
-    () => scoped.filter((r) => selected1.has(`${r.거래명세서번호}::${r.업무명}`)),
-    [scoped, selected1]
+    () => filters.base5.filter((r) => selected1.has(`${r.거래명세서번호}::${r.업무명}`)),
+    [filters.base5, selected1]
   );
 
   const toggleRow2 = useCallback((의뢰서번호: string) => {

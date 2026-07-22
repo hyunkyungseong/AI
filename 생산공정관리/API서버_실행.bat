@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul
 cd /d "%~dp0"
 
 echo API 서버(FastAPI)를 시작합니다...
