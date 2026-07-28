@@ -69,8 +69,9 @@ export default function InvoiceSelectionSummaryBar({ selectedRows }: Props) {
 
       {단가미등록있음 && (
         <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
-          ⚠️ 선택 항목 중 단가가 등록되지 않은 의뢰서가 있습니다:{" "}
-          {selectedRows.filter((r) => r.예상공급가액 === null).map((r) => r.의뢰서번호).join(", ")}
+          ⚠️ 선택 항목 중 단가 미등록 의뢰서{" "}
+          {selectedRows.filter((r) => r.예상공급가액 === null).length.toLocaleString()}건이 포함되어 있습니다. 아래 표의
+          &quot;단가&quot; 열 ⚠️ 미등록 표시로 확인해 주세요.
         </p>
       )}
       {사업부목록.length > 1 && (

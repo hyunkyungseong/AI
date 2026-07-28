@@ -7,7 +7,9 @@ import InvoiceIssuedLevel1Table from "./InvoiceIssuedLevel1Table";
 import InvoiceIssuedLevel2Table from "./InvoiceIssuedLevel2Table";
 import InvoiceDetailTable from "./InvoiceDetailTable";
 import ConfirmDialog from "./ConfirmDialog";
+import InvoiceHistoryDialog from "./InvoiceHistoryDialog";
 import { useIssuedFilters } from "@/lib/useIssuedFilters";
+import { useResetOnFilterChange } from "@/lib/useFilters";
 import { build레벨1그룹 } from "@/lib/issuedGrouping";
 import type { 발행행, 미발행행, 운영통계행 } from "./Dashboard";
 
@@ -64,9 +66,21 @@ export default function Tab4IssuedList({
 
   const [selected1, setSelected1] = useState<Set<string>>(new Set());
   const [selected2, setSelected2] = useState<Set<string>>(new Set());
+  // 필터(사업부·기간·담당자·거래처·업무명)가 바뀌면 레벨1·레벨2 선택을 함께 초기화 — 화면에
+  // 안 보이는 이전 선택이 남아 집계표만 안 맞아 보이는 혼선 방지(2026-07-24 사용자 제보,
+  // Tab4Invoice.tsx와 동일 패턴).
+  const filterKey = JSON.stringify([filters.사업부, filters.시작일, filters.종료일, filters.담당자, filters.거래처, filters.업무명]);
+  useResetOnFilterChange(filterKey, () => {
+    setSelected1(new Set());
+    setSelected2(new Set());
+  });
   const [banner, setBanner] = useState<배너 | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [dialog, setDialog] = useState<DialogState>(다이얼로그_초기값);
+  // "편집됨" 배지 클릭 시 원본/최종 비교 팝업(2026-07-22 신규) — null이면 닫힘, 값이 있으면
+  // InvoiceHistoryDialog를 그 거래명세서번호로 마운트한다(ConditionRuleModal.tsx와 동일하게
+  // 부모의 조건부 렌더링으로 열림/닫힘을 제어 — set-state-in-effect 린트 회피 패턴).
+  const [historyTarget, setHistoryTarget] = useState<string | null>(null);
 
   // 레벨1 선택이 바뀌면(체크·전체선택 무관) 레벨2 선택은 항상 초기화한다 — 레벨1이 바뀌면
   // 레벨2가 다른 대상 집합이 되므로 Streamlit(레벨2 key에 sorted(선택_idx_1) 포함)과 동일한 동작.
@@ -352,6 +366,7 @@ export default function Tab4IssuedList({
             selected={selected1}
             onToggleRow={toggleGroup}
             onToggleAll={toggleAllGroups}
+            onShowHistory={setHistoryTarget}
             showDownload={mode === "완료"}
           />
 
@@ -383,6 +398,10 @@ export default function Tab4IssuedList({
           )}
         </div>
       </main>
+
+      {historyTarget && (
+        <InvoiceHistoryDialog key={historyTarget} 거래명세서번호={historyTarget} onClose={() => setHistoryTarget(null)} />
+      )}
 
       <ConfirmDialog
         open={dialog.open}

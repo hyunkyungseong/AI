@@ -33,6 +33,7 @@ const Row = memo(function Row({ row: r, checked, onToggle, onEdit }: RowProps) {
       <td className={td}>{r.출력단가.toLocaleString()}</td>
       <td className={td}>{r.봉입단가.toLocaleString()}</td>
       <td className={td}>{r.추가봉입단가.toLocaleString()}</td>
+      <td className={td}>{r.동봉물삽입단가.toLocaleString()}</td>
       <td className={td}>{r.각대대봉투봉입단가.toLocaleString()}</td>
       <td className={td}>{r.용지제작단가.toLocaleString()}</td>
       <td className={td}>{r.봉투제작단가.toLocaleString()}</td>
@@ -73,6 +74,7 @@ export default function PricingMasterTable({ rows, selected, onToggleRow, onTogg
             <th className="px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300">출력단가(원)</th>
             <th className="px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300">봉입단가(원)</th>
             <th className="px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300">추가봉입단가(원)</th>
+            <th className="px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300">동봉물삽입단가(원)</th>
             <th className="px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300">수작업 단가(원)</th>
             <th className="px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300">용지제작단가(원)</th>
             <th className="px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300">봉투제작단가(원)</th>
@@ -88,7 +90,7 @@ export default function PricingMasterTable({ rows, selected, onToggleRow, onTogg
           ))}
           {rows.length === 0 && (
             <tr>
-              <td colSpan={13} className="px-3 py-6 text-center text-xs text-gray-400">
+              <td colSpan={14} className="px-3 py-6 text-center text-xs text-gray-400">
                 등록된 단가가 없습니다.
               </td>
             </tr>

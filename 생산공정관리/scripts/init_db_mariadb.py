@@ -1,7 +1,7 @@
 """
 MariaDB(dashboard DB) 초기화 스크립트 — 이 프로젝트 전용 신규 인스턴스
 실행: python scripts/init_db_mariadb.py
-결과: db_config.py에 지정된 DB(기본값 dashboard)에 8개 테이블 생성
+결과: db_config.py에 지정된 DB(기본값 dashboard)에 10개 테이블 생성
 
 테이블 목록:
   1. 운영통계자료      — preprocess.py 산출물(processed.pkl) 대체용 원본+파생 데이터
@@ -13,6 +13,8 @@ MariaDB(dashboard DB) 초기화 스크립트 — 이 프로젝트 전용 신규 
   6. 거래명세서_의뢰서  — 거래명세서에 속한 업무의뢰서번호 (구 업무의뢰서번호목록 JSON-in-TEXT 정규화)
   7. 거래명세서번호_카운터 — 사업부·연월별 채번 순번 (기존 SQLite 구조 동일)
   8. 사용자            — 로그인 계정 (담당자별 개별 계정, 비밀번호는 bcrypt 해시로 저장)
+  9. 청구품목규칙      — 거래처+업무명별로 저장되는 재사용 청구 규칙(조건식→최종 청구품명 매핑) (2026-07-22 추가)
+  10. 거래명세서_품목   — 거래명세서별 원본/최종 품목 스냅샷(편집 이력용) (2026-07-22 추가)
 """
 
 import sys
@@ -118,6 +120,7 @@ def get_db():
             출력단가            DECIMAL(10,2) DEFAULT 0,
             봉입단가            DECIMAL(10,2) DEFAULT 0,
             추가봉입단가        DECIMAL(10,2) DEFAULT 0,
+            동봉물삽입단가      DECIMAL(10,2) DEFAULT 0,
             용지제작단가        DECIMAL(10,2) DEFAULT 0,
             봉투제작단가        DECIMAL(10,2) DEFAULT 0,
             삽지제작단가        DECIMAL(10,2) DEFAULT 0,
@@ -176,6 +179,37 @@ def get_db():
             등록일          DATETIME DEFAULT CURRENT_TIMESTAMP
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """,
+
+    "청구품목규칙": """
+        CREATE TABLE IF NOT EXISTS 청구품목규칙 (
+            id              INT AUTO_INCREMENT PRIMARY KEY,
+            거래처명        VARCHAR(100) NOT NULL,
+            업무명          VARCHAR(200) NOT NULL,
+            순서            INT NOT NULL,
+            최종청구품명    VARCHAR(200) NOT NULL,
+            조건            JSON NOT NULL,
+            등록일          DATETIME DEFAULT CURRENT_TIMESTAMP,
+            수정일          DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_규칙 (거래처명, 업무명, 순서)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """,
+
+    "거래명세서_품목": """
+        CREATE TABLE IF NOT EXISTS 거래명세서_품목 (
+            id              INT AUTO_INCREMENT PRIMARY KEY,
+            거래명세서번호  VARCHAR(30) NOT NULL,
+            구분            ENUM('원본', '최종') NOT NULL,
+            순서            INT NOT NULL,
+            코드            VARCHAR(10),
+            품목            VARCHAR(100),
+            작업명          VARCHAR(200),
+            수량            DECIMAL(12,2),
+            단가            DECIMAL(12,2),
+            금액            DECIMAL(14,2),
+            FOREIGN KEY (거래명세서번호) REFERENCES 거래명세서(거래명세서번호)
+                ON UPDATE CASCADE ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """,
 }
 
 
@@ -215,6 +249,22 @@ def migrate():
                 print("  마이그레이션: 자재사용현황.작업명 컬럼 추가 완료")
             else:
                 print("  마이그레이션: 자재사용현황.작업명 컬럼 이미 존재 (건너뜀)")
+
+            if not _컬럼_존재(cur, "거래명세서", "편집여부"):
+                cur.execute("ALTER TABLE 거래명세서 ADD COLUMN 편집여부 TINYINT DEFAULT 0 AFTER 발송여부")
+                print("  마이그레이션: 거래명세서.편집여부 컬럼 추가 완료")
+            else:
+                print("  마이그레이션: 거래명세서.편집여부 컬럼 이미 존재 (건너뜀)")
+
+            if not _컬럼_존재(cur, "단가마스터", "동봉물삽입단가"):
+                cur.execute("ALTER TABLE 단가마스터 ADD COLUMN 동봉물삽입단가 DECIMAL(10,2) DEFAULT 0 AFTER 추가봉입단가")
+                # 기존 거래처는 "추가봉입단가"와 같은 값으로 백필 — 이번 변경(추가봉입비에서 삽지 분리)
+                # 직후에도 총 청구액이 그대로 유지되도록 함(사용자 확정, 2026-07-24). 0으로 두면
+                # 삽지분이 아무 항목에도 청구되지 않아 총액이 즉시 줄어드는 위험이 있어 피함.
+                cur.execute("UPDATE 단가마스터 SET 동봉물삽입단가 = 추가봉입단가")
+                print("  마이그레이션: 단가마스터.동봉물삽입단가 컬럼 추가 + 추가봉입단가로 백필 완료")
+            else:
+                print("  마이그레이션: 단가마스터.동봉물삽입단가 컬럼 이미 존재 (건너뜀)")
 
 
 def main():

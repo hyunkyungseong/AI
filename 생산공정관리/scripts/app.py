@@ -70,7 +70,7 @@ def load_단가마스터():
     conn = get_conn()
     df = pd.read_sql("SELECT * FROM 단가마스터 ORDER BY 거래처명, 업무명, 작업명", conn)
     conn.close()
-    _단가컬럼 = ["출력단가","봉입단가","추가봉입단가","용지제작단가","봉투제작단가","삽지제작단가","각대대봉투단가","각대대봉투봉입단가"]
+    _단가컬럼 = ["출력단가","봉입단가","추가봉입단가","동봉물삽입단가","용지제작단가","봉투제작단가","삽지제작단가","각대대봉투단가","각대대봉투봉입단가"]
     _단가컬럼 = [c for c in _단가컬럼 if c in df.columns]
     df[_단가컬럼] = df[_단가컬럼].apply(pd.to_numeric, errors="coerce").fillna(0)
     # None 유지 (dict 키 매칭용 — NaN → None 변환)
@@ -650,7 +650,7 @@ with tab4:
         """, height=0)
 
     # ── 공용: 단가맵·자재map (t4a·t4c 공유) ────────────────────
-    _t4_단가컬럼 = ["출력단가","봉입단가","추가봉입단가","용지제작단가","봉투제작단가","삽지제작단가","각대대봉투단가","각대대봉투봉입단가"]
+    _t4_단가컬럼 = ["출력단가","봉입단가","추가봉입단가","동봉물삽입단가","용지제작단가","봉투제작단가","삽지제작단가","각대대봉투단가","각대대봉투봉입단가"]
     _t4_단가df   = load_단가마스터()
     _t4_단가컬럼 = [c for c in _t4_단가컬럼 if c in _t4_단가df.columns]
     _t4_단가맵 = {
@@ -1076,7 +1076,7 @@ with tab4:
                 if 해당_단가.empty:
                     st.info("등록된 단가가 없습니다. 아래에서 추가하세요.")
                 else:
-                    _표시컬럼 = [c for c in ["id","업무명","작업명","출력단가","봉입단가","추가봉입단가","각대대봉투봉입단가","용지제작단가","봉투제작단가","삽지제작단가","각대대봉투단가","비고"] if c in 해당_단가.columns]
+                    _표시컬럼 = [c for c in ["id","업무명","작업명","출력단가","봉입단가","추가봉입단가","동봉물삽입단가","각대대봉투봉입단가","용지제작단가","봉투제작단가","삽지제작단가","각대대봉투단가","비고"] if c in 해당_단가.columns]
                     표시df = 해당_단가[_표시컬럼].copy()
                     표시df["업무명"] = 표시df["업무명"].fillna("(기본단가)")
                     표시df["작업명"] = 표시df["작업명"].fillna("(기본단가)")
@@ -1095,6 +1095,7 @@ with tab4:
                             "출력단가":          st.column_config.NumberColumn("출력단가(원)",     min_value=0, default=0, format="%.2f", disabled=True),
                             "봉입단가":          st.column_config.NumberColumn("봉입단가(원)",     min_value=0, default=0, format="%.2f", disabled=True),
                             "추가봉입단가":      st.column_config.NumberColumn("추가봉입단가(원)", min_value=0, default=0, format="%.2f", disabled=True),
+                            "동봉물삽입단가":    st.column_config.NumberColumn("동봉물삽입단가(원)",min_value=0, default=0, format="%.2f", disabled=True),
                             "각대대봉투봉입단가":st.column_config.NumberColumn("수작업 단가(원)",  min_value=0, default=0, format="%.2f", disabled=True),
                             "용지제작단가":      st.column_config.NumberColumn("용지제작단가(원)", min_value=0, default=0, format="%.2f", disabled=True),
                             "봉투제작단가":      st.column_config.NumberColumn("봉투제작단가(원)", min_value=0, default=0, format="%.2f", disabled=True),
@@ -1126,6 +1127,8 @@ with tab4:
                             with p6: e_봉투     = st.number_input("봉투제작단가(원)",   min_value=0.0, value=float(row.get("봉투제작단가")   or 0), step=0.01, format="%.2f", key=f"단가_edit_봉투_{row_id}")
                             with p7: e_삽지     = st.number_input("삽지제작단가(원)",   min_value=0.0, value=float(row.get("삽지제작단가")   or 0), step=0.01, format="%.2f", key=f"단가_edit_삽지_{row_id}")
                             with p8: e_각대봉투 = st.number_input("각대대봉투단가(원)", min_value=0.0, value=float(row.get("각대대봉투단가") or 0), step=0.01, format="%.2f", key=f"단가_edit_각대봉투_{row_id}")
+                            p9, _, _, _ = st.columns(4)
+                            with p9: e_동봉     = st.number_input("동봉물삽입단가(원)", min_value=0.0, value=float(row.get("동봉물삽입단가") or 0), step=0.01, format="%.2f", key=f"단가_edit_동봉_{row_id}")
                             e_비고 = st.text_input("비고", value=str(row.get("비고") or ""), key=f"단가_edit_비고_{row_id}")
                             저장_클릭 = st.form_submit_button("저장", type="primary")
 
@@ -1135,11 +1138,11 @@ with tab4:
                             conn = get_conn()
                             conn.execute("""
                                 UPDATE 단가마스터
-                                SET 출력단가=?, 봉입단가=?, 추가봉입단가=?,
+                                SET 출력단가=?, 봉입단가=?, 추가봉입단가=?, 동봉물삽입단가=?,
                                     용지제작단가=?, 봉투제작단가=?, 삽지제작단가=?,
                                     각대대봉투단가=?, 각대대봉투봉입단가=?, 비고=?, 수정일=?
                                 WHERE id=?
-                            """, (e_출력, e_봉입, e_추가, e_용지, e_봉투, e_삽지,
+                            """, (e_출력, e_봉입, e_추가, e_동봉, e_용지, e_봉투, e_삽지,
                                   e_각대봉투, e_각대봉입,
                                   e_비고 if e_비고 != "" else None,
                                   today, row_id))
@@ -1202,6 +1205,8 @@ with tab4:
                     with p6: add_봉투 = st.number_input("봉투제작단가(원)", min_value=0.0, value=None, step=0.01, format="%.2f", placeholder="0.00", key="단가_add_봉투")
                     with p7: add_삽지 = st.number_input("삽지제작단가(원)", min_value=0.0, value=None, step=0.01, format="%.2f", placeholder="0.00", key="단가_add_삽지")
                     with p8: add_각대봉투 = st.number_input("각대대봉투단가(원)", min_value=0.0, value=None, step=0.01, format="%.2f", placeholder="0.00", key="단가_add_각대봉투")
+                    p9, _, _, _ = st.columns(4)
+                    with p9: add_동봉 = st.number_input("동봉물삽입단가(원)", min_value=0.0, value=None, step=0.01, format="%.2f", placeholder="0.00", key="단가_add_동봉")
                     add_비고 = st.text_input("비고", key="단가_add_비고")
                     추가_클릭 = st.form_submit_button("추가", type="primary")
 
@@ -1213,10 +1218,10 @@ with tab4:
                     try:
                         conn.execute("""
                             INSERT INTO 단가마스터
-                                (거래처명,업무명,작업명,출력단가,봉입단가,추가봉입단가,용지제작단가,봉투제작단가,삽지제작단가,각대대봉투단가,각대대봉투봉입단가,비고,등록일,수정일)
-                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                                (거래처명,업무명,작업명,출력단가,봉입단가,추가봉입단가,동봉물삽입단가,용지제작단가,봉투제작단가,삽지제작단가,각대대봉투단가,각대대봉투봉입단가,비고,등록일,수정일)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                         """, (선택_거래처_단가, _업무명, _작업명,
-                              add_출력 or 0, add_봉입 or 0, add_추가 or 0, add_용지 or 0, add_봉투 or 0, add_삽지 or 0,
+                              add_출력 or 0, add_봉입 or 0, add_추가 or 0, add_동봉 or 0, add_용지 or 0, add_봉투 or 0, add_삽지 or 0,
                               add_각대봉투 or 0, add_각대봉입 or 0,
                               add_비고 or None, str(_date.today()), str(_date.today())))
                         conn.commit()

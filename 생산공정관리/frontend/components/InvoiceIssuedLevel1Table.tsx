@@ -8,6 +8,7 @@ type Props = {
   selected: Set<string>;
   onToggleRow: (key: string) => void;
   onToggleAll: (checked: boolean) => void;
+  onShowHistory: (no: string) => void;
   showDownload?: boolean;
 };
 
@@ -16,12 +17,13 @@ type RowProps = {
   index: number;
   checked: boolean;
   onToggle: (key: string) => void;
+  onShowHistory: (no: string) => void;
   showDownload?: boolean;
 };
 
 // InvoiceSelectionTable.tsx의 React.memo Row 패턴 재사용 — 체크박스 하나 토글할 때 전체 행이
 // 다시 그려지는 성능 문제를 막기 위해 각 행에 checked(boolean) 스칼라만 전달한다([4-B]에서 실측 검증됨).
-const Row = memo(function Row({ group: g, index, checked, onToggle, showDownload }: RowProps) {
+const Row = memo(function Row({ group: g, index, checked, onToggle, onShowHistory, showDownload }: RowProps) {
   return (
     <tr className="border-t border-gray-100 dark:border-gray-800">
       <td className="px-3 py-1.5">
@@ -33,7 +35,19 @@ const Row = memo(function Row({ group: g, index, checked, onToggle, showDownload
         />
       </td>
       <td className="px-3 py-1.5 text-gray-500 dark:text-gray-400">{index + 1}</td>
-      <td className="px-3 py-1.5 text-gray-900 dark:text-gray-100">{g.거래명세서번호}</td>
+      <td className="px-3 py-1.5 text-gray-900 dark:text-gray-100">
+        {g.거래명세서번호}
+        {g.편집여부 === 1 && (
+          <button
+            type="button"
+            onClick={() => onShowHistory(g.거래명세서번호)}
+            className="ml-1.5 rounded border border-amber-300 px-1 text-xs text-amber-700 hover:bg-amber-50 dark:border-amber-700 dark:text-amber-400 dark:hover:bg-amber-950"
+            title="원본과 최종 확정 내용 비교"
+          >
+            편집됨
+          </button>
+        )}
+      </td>
       <td className="px-3 py-1.5 text-gray-700 dark:text-gray-300">{g.사업부}</td>
       <td className="px-3 py-1.5 text-gray-900 dark:text-gray-100">{g.거래처명}</td>
       <td className="px-3 py-1.5 text-gray-700 dark:text-gray-300">{g.업무명}</td>
@@ -90,6 +104,7 @@ export default function InvoiceIssuedLevel1Table({
   selected,
   onToggleRow,
   onToggleAll,
+  onShowHistory,
   showDownload = false,
 }: Props) {
   const 전체선택됨 = groups.length > 0 && groups.every((g) => selected.has(g.key));
@@ -134,6 +149,7 @@ export default function InvoiceIssuedLevel1Table({
               index={i}
               checked={selected.has(g.key)}
               onToggle={onToggleRow}
+              onShowHistory={onShowHistory}
               showDownload={showDownload}
             />
           ))}

@@ -1,7 +1,9 @@
 "use client";
 
-import { memo } from "react";
+import { memo, useRef } from "react";
+import type { Ref } from "react";
 import type { 미발행행 } from "@/components/Dashboard";
+import { useVirtualRows } from "@/lib/useVirtualRows";
 
 type Props = {
   rows: 미발행행[];
@@ -15,14 +17,18 @@ type RowProps = {
   index: number;
   checked: boolean;
   onToggle: (의뢰서번호: string) => void;
+  rowRef?: Ref<HTMLTableRowElement>;
 };
+
+const COL_COUNT = 17;
 
 // 체크박스 하나만 토글해도 미발행 건 전체(수천 건)가 매번 다시 그려지면서 느려지는 문제 방지 —
 // 행마다 Set 전체가 아니라 checked(boolean) 하나만 prop으로 받아, React.memo가 바뀐 행 딱 하나만
 // 다시 그리고 나머지 수천 행은 그대로 재사용하도록 함(부모의 toggleRow도 useCallback으로 고정 필요).
-const Row = memo(function Row({ row: r, index, checked, onToggle }: RowProps) {
+// rowRef는 가상 스크롤(useVirtualRows)이 실제 행 높이를 실측하기 위해 맨 위 행에만 전달한다.
+const Row = memo(function Row({ row: r, index, checked, onToggle, rowRef }: RowProps) {
   return (
-    <tr className="border-t border-gray-100 dark:border-gray-800">
+    <tr ref={rowRef} className="border-t border-gray-100 dark:border-gray-800">
       <td className="px-3 py-1.5">
         <input
           type="checkbox"
@@ -72,8 +78,11 @@ const Row = memo(function Row({ row: r, index, checked, onToggle }: RowProps) {
 export default function InvoiceSelectionTable({ rows, selected, onToggleRow, onToggleAll }: Props) {
   const 전체선택됨 = rows.length > 0 && rows.every((r) => selected.has(r.의뢰서번호));
 
+  const containerRef = useRef<HTMLDivElement>(null);
+  const { range, rowHeight, firstRowRef } = useVirtualRows(containerRef, rows.length);
+
   return (
-    <div className="max-h-[60vh] overflow-auto rounded-lg border border-gray-200 dark:border-gray-800">
+    <div ref={containerRef} className="max-h-[60vh] overflow-auto rounded-lg border border-gray-200 dark:border-gray-800">
       {/* w-full을 빼서 각 컬럼 너비가 내용 길이에 맞게 자동으로 정해지도록 함(브라우저 기본 table
           auto-layout). whitespace-nowrap은 table에 걸어두면 하위 셀에 그대로 상속되어(CSS 상속 속성)
           줄바꿈 없이 한 줄로 표시되고, 그만큼 넘치는 너비는 부모 div의 스크롤로 가로 스크롤됨.
@@ -115,12 +124,32 @@ export default function InvoiceSelectionTable({ rows, selected, onToggleRow, onT
           </tr>
         </thead>
         <tbody>
-          {rows.map((r, i) => (
-            <Row key={r.의뢰서번호} row={r} index={i} checked={selected.has(r.의뢰서번호)} onToggle={onToggleRow} />
-          ))}
+          {range.start > 0 && (
+            <tr aria-hidden="true" style={{ height: range.start * rowHeight }}>
+              <td colSpan={COL_COUNT} />
+            </tr>
+          )}
+          {rows.slice(range.start, range.end).map((r, i) => {
+            const index = range.start + i;
+            return (
+              <Row
+                key={r.의뢰서번호}
+                row={r}
+                index={index}
+                checked={selected.has(r.의뢰서번호)}
+                onToggle={onToggleRow}
+                rowRef={index === 0 ? firstRowRef : undefined}
+              />
+            );
+          })}
+          {range.end < rows.length && (
+            <tr aria-hidden="true" style={{ height: (rows.length - range.end) * rowHeight }}>
+              <td colSpan={COL_COUNT} />
+            </tr>
+          )}
           {rows.length === 0 && (
             <tr>
-              <td colSpan={16} className="px-3 py-6 text-center text-xs text-gray-400">
+              <td colSpan={COL_COUNT} className="px-3 py-6 text-center text-xs text-gray-400">
                 미발행 건이 없습니다.
               </td>
             </tr>

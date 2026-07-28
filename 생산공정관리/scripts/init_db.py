@@ -32,6 +32,7 @@ def create_tables(conn):
             출력단가          REAL DEFAULT 0,
             봉입단가          REAL DEFAULT 0,
             추가봉입단가      REAL DEFAULT 0,
+            동봉물삽입단가    REAL DEFAULT 0,
             용지제작단가      REAL DEFAULT 0,
             봉투제작단가      REAL DEFAULT 0,
             삽지제작단가      REAL DEFAULT 0,
@@ -140,11 +141,17 @@ def migrate_단가마스터_컬럼(conn):
         "삽지제작단가":       "REAL DEFAULT 0",
         "각대대봉투단가":     "REAL DEFAULT 0",
         "각대대봉투봉입단가": "REAL DEFAULT 0",
+        "동봉물삽입단가":     "REAL DEFAULT 0",
     }
     for col, col_type in 추가할컬럼.items():
         if col not in existing:
             conn.execute(f"ALTER TABLE 단가마스터 ADD COLUMN {col} {col_type}")
             print(f"  [마이그레이션] 단가마스터.{col} 컬럼 추가")
+            if col == "동봉물삽입단가":
+                # 기존 거래처는 "추가봉입단가"와 같은 값으로 백필 — 추가봉입비에서 삽지를 분리하는
+                # 계산식 변경(2026-07-24, scripts/billing.py) 직후에도 총 청구액이 그대로 유지되도록 함.
+                conn.execute("UPDATE 단가마스터 SET 동봉물삽입단가 = 추가봉입단가")
+                print("  [마이그레이션] 단가마스터.동봉물삽입단가 → 추가봉입단가로 백필 완료")
     conn.commit()
 
 

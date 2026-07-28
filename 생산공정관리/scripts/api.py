@@ -20,7 +20,13 @@ FastAPI 백엔드 서버
   GET  /발행목록             — /미발행목록과 대칭(이미 요청된 의뢰서 대상) + 거래명세서번호·발송여부 포함
                               (2026-07-19 신규, Next.js 탭4 "발행요청목록"·"발행완료" 화면 공용, billing.py 재사용)
   GET  /거래명세서엑셀/{no} — 거래명세서 Excel 파일 다운로드, 언제든 재호출 가능 (2026-07-19 신규, billing.py 재사용, no=거래명세서번호)
-  POST /거래명세서미리보기  — 채번 전 의뢰서번호_목록으로 품목·합계 JSON 미리보기 (2026-07-20 신규, billing.build_품목행() 재사용, Next.js 탭4 전용)
+                              편집·규칙 적용된 거래명세서는 거래명세서_품목(구분='최종')을 그대로 읽어 재사용,
+                              편집 이력이 없는 예전 건은 지금처럼 운영통계자료에서 실시간 재계산(2026-07-22)
+  GET  /거래명세서품목이력/{no} — 편집된 거래명세서의 원본(자동계산)·최종(확정) 품목 스냅샷을 비교용으로 반환 (2026-07-22 신규)
+  POST /거래명세서미리보기  — 채번 전 의뢰서번호_목록으로 원본 품목(왼쪽)·저장된 규칙 적용 결과(오른쪽 초안)·
+                              미분류 항목을 JSON으로 미리보기 (2026-07-20 신규, 2026-07-22 규칙엔진 확장, Next.js 탭4 전용)
+  GET  /청구품목규칙        — 거래처명+업무명으로 저장된 재사용 청구 규칙 목록 조회 (2026-07-22 신규)
+  PUT  /청구품목규칙        — 거래처명+업무명의 규칙 전체를 통째로 교체 저장 (2026-07-22 신규)
   POST /운영통계자료수신     — 당사 생산공정관리시스템 Push 수신 (업무의뢰서 단위, 실시간)
 
   POST   /거래처마스터       — 거래처 1건 신규 등록 (2026-07-19 전체교체→단건생성으로 변경, Next.js [4-D])
@@ -29,10 +35,13 @@ FastAPI 백엔드 서버
   POST   /단가마스터         — 단가 1건 신규 등록
   PUT    /단가마스터/{id}    — 단가 1건 수정
   DELETE /단가마스터         — id 목록으로 삭제
-  POST   /거래명세서요청     — 채번 + 거래명세서/거래명세서_의뢰서 저장
+  POST   /거래명세서요청     — 채번 + 거래명세서/거래명세서_의뢰서 저장. 품목_최종을 함께 보내면
+                              원본과 비교해 편집여부를 판정하고 거래명세서_품목(원본·최종)에 이력을 남기며,
+                              규칙을 함께 보내면 그 거래처+업무명의 청구품목규칙도 갱신 (2026-07-22 확장)
   POST   /거래명세서발행     — 발송여부=1로 변경
   POST   /거래명세서발행취소 — 발송여부=0으로 되돌림 (원래 계획엔 없었으나 app.py에 이미 있는 기능이라 함께 추가)
   POST   /거래명세서부분취소 — 선택한 의뢰서만 취소, 0건 남으면 거래명세서 자체 삭제(CASCADE), 남으면 금액 재계산 UPDATE (2026-07-19 신규)
+                              편집된(편집여부=1) 거래명세서는 일부만 남기는 부분취소는 막고, 전체 선택(=전체취소)만 허용 (2026-07-22)
 
 가공 로직은 scripts/data_transform.py, 금액 계산·Excel 생성은 scripts/billing.py 재사용
 (둘 다 preprocess.py·app.py와 동일한 규칙 — 2026-07-19부터 자재형태 컬럼이 MariaDB에 반영되어
@@ -40,6 +49,7 @@ FastAPI 백엔드 서버
 API 요청/응답 규격 문서: docs/API규격서.md 참고
 """
 
+import json
 import sys
 from pathlib import Path
 from contextlib import contextmanager
@@ -213,6 +223,35 @@ def _자재map_조회(cur, 의뢰서목록=None):
     return cur.fetchall()
 
 
+def _규칙_조회(cur, 거래처명, 업무명):
+    """거래처명+업무명으로 저장된 청구품목규칙을 순서대로 조회. 조건 컬럼은 MariaDB JSON 타입인데
+    pymysql이 자동으로 dict로 파싱해주지 않는 경우가 있어(드라이버 버전에 따라 str로 올 수 있음)
+    str이면 직접 json.loads()로 변환한다."""
+    cur.execute(
+        "SELECT 순서, 최종청구품명, 조건 FROM 청구품목규칙 WHERE 거래처명=%s AND 업무명=%s ORDER BY 순서",
+        (거래처명, 업무명),
+    )
+    행목록 = cur.fetchall()
+    for r in 행목록:
+        if isinstance(r["조건"], str):
+            r["조건"] = json.loads(r["조건"])
+    return 행목록
+
+
+def _규칙_저장(cur, 거래처명, 업무명, 규칙목록):
+    """그 거래처+업무명의 규칙 전체를 통째로 교체(DELETE 후 INSERT) — 단가마스터 등 다른 마스터
+    데이터 갱신과 동일한 관례. 규칙목록 각 원소는 {"순서","최종청구품명","조건"} dict."""
+    cur.execute("DELETE FROM 청구품목규칙 WHERE 거래처명=%s AND 업무명=%s", (거래처명, 업무명))
+    if 규칙목록:
+        cur.executemany(
+            "INSERT INTO 청구품목규칙 (거래처명, 업무명, 순서, 최종청구품명, 조건) VALUES (%s,%s,%s,%s,%s)",
+            [
+                (거래처명, 업무명, r["순서"], r["최종청구품명"], json.dumps(r["조건"], ensure_ascii=False))
+                for r in 규칙목록
+            ],
+        )
+
+
 @app.get("/예상공급가액", dependencies=인증필요)
 def 예상공급가액(사업부: Optional[List[str]] = Query(default=None)):
     """
@@ -371,14 +410,14 @@ def 발행목록(사업부: Optional[List[str]] = Query(default=None)):
                 return []
 
             cur.execute("""
-                SELECT a.업무의뢰서번호, a.거래명세서번호, b.발송여부
+                SELECT a.업무의뢰서번호, a.거래명세서번호, b.발송여부, b.편집여부
                 FROM 거래명세서_의뢰서 a
                 JOIN 거래명세서 b ON a.거래명세서번호 = b.거래명세서번호
             """)
             발행행목록 = cur.fetchall()
             if not 발행행목록:
                 return []
-            발행맵 = {r["업무의뢰서번호"]: (r["거래명세서번호"], r["발송여부"]) for r in 발행행목록}
+            발행맵 = {r["업무의뢰서번호"]: (r["거래명세서번호"], r["발송여부"], r["편집여부"]) for r in 발행행목록}
 
             df_all = pd.DataFrame(원본행)
             df_발행 = df_all[df_all["업무의뢰서번호"].isin(발행맵.keys())].copy()
@@ -405,13 +444,14 @@ def 발행목록(사업부: Optional[List[str]] = Query(default=None)):
     응답 = []
     for _, r in summary.iterrows():
         의뢰서번호 = r["업무의뢰서번호"]
-        거래명세서번호, 발송여부 = 발행맵[의뢰서번호]
+        거래명세서번호, 발송여부, 편집여부 = 발행맵[의뢰서번호]
         가격 = 공급가맵.get(int(float(의뢰서번호)))
         예상공급가액 = round(가격["합계"]) if (가격 and 가격["합계"] > 0) else None
         응답.append({
             "의뢰서번호": 의뢰서번호,
             "거래명세서번호": 거래명세서번호,
             "발송여부": int(발송여부),
+            "편집여부": int(편집여부),
             "담당자": r["마케팅담당자"],
             "사업부": r["사업부"],
             "거래처명": r["거래처명"],
@@ -433,8 +473,13 @@ def 발행목록(사업부: Optional[List[str]] = Query(default=None)):
 @app.get("/거래명세서엑셀/{no}", dependencies=인증필요)
 def 거래명세서엑셀(no: str):
     """
-    거래명세서 Excel 파일 생성·다운로드 — billing.generate_거래명세서_excel() 재사용.
-    발행 시점에만 만들 수 있던 app.py 세션 임시저장 방식과 달리, 발행완료 건이면 언제든 재호출 가능.
+    거래명세서 Excel 파일 생성·다운로드. 발행 시점에만 만들 수 있던 app.py 세션 임시저장 방식과
+    달리, 발행완료 건이면 언제든 재호출 가능.
+
+    거래명세서_품목에 구분='최종' 스냅샷이 저장돼 있으면(편집·규칙 적용을 거친 건) 재계산 없이
+    그 내용을 그대로 billing.write_거래명세서_excel()에 넘긴다 — 편집 이후 단가마스터가 바뀌어도
+    발행 당시 확정한 금액이 그대로 유지되어야 하기 때문. 스냅샷이 없는(이 기능 이전에 발행됐거나
+    편집 없이 그대로 발행된) 건은 지금처럼 운영통계자료에서 매번 실시간 재계산한다(2026-07-22).
 
     경로 파라미터명은 'no'(영문 고정) — Starlette가 중괄호 경로 파라미터명에 한글을 쓰면
     내부 정규식이 이를 인식 못 해 라우팅 자체가 항상 404로 실패하는 문제가 있어(실측 확인),
@@ -455,30 +500,60 @@ def 거래명세서엑셀(no: str):
 
             자리표시자 = ", ".join(["%s"] * len(의뢰서목록))
             cur.execute(
-                f"SELECT 업무의뢰서번호, 작업명, 거래처명, 업무명, 확정청구페이지, 건수, 장수 "
-                f"FROM 운영통계자료 WHERE 업무의뢰서번호 IN ({자리표시자})",
+                f"SELECT DISTINCT 업무명 FROM 운영통계자료 WHERE 업무의뢰서번호 IN ({자리표시자})",
                 의뢰서목록,
             )
-            원본행 = cur.fetchall()
+            업무명행 = cur.fetchall()
+            업무명 = 업무명행[0]["업무명"] if 업무명행 else None
 
-            cur.execute("SELECT * FROM 단가마스터")
-            단가행 = cur.fetchall()
-            자재행 = _자재map_조회(cur, 의뢰서목록)
+            cur.execute(
+                "SELECT 코드, 품목, 수량, 단가, 금액 FROM 거래명세서_품목 "
+                "WHERE 거래명세서번호=%s AND 구분='최종' ORDER BY 순서",
+                (거래명세서번호,),
+            )
+            저장된_최종 = cur.fetchall()
 
-    if not 원본행:
-        raise HTTPException(status_code=404, detail="이 거래명세서의 업무의뢰서 데이터를 운영통계자료에서 찾을 수 없습니다")
-
-    df_all = pd.DataFrame(원본행)
-    단가df = pd.DataFrame(단가행) if 단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명"])
-    자재df = pd.DataFrame(자재행) if 자재행 else pd.DataFrame(columns=["업무의뢰서번호", "작업이름", "자재종류", "자재형태", "사용량"])
-
-    단가맵 = billing.build_단가맵(단가df)
-    자재map = billing.build_자재map(자재df)
-    의뢰서번호셋 = {int(float(x)) for x in 의뢰서목록}
+            원본행 = 단가행 = 자재행 = None
+            if not 저장된_최종:
+                cur.execute(
+                    f"SELECT 업무의뢰서번호, 작업명, 거래처명, 업무명, 확정청구페이지, 건수, 장수 "
+                    f"FROM 운영통계자료 WHERE 업무의뢰서번호 IN ({자리표시자})",
+                    의뢰서목록,
+                )
+                원본행 = cur.fetchall()
+                cur.execute("SELECT * FROM 단가마스터")
+                단가행 = cur.fetchall()
+                자재행 = _자재map_조회(cur, 의뢰서목록)
 
     from datetime import date
     발행일 = 거래명세서["발행일자"] or date.today()
-    엑셀바이트 = billing.generate_거래명세서_excel(df_all, 단가맵, 자재map, 의뢰서번호셋, 발행일)
+
+    if 저장된_최종:
+        품목행목록 = [
+            {
+                "코드": r["코드"],
+                "표시품명": r["품목"],
+                "수량": float(r["수량"]),
+                "단가": float(r["단가"]) if r["단가"] is not None else None,
+                "금액": float(r["금액"]),
+            }
+            for r in 저장된_최종
+        ]
+        총합계 = sum(r["금액"] for r in 품목행목록)
+        엑셀바이트 = billing.write_거래명세서_excel(품목행목록, 총합계, 거래명세서["거래처명"], 업무명, 발행일)
+    else:
+        if not 원본행:
+            raise HTTPException(status_code=404, detail="이 거래명세서의 업무의뢰서 데이터를 운영통계자료에서 찾을 수 없습니다")
+
+        df_all = pd.DataFrame(원본행)
+        단가df = pd.DataFrame(단가행) if 단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명"])
+        자재df = pd.DataFrame(자재행) if 자재행 else pd.DataFrame(columns=["업무의뢰서번호", "작업이름", "자재종류", "자재형태", "사용량"])
+
+        단가맵 = billing.build_단가맵(단가df)
+        자재map = billing.build_자재map(자재df)
+        의뢰서번호셋 = {int(float(x)) for x in 의뢰서목록}
+        엑셀바이트 = billing.generate_거래명세서_excel(df_all, 단가맵, 자재map, 의뢰서번호셋, 발행일)
+
     if 엑셀바이트 is None:
         raise HTTPException(status_code=500, detail="Excel 생성 실패 — 해당 업무의뢰서에 등록된 단가가 없을 수 있습니다")
 
@@ -487,6 +562,41 @@ def 거래명세서엑셀(no: str):
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{거래명세서번호}.xlsx"'},
     )
+
+
+@app.get("/거래명세서품목이력/{no}", dependencies=인증필요)
+def 거래명세서품목이력(no: str):
+    """
+    편집(규칙 적용·수동 수정)을 거쳐 발행된 거래명세서의 원본(자동계산)·최종(실제 확정) 품목
+    스냅샷을 나란히 비교할 수 있게 반환 — 확정 시점에 POST /거래명세서요청이 거래명세서_품목에
+    저장해둔 이력을 읽기만 한다(2026-07-22 신규, 사용자 요청: "원본과 수정본의 차이 이력관리는
+    어떻게 관리하지?" → 저장은 되지만 조회 화면이 없다는 걸 확인 후 추가).
+
+    경로 파라미터명은 'no'(영문 고정) — GET /거래명세서엑셀/{no}와 동일한 이유(SKILL-13).
+    이 기능 이전에 발행됐거나 편집 없이 원본 그대로 발행된 건은 거래명세서_품목에 저장된 행이
+    없으므로 원본·최종 모두 빈 배열로 반환한다(버튼 자체를 편집여부=1인 건에만 노출하므로
+    정상 경로에서는 거의 발생하지 않음).
+    """
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 편집여부 FROM 거래명세서 WHERE 거래명세서번호=%s", (no,))
+            거래명세서 = cur.fetchone()
+            if not 거래명세서:
+                raise HTTPException(status_code=404, detail="거래명세서번호를 찾을 수 없습니다")
+
+            cur.execute(
+                "SELECT 구분, 코드, 품목, 작업명, 수량, 단가, 금액 FROM 거래명세서_품목 "
+                "WHERE 거래명세서번호=%s ORDER BY 구분, 순서",
+                (no,),
+            )
+            품목행목록 = cur.fetchall()
+
+    원본 = [r for r in 품목행목록 if r["구분"] == "원본"]
+    최종 = [r for r in 품목행목록 if r["구분"] == "최종"]
+    for r in 원본 + 최종:
+        del r["구분"]
+
+    return {"편집여부": bool(거래명세서["편집여부"]), "원본": 원본, "최종": 최종}
 
 
 class 거래명세서미리보기_요청(BaseModel):
@@ -498,11 +608,12 @@ class 거래명세서미리보기_요청(BaseModel):
 @app.post("/거래명세서미리보기", dependencies=인증필요)
 def 거래명세서미리보기(요청: 거래명세서미리보기_요청):
     """
-    아직 채번 전인 의뢰서번호_목록으로 품목·수량·단가·금액·합계를 미리 계산해 JSON으로 반환
+    아직 채번 전인 의뢰서번호_목록으로 원본 품목(왼쪽 표)을 미리 계산하고, 그 거래처+업무명에
+    저장된 청구품목규칙이 있으면 적용해 고객사 청구 명세서 초안(오른쪽 표)까지 함께 반환
     (Excel 생성 없음, DB 쓰기 없음). GET /거래명세서엑셀/{no}와 DB 조회 패턴은 동일하지만,
     이미 발급된 거래명세서번호 대신 화면에서 방금 체크한 의뢰서번호를 직접 받는다는 점만 다르다.
-    billing.build_품목행()을 그대로 재사용 — generate_거래명세서_excel()이 만드는 것과
-    동일한 품목 그룹·정렬 기준(2026-07-20, [4단계] 종료 후 재검토했던 미리보기 기능).
+    billing.build_품목행()·정렬행_원본목록()·적용_규칙()을 재사용
+    (2026-07-20 최초 작성, 2026-07-22 규칙엔진 확장 — [거래명세서편집_규칙엔진] 착수 순서 3).
     """
     if not 요청.의뢰서번호_목록:
         raise HTTPException(status_code=400, detail="의뢰서번호_목록이 비어 있습니다")
@@ -521,30 +632,87 @@ def 거래명세서미리보기(요청: 거래명세서미리보기_요청):
             단가행 = cur.fetchall()
             자재행 = _자재map_조회(cur, 요청.의뢰서번호_목록)
 
-    if not 원본행:
-        raise HTTPException(status_code=404, detail="해당 업무의뢰서 데이터를 운영통계자료에서 찾을 수 없습니다")
+            if not 원본행:
+                raise HTTPException(status_code=404, detail="해당 업무의뢰서 데이터를 운영통계자료에서 찾을 수 없습니다")
 
-    df_all = pd.DataFrame(원본행)
-    단가df = pd.DataFrame(단가행) if 단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명"])
-    자재df = pd.DataFrame(자재행) if 자재행 else pd.DataFrame(columns=["업무의뢰서번호", "작업이름", "자재종류", "자재형태", "사용량"])
+            df_all = pd.DataFrame(원본행)
+            단가df = pd.DataFrame(단가행) if 단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명"])
+            자재df = pd.DataFrame(자재행) if 자재행 else pd.DataFrame(columns=["업무의뢰서번호", "작업이름", "자재종류", "자재형태", "사용량"])
 
-    단가맵 = billing.build_단가맵(단가df)
-    자재map = billing.build_자재map(자재df)
-    의뢰서번호셋 = {int(float(x)) for x in 요청.의뢰서번호_목록}
+            단가맵 = billing.build_단가맵(단가df)
+            자재map = billing.build_자재map(자재df)
+            의뢰서번호셋 = {int(float(x)) for x in 요청.의뢰서번호_목록}
 
-    정렬행, 총합계, 거래처명, 업무명, _코드맵 = billing.build_품목행(df_all, 단가맵, 자재map, 의뢰서번호셋)
-    if not 정렬행:
-        raise HTTPException(status_code=500, detail="미리보기 생성 실패 — 해당 업무의뢰서에 등록된 단가가 없을 수 있습니다")
+            정렬행, 총합계, 거래처명, 업무명, 코드맵 = billing.build_품목행(df_all, 단가맵, 자재map, 의뢰서번호셋)
+            if not 정렬행:
+                raise HTTPException(status_code=500, detail="미리보기 생성 실패 — 해당 업무의뢰서에 등록된 단가가 없을 수 있습니다")
+
+            원본목록 = billing.정렬행_원본목록(정렬행, 코드맵)
+            규칙목록 = _규칙_조회(cur, 거래처명, 업무명)
+
+    if 규칙목록:
+        규칙적용결과, 미분류 = billing.적용_규칙(원본목록, 규칙목록)
+    else:
+        규칙적용결과, 미분류 = [], []
 
     return {
         "거래처명": 거래처명,
         "업무명": 업무명,
         "품목": [
-            {"품목": 품목, "작업명": 작업명_key, "수량": v["수량"], "단가": 단가, "금액": v["금액"]}
-            for (품목, 작업명_key, 단가), v in 정렬행
+            {"코드": row["코드"], "품목": row["품목"], "작업명": row["작업명"],
+             "수량": row["수량"], "단가": row["단가"], "금액": row["금액"]}
+            for row in 원본목록
+        ],
+        "규칙적용결과": [
+            {"최종청구품명": row["표시품명"], "코드": row["코드"] or None,
+             "수량": row["수량"], "단가": row["단가"], "금액": row["금액"]}
+            for row in 규칙적용결과
+        ],
+        "미분류": [
+            {"코드": row["코드"], "품목": row["품목"], "작업명": row["작업명"],
+             "수량": row["수량"], "단가": row["단가"], "금액": row["금액"]}
+            for row in 미분류
         ],
         "총합계": round(총합계),
     }
+
+
+class 청구품목규칙_행(BaseModel):
+    model_config = ConfigDict(title="BillingRuleRow")  # Swagger 표시용 영문 별명 — 필드명은 한글 그대로
+
+    순서: int
+    최종청구품명: str
+    조건: dict  # {"or": [{"and": [{"field","op","value"}, ...]}, ...]} — {"or": []}이면 전체 매칭
+
+
+@app.get("/청구품목규칙", dependencies=인증필요)
+def 청구품목규칙_목록(거래처명: str = Query(...), 업무명: str = Query(...)):
+    """거래처명+업무명으로 저장된 재사용 청구 규칙 목록 조회(없으면 빈 배열) — 미리보기 화면이
+    같은 거래처+업무명을 다시 열 때 저장된 규칙을 자동으로 불러오는 용도(2026-07-22 신규)."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            return _규칙_조회(cur, 거래처명, 업무명)
+
+
+class 청구품목규칙_저장요청(BaseModel):
+    model_config = ConfigDict(title="BillingRuleSaveRequest")  # Swagger 표시용 영문 별명 — 필드명은 한글 그대로
+
+    거래처명: str
+    업무명: str
+    규칙목록: List[청구품목규칙_행]
+
+
+@app.put("/청구품목규칙", dependencies=인증필요)
+def 청구품목규칙_저장(요청: 청구품목규칙_저장요청):
+    """그 거래처+업무명의 규칙 전체를 통째로 교체 저장 — 미리보기에서 조건식을 새로 만들거나 고칠
+    때마다 프론트가 호출(2026-07-22 신규). /거래명세서요청도 확정 시 같은 로직으로 규칙을 저장한다."""
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                _규칙_저장(cur, 요청.거래처명, 요청.업무명, [r.model_dump() for r in 요청.규칙목록])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"규칙 저장 실패: {e}")
+    return {"status": "ok", "저장건수": len(요청.규칙목록)}
 
 
 # ── 거래처마스터 쓰기 API ──────────────────────────────────────
@@ -630,6 +798,7 @@ class 단가마스터_신규(BaseModel):
     출력단가: float = 0
     봉입단가: float = 0
     추가봉입단가: float = 0
+    동봉물삽입단가: float = 0
     용지제작단가: float = 0
     봉투제작단가: float = 0
     삽지제작단가: float = 0
@@ -659,11 +828,11 @@ def 단가마스터_추가(단가: 단가마스터_신규):
             with conn.cursor() as cur:
                 cur.execute("""
                     INSERT INTO 단가마스터
-                        (거래처명, 업무명, 작업명, 출력단가, 봉입단가, 추가봉입단가,
+                        (거래처명, 업무명, 작업명, 출력단가, 봉입단가, 추가봉입단가, 동봉물삽입단가,
                          용지제작단가, 봉투제작단가, 삽지제작단가, 각대대봉투단가, 각대대봉투봉입단가,
                          비고, 등록일, 수정일)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                """, (단가.거래처명, 단가.업무명, 단가.작업명, 단가.출력단가, 단가.봉입단가, 단가.추가봉입단가,
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                """, (단가.거래처명, 단가.업무명, 단가.작업명, 단가.출력단가, 단가.봉입단가, 단가.추가봉입단가, 단가.동봉물삽입단가,
                       단가.용지제작단가, 단가.봉투제작단가, 단가.삽지제작단가, 단가.각대대봉투단가, 단가.각대대봉투봉입단가,
                       단가.비고, 오늘, 오늘))
                 새_id = cur.lastrowid
@@ -680,6 +849,7 @@ class 단가마스터_수정(BaseModel):
     출력단가: float = 0
     봉입단가: float = 0
     추가봉입단가: float = 0
+    동봉물삽입단가: float = 0
     용지제작단가: float = 0
     봉투제작단가: float = 0
     삽지제작단가: float = 0
@@ -696,11 +866,11 @@ def 단가마스터_수정_요청(id: int, 단가: 단가마스터_수정):
         with conn.cursor() as cur:
             cur.execute("""
                 UPDATE 단가마스터
-                SET 출력단가=%s, 봉입단가=%s, 추가봉입단가=%s,
+                SET 출력단가=%s, 봉입단가=%s, 추가봉입단가=%s, 동봉물삽입단가=%s,
                     용지제작단가=%s, 봉투제작단가=%s, 삽지제작단가=%s,
                     각대대봉투단가=%s, 각대대봉투봉입단가=%s, 비고=%s, 수정일=%s
                 WHERE id=%s
-            """, (단가.출력단가, 단가.봉입단가, 단가.추가봉입단가,
+            """, (단가.출력단가, 단가.봉입단가, 단가.추가봉입단가, 단가.동봉물삽입단가,
                   단가.용지제작단가, 단가.봉투제작단가, 단가.삽지제작단가,
                   단가.각대대봉투단가, 단가.각대대봉투봉입단가, 단가.비고, 오늘, id))
             if cur.rowcount == 0:
@@ -733,6 +903,16 @@ def _발급_거래명세서번호(cur, 사업부: str) -> str:
     return f"{사업부코드}-{연월}-{다음순번:05d}"
 
 
+class 품목행_입력(BaseModel):
+    model_config = ConfigDict(title="InvoiceItemRowInput")  # Swagger 표시용 영문 별명 — 필드명은 한글 그대로
+
+    코드: Optional[str] = None
+    품목: str  # 원본이면 품목명, 규칙/수동 편집 결과면 최종청구품명
+    수량: float
+    단가: Optional[float] = None  # 병합된 항목의 단가가 갈리면 None("—")
+    금액: float
+
+
 class 거래명세서요청_요청(BaseModel):
     model_config = ConfigDict(title="InvoiceRequestBody")  # Swagger 표시용 영문 별명 — 필드명은 한글 그대로
 
@@ -744,6 +924,9 @@ class 거래명세서요청_요청(BaseModel):
     세액: float
     합계: float
     의뢰서번호_목록: List[str]
+    업무명: Optional[str] = None                    # 규칙 저장 시 거래처명과 함께 규칙의 소속 키로 사용
+    품목_최종: Optional[List[품목행_입력]] = None  # 미리보기 오른쪽 표를 사람이 최종 확정한 내용
+    규칙: Optional[List[청구품목규칙_행]] = None    # 이번에 새로 만들거나 고친 조건식 규칙 — 있으면 저장/재사용
 
 
 @app.post("/거래명세서요청", dependencies=인증필요)
@@ -751,6 +934,11 @@ def 거래명세서요청(요청: 거래명세서요청_요청):
     """
     금액(공급가액·세액·합계)은 app.py가 calc_공급가맵()으로 이미 계산해서 보낸 값을 그대로 저장한다.
     (일반봉투/각대대봉투 구분에 필요한 자재형태 데이터가 아직 MariaDB에 없어, 계산 자체는 당분간 app.py가 담당 — A안)
+
+    품목_최종을 함께 보내면(Next.js 탭4 미리보기 편집 화면 전용) 서버가 원본을 다시 계산해 비교하고
+    다르면 편집여부=1로 저장하며, 원본·최종 스냅샷을 거래명세서_품목에 남긴다(이력 보존).
+    규칙을 함께 보내면 그 거래처+업무명의 청구품목규칙도 함께 갱신해 다음 명세서부터 재사용된다
+    (2026-07-22, [거래명세서편집_규칙엔진] 착수 순서 3).
     """
     if not 요청.의뢰서번호_목록:
         raise HTTPException(status_code=400, detail="의뢰서번호_목록이 비어 있습니다")
@@ -772,6 +960,49 @@ def 거래명세서요청(요청: 거래명세서요청_요청):
             detail=f"선택한 의뢰서의 사업부가 서로 다릅니다({', '.join(사업부목록)}). 사업부를 통일해서 요청해 주세요.",
         )
 
+    if 요청.규칙 is not None and not 요청.업무명:
+        raise HTTPException(status_code=400, detail="규칙을 저장하려면 업무명이 필요합니다")
+
+    # 품목_최종이 왔으면 원본을 다시 계산해 편집여부를 판정하고 거래명세서_품목 저장 준비를 한다
+    # (서버가 직접 재계산 — 화면에서 보낸 "원본"을 그대로 믿지 않음, 조작 방지 겸 정합성 보장).
+    원본목록 = []
+    if 요청.품목_최종 is not None:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                자리표시자 = ", ".join(["%s"] * len(요청.의뢰서번호_목록))
+                cur.execute(
+                    f"SELECT 업무의뢰서번호, 작업명, 거래처명, 업무명, 확정청구페이지, 건수, 장수 "
+                    f"FROM 운영통계자료 WHERE 업무의뢰서번호 IN ({자리표시자})",
+                    요청.의뢰서번호_목록,
+                )
+                원본행 = cur.fetchall()
+                cur.execute("SELECT * FROM 단가마스터")
+                단가행 = cur.fetchall()
+                자재행 = _자재map_조회(cur, 요청.의뢰서번호_목록)
+
+        df_all = pd.DataFrame(원본행)
+        단가df = pd.DataFrame(단가행) if 단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명"])
+        자재df = pd.DataFrame(자재행) if 자재행 else pd.DataFrame(columns=["업무의뢰서번호", "작업이름", "자재종류", "자재형태", "사용량"])
+        단가맵 = billing.build_단가맵(단가df)
+        자재map = billing.build_자재map(자재df)
+        의뢰서번호셋 = {int(float(x)) for x in 요청.의뢰서번호_목록}
+        정렬행, _총, _거래처, _업무, 코드맵 = billing.build_품목행(df_all, 단가맵, 자재map, 의뢰서번호셋)
+        원본목록 = billing.정렬행_원본목록(정렬행, 코드맵)
+
+    최종목록 = [
+        {"코드": r.코드 or "", "표시품명": r.품목, "수량": r.수량, "단가": r.단가, "금액": round(r.금액, 2)}
+        for r in (요청.품목_최종 or [])
+    ]
+
+    def _비교키(row):
+        return (row.get("코드") or "", row.get("표시품명") or "", round(row.get("수량", 0), 2), row.get("단가"), round(row.get("금액", 0), 2))
+
+    편집여부 = 0
+    if 요청.품목_최종 is not None:
+        원본_비교 = [_비교키(r) for r in 원본목록]
+        최종_비교 = [_비교키(r) for r in 최종목록]
+        편집여부 = 1 if 원본_비교 != 최종_비교 else 0
+
     from datetime import date
     오늘 = str(date.today())
 
@@ -781,19 +1012,37 @@ def 거래명세서요청(요청: 거래명세서요청_요청):
                 거래명세서번호 = _발급_거래명세서번호(cur, 요청.사업부)
                 cur.execute("""
                     INSERT INTO 거래명세서
-                        (거래명세서번호, 거래처명, 담당자, 발행일자, 품목, 공급가액, 세액, 합계, 발송여부, 등록일)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 0, NOW())
+                        (거래명세서번호, 거래처명, 담당자, 발행일자, 품목, 공급가액, 세액, 합계, 발송여부, 편집여부, 등록일)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 0, %s, NOW())
                 """, (거래명세서번호, 요청.거래처명, 요청.담당자, 오늘, 요청.품목,
-                      요청.공급가액, 요청.세액, 요청.합계))
+                      요청.공급가액, 요청.세액, 요청.합계, 편집여부))
 
                 cur.executemany(
                     "INSERT INTO 거래명세서_의뢰서 (거래명세서번호, 업무의뢰서번호) VALUES (%s, %s)",
                     [(거래명세서번호, n) for n in 요청.의뢰서번호_목록]
                 )
+
+                if 요청.품목_최종 is not None:
+                    품목_삽입_sql = """
+                        INSERT INTO 거래명세서_품목
+                            (거래명세서번호, 구분, 순서, 코드, 품목, 작업명, 수량, 단가, 금액)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """
+                    cur.executemany(품목_삽입_sql, [
+                        (거래명세서번호, "원본", i, r["코드"], r.get("품목"), r.get("작업명"), r["수량"], r["단가"], r["금액"])
+                        for i, r in enumerate(원본목록)
+                    ])
+                    cur.executemany(품목_삽입_sql, [
+                        (거래명세서번호, "최종", i, r["코드"] or None, r["표시품명"], None, r["수량"], r["단가"], r["금액"])
+                        for i, r in enumerate(최종목록)
+                    ])
+
+                if 요청.규칙 is not None:
+                    _규칙_저장(cur, 요청.거래처명, 요청.업무명, [r.model_dump() for r in 요청.규칙])
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"거래명세서 요청 실패: {e}")
 
-    return {"status": "ok", "거래명세서번호": 거래명세서번호}
+    return {"status": "ok", "거래명세서번호": 거래명세서번호, "편집여부": 편집여부}
 
 
 class 거래명세서번호_요청(BaseModel):
@@ -857,7 +1106,7 @@ def 거래명세서부분취소(요청: 거래명세서부분취소_요청):
     #     /거래명세서요청의 사업부 검증과 동일 관례, 안 그러면 500으로 감싸여버림) ──
     with get_db() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT 발송여부 FROM 거래명세서 WHERE 거래명세서번호=%s", (요청.거래명세서번호,))
+            cur.execute("SELECT 발송여부, 편집여부 FROM 거래명세서 WHERE 거래명세서번호=%s", (요청.거래명세서번호,))
             헤더 = cur.fetchone()
             if not 헤더:
                 raise HTTPException(status_code=404, detail="해당 거래명세서번호가 없습니다")
@@ -879,6 +1128,14 @@ def 거래명세서부분취소(요청: 거래명세서부분취소_요청):
         )
 
     남을_목록 = [n for n in 기존_목록 if n not in 취소_대상]
+
+    # 편집된(자동계산과 다르게 확정된) 거래명세서는 일부만 남기는 부분취소를 막는다(사용자 확정 사항) —
+    # 전체 의뢰서를 다 선택해서 남을_목록이 비면(=전체취소) 아래 DELETE 분기로 그대로 진행 허용.
+    if 헤더.get("편집여부") and 남을_목록:
+        raise HTTPException(
+            status_code=400,
+            detail="편집된 거래명세서는 부분취소할 수 없습니다. 전체 의뢰서를 선택해 전체취소해 주세요.",
+        )
 
     try:
         with get_db() as conn:

@@ -33,6 +33,11 @@
 | SKILL-21 | Windows에서 배포 대상 서버의 포트 충돌(WinError 10048) 대응 — 정체 모르는 서비스는 끄지 말고 포트 우회 | ✅ 2026-07-20 |
 | SKILL-22 | 한글 포함 .bat 파일은 맨 앞에 `chcp 65001` 필수 (안 그러면 명령어 전체가 깨져서 엉뚱하게 실행됨) | ✅ 2026-07-21 |
 | SKILL-23 | 레벨1(요약)·레벨2(상세) 표는 반드시 같은 필터링된 소스에서 파생시킬 것 + useState 초기값 고정 함정 | ✅ 2026-07-22 |
+| SKILL-24 | React useEffect 안에서 prop 바뀔 때 setState로 되돌리기 — 린트가 막음, key 재마운트로 대체 | ✅ 2026-07-22 |
+| SKILL-25 | Playwright로 모달/다이얼로그 내부 검증 시 컨테이너로 스코프 필수 + input 값은 inputValue()로 | ✅ 2026-07-22 |
+| SKILL-26 | 수천 행 표는 가상 스크롤(윈도잉) 필수 — 필터 재계산이 아니라 DOM 렌더링 자체가 병목 | ✅ 2026-07-23 |
+| SKILL-27 | 단가마스터에 필드 추가 시 하드코딩된 컬럼 리스트가 5곳에 흩어져 있어 전부 찾아 고쳐야 함 | ✅ 2026-07-24 |
+| SKILL-28 | git repo root가 작업 폴더 한 단계 위 + HEAD가 여러 세션치 미커밋 변경으로 낡음 — `git show HEAD`로 회귀 검증 시 함정 | ✅ 2026-07-24 |
 
 ---
 
@@ -1003,6 +1008,152 @@ const [시작일, set시작일] = useState("");
 - 레벨1/레벨2(또는 레벨3) 드릴다운 구조를 새로 만들 때마다, 모든 레벨이 **정확히 같은 필터링 파이프라인의 결과물**에서 파생되는지 먼저 점검할 것 — 다른 레벨이 "필터 적용 전" 원본을 참조하고 있지 않은지 확인
 - "똑똑한 기본값"(데이터 기반 자동 계산)이 필요할 것 같으면, `useState` 초기값 대신 `useMemo`로 매 렌더마다 최신값을 계산하고, 사용자가 아직 직접 건드리지 않았을 때만 그 값을 쓰는 방식(예: 별도의 "사용자가 수정했는지" 플래그)을 고려할 것 — 다만 이번엔 사용자가 "그냥 기본은 전체로, 필요하면 내가 직접 지정하겠다"를 선택해 아예 빈 값 기본으로 단순화함(더 견고하고 코드도 단순해짐)
 - 이 버그는 화면 표시(집계) 로직에만 있었고, DB에 실제 저장된 값(예: 이미 발행된 거래명세서의 합계)에는 영향이 없었음 — 그래도 "표시 버그"가 사용자에게는 "계산이 잘못됐다"는 신뢰 문제로 보일 수 있으므로 심각도를 낮게 보지 말 것
+
+---
+
+## SKILL-24. React `useEffect` 안에서 prop 바뀔 때 `setState`로 되돌리기 — 린트가 막음, `key` 재마운트로 대체
+
+**목적:** "부모가 준 데이터(prop)가 바뀌면 로컬 state를 그 값으로 리셋한다" 패턴을 `useEffect(() => { setXxx(...) }, [prop])`로 짜면 `react-hooks/set-state-in-effect` 린트 규칙이 에러로 막는다(캐스케이딩 리렌더 방지 목적) — 거래명세서 편집 화면(`InvoicePreviewDialog.tsx`·`ConditionRuleModal.tsx`)에서 실제로 걸림(2026-07-22)
+
+**검증 상태:** ✅ 완료 (`npx eslint .` 클린 확인)
+
+**문제 상황:**
+```tsx
+// 나쁜 예 — data가 바뀔 때마다 rightRows를 되돌리려고 함, 린트 에러
+useEffect(() => {
+  if (!open || !data) return;
+  setRightRows(data.규칙적용결과.map(...));
+}, [open, data]);
+```
+
+**해결 패턴 — 부모가 `key`로 통째로 재마운트시키고, 자식은 `useState` 초기화 함수에서 한 번만 계산:**
+```tsx
+// 자식(InvoicePreviewDialog.tsx) — 초기값을 함수로 계산, effect 없음
+const [rightRows, setRightRows] = useState<편집행[]>(() => 초기_rightRows(data));
+
+// 부모(Tab4Invoice.tsx) — 새 미리보기를 받을 때마다 seq를 올려서 key로 전달
+const [previewSeq, setPreviewSeq] = useState(0);
+// ... setPreviewData(data); setPreviewSeq((s) => s + 1); setPreviewOpen(true);
+<InvoicePreviewDialog key={previewSeq} data={previewData} ... />
+```
+모달처럼 "열림/닫힘"이 있는 컴포넌트는 조건부 렌더링(`{modalOpen && <Modal .../>}`)만으로도 충분함 — 언마운트→마운트가 매번 일어나므로 별도 `key` 없이도 `useState` 초기화 함수가 항상 최신 `initial` prop으로 다시 계산됨(`ConditionRuleModal.tsx`가 이 방식).
+
+**주의사항:**
+- 이 패턴이 필요한지 먼저 의심할 것 — 진짜로 "완전히 새로운 세션으로 리셋"이 맞는 경우에만 쓰고, "부분적으로만 업데이트"하고 싶다면 애초에 `useEffect`+`setState` 자체가 필요 없는 경우가 많음(파생값은 렌더 중 직접 계산하거나 `useMemo`)
+- ESC 키 리스너처럼 "구독만 하고 이벤트 콜백 안에서 setState"하는 effect는 이 규칙에 안 걸림 — 규칙은 **effect 본문에서 곧바로(동기적으로)** `setState`를 호출하는 경우만 막음
+- **데이터 fetch effect에도 적용됨(2026-07-22 추가 확인):** "네트워크 호출은 외부 시스템과의 동기화라 괜찮겠지"라고 생각하고 `useEffect(() => { setLoading(true); fetch(...).then(...) }, [id])`처럼 맨 앞에 `setLoading(true)`를 동기 호출했더니 `InvoiceHistoryDialog.tsx`에서 똑같이 걸림 — fetch 자체(비동기 콜백 안의 setState)는 문제 없지만, effect 본문 맨 앞의 **동기적** `setLoading(true)`/`setError(null)`만 따로 걸러서 잡아냄. 이 컴포넌트도 SKILL-24 패턴대로 부모가 매번 새로 마운트해준다면, `useState(true)`/`useState(null)`처럼 애초에 그 값으로 초기화해두고 effect에서는 그 두 줄을 아예 지우면 됨(부모가 매번 재마운트하므로 "리셋"이 필요 없어짐)
+
+---
+
+## SKILL-25. Playwright로 모달/다이얼로그 내부 검증 시 컨테이너로 스코프 필수 + `input` 값은 `inputValue()`로
+
+**목적:** 이 프로젝트는 오버레이 모달(`fixed inset-0`)을 띄워도 뒤의 페이지(다른 탭 포함, SKILL-17의 상시 마운트 구조)가 DOM에서 사라지지 않아 `:visible`만으로는 부족한 경우가 있음 — 거래명세서 편집 화면의 좌우 2단 표를 Playwright로 검증하다 실제로 걸림(2026-07-22)
+
+**검증 상태:** ✅ 완료
+
+**문제 상황:**
+- `page.locator("table:visible").nth(1)`처럼 짜면, 모달 뒤에 깔린 5000행짜리 미발행목록 표까지 `:visible`(뒤에 있어도 화면에 그려지고는 있으므로) 후보에 포함돼 엉뚱한 표를 짚음
+- `<input type="number" value={...}>`의 값은 `element.innerText()`/`textContent`에 절대 안 잡힘(폼 컨트롤 값은 DOM 텍스트가 아니라 별도 `value` 프로퍼티) — `innerText()`로 셀 내용을 검증하면 숫자 칸은 항상 빈 문자열로 보여서 "계산이 안 됐다"는 오탐이 남
+
+**해결 패턴:**
+```js
+// 모달 자체를 먼저 찾아 그 안에서만 검색 (텍스트로 컨테이너 특정)
+const dialog = page.locator("div.fixed.z-50", { hasText: "거래명세서 미리보기 · 편집" });
+const rightTable = dialog.locator("table").nth(1);
+
+// 표 안의 문자(라벨 등)는 innerText(), 숫자 입력칸은 반드시 inputValue()
+const 라벨 = await rightTable.locator("tbody tr").first().innerText();
+const 수량 = await rightTable.locator("tbody tr").first().locator('input[type="number"]').nth(0).inputValue();
+```
+
+**주의사항:**
+- 로그인 화면을 매번 실제 비밀번호로 거치기 어려우면(비개발자 프로젝트라 테스트 계정 비밀번호를 안 외워도 됨), `scripts/auth.py`의 `토큰_발급()`으로 JWT를 직접 만들어 `context.addCookies([{name:"session_token", value: token, httpOnly:true, sameSite:"Lax", path:"/", domain:"localhost"}])`로 주입하면 실제 로그인 폼 없이 인증된 세션으로 바로 테스트 가능(SKILL-17과 동일 계정 발급 방식)
+- 검증용으로 만든/저장한 규칙·의뢰서 선택 등은 실제 DB에 쓰지 않는 액션(모달 "취소"로 닫기 등)까지만 자동화하고, 실제 저장(확정)까지 필요하면 반드시 테스트 데이터 정리(취소/삭제)까지 스크립트에 포함할 것(SKILL-20 회귀 검증과 동일 원칙)
+
+---
+
+## SKILL-26. 수천 행 표는 가상 스크롤(윈도잉) 필수 — 필터 재계산이 아니라 DOM 렌더링 자체가 병목
+
+**목적:** 필터링 로직(`useMemo`·`filter`)은 가볍다고 확인됐는데도 화면이 몇 초~몇십 초씩 멈추는 원인이, 사실은 "필터링된 결과 전체를 실제 `<tr>` DOM으로 한꺼번에 그리는 렌더링" 쪽이었던 사례. 미발행 목록 표(수천 행)에서 실제로 발견·해결됨(2026-07-23, 사용자 제보: 사업부→담당자 필터 연속 선택 시 43초 멈춤)
+
+**검증 상태:** ✅ 완료
+
+**문제 상황:**
+- 코드 리뷰만으로는 "필터는 배열 `filter` 몇 번뿐이라 안 느릴 것"이라고 오판하기 쉬움 — 실제로 Playwright로 운영 모드(빌드) 기준 재현해보니 필터 선택 자체는 0.3~0.6초로 빨랐고, **탭을 처음 열어 4,600여 건을 한 번에 그리는 최초 렌더링이 9초** 걸리고 있었음(개발 모드였다면 더 오래 걸림 — 사용자가 겪은 43초는 이 9초짜리 렌더링이 끝나기 전에 필터를 연달아 눌러 재렌더링이 겹쳐 쌓인 결과로 추정)
+- "테이블 자체가 병목"이라는 가설은 코드만 봐서는 확신하기 어려움 — Playwright로 실제 DOM `<tr>` 개수(`page.locator("table:visible tbody tr").count()`)를 재기 전까지는 "필터 재계산"과 "DOM 렌더링" 중 무엇이 원인인지 구분이 안 됨
+
+**해결 패턴 — 외부 라이브러리 없이 고정 행 높이 가상 스크롤 직접 구현(`frontend/lib/useVirtualRows.ts`):**
+```ts
+// scroll·resize에 반응해 지금 보여야 할 [start, end) 인덱스 범위만 계산 (overscan 여유분 포함)
+// 행 높이는 하드코딩 대신 콜백 ref로 실제 첫 행을 실측해 보정 — useEffect(무조건 실행)로
+// 만들면 "무한 갱신 가능성" eslint 경고(react-hooks/exhaustive-deps)가 뜨므로, 콜백 ref로
+// "DOM에 새로 붙는 순간에만" 실행되게 만들어 경고 자체를 피함
+const firstRowRef = useCallback((node: HTMLTableRowElement | null) => {
+  if (!node) return;
+  const h = node.getBoundingClientRect().height;
+  if (h > 0) setRowHeight((prev) => (Math.abs(h - prev) > 0.5 ? h : prev));
+}, []);
+```
+```tsx
+// <tbody> — 전체 rows.map() 대신 슬라이스만 렌더링 + 스페이서 <tr> 2개로 스크롤바 크기 유지
+{range.start > 0 && <tr style={{ height: range.start * rowHeight }}><td colSpan={COL_COUNT} /></tr>}
+{rows.slice(range.start, range.end).map((r, i) => <Row key={r.id} ... />)}
+{range.end < rows.length && <tr style={{ height: (rows.length - range.end) * rowHeight }}><td colSpan={COL_COUNT} /></tr>}
+```
+
+**주의사항:**
+- 스페이서 `<tr>`은 반드시 `<td colSpan={전체컬럼수}>`를 넣을 것 — `<tr>`에 `<td>` 없이 `style={{height}}`만 주면 일부 브라우저에서 높이가 무시될 수 있음
+- 필터가 바뀌어 `rowCount`가 줄어들면(예: 4,605→1,211건) 이전 스크롤 위치가 새 목록 길이보다 아래일 수 있어 빈 화면만 보임 — `rowCount` 변경 시 스크롤을 맨 위로 리셋해야 함
+- 선택 상태(`Set<string>`)·"전체 선택" 로직은 항상 필터링된 **전체** `rows` 기준으로 유지하고, 가상 스크롤은 오직 "무엇을 화면에 그릴지"만 건드릴 것 — 어떤 행이 선택됐는지는 DOM 마운트 여부와 완전히 무관해야 함(Playwright로 스크롤 후에도 "선택 N건" 요약이 유지되는지 확인해 검증)
+- `React.memo` 행 컴포넌트 최적화(SKILL 기존 패턴)와 가상 스크롤은 상호 보완적 — 가상 스크롤이 "몇 개를 그릴지"를 줄이고, `memo`가 "그중 몇 개를 다시 그릴지"를 줄임. 둘 다 필요하면 함께 적용
+
+---
+
+## SKILL-27. 단가마스터에 필드 추가 시 하드코딩된 컬럼 리스트가 5곳에 흩어져 있어 전부 찾아 고쳐야 함
+
+**목적:** "동봉물삽입단가" 필드를 단가마스터에 추가하는 작업(2026-07-24) 중, DB 스키마·API·프론트엔드 각 계층에서 단가 컬럼 이름을 하드코딩한 리스트가 여러 곳에 독립적으로 존재해 하나라도 빠뜨리면 "화면·API는 정상으로 보이는데 실제 계산에는 항상 0으로 적용되는" 조용한 버그가 생기는 것을 발견
+
+**검증 상태:** ✅ 완료
+
+**문제 상황:**
+- 새 단가 필드를 추가할 때 "DB 컬럼 추가 + API 모델 추가 + 프론트 타입 추가"만 하면 될 것 같지만, 이 프로젝트는 MariaDB(Next.js용)와 SQLite(Streamlit용) **두 개의 완전히 별도인 데이터 계층**을 가지고 있고, 각 계층 안에서도 "단가 컬럼 목록"을 하드코딩한 지점이 여러 개 독립적으로 존재함
+- 실제로 놓쳐서 발견된 지점: `scripts/billing.py`의 `build_단가맵()`(MariaDB·SQLite 공용, DB에 컬럼이 있어도 이 하드코딩 리스트에 없으면 결과 dict에서 조용히 빠짐) — 여기서 빠지면 `rates.get(필드, 0)`이 항상 0을 반환해 **계산 결과가 소리 없이 틀어짐** (에러가 안 나서 발견이 늦어짐)
+- SQLite 쪽은 `scripts/app.py`에 `billing.build_단가맵()`과는 별개인 자체 컬럼 리스트가 **2곳**(`load_단가마스터()`, 탭4 공용 단가맵 생성부) 더 있었음 — MariaDB 쪽만 고치고 배포 검증까지 마쳐도, 로컬에서 Streamlit을 실행하는 순간 바로 계산이 달라짐(별도 배포 없이 즉시 영향받음)
+
+**전체 지점 목록(신규 단가 필드 추가 시 전부 확인):**
+```
+1. scripts/init_db_mariadb.py   — 단가마스터 CREATE TABLE DDL + migrate() 마이그레이션(ALTER TABLE)
+2. scripts/init_db.py           — SQLite 단가마스터 CREATE TABLE + migrate_단가마스터_컬럼()
+3. scripts/billing.py           — build_단가맵()의 하드코딩 컬럼 리스트 (MariaDB·SQLite 공용, 가장 놓치기 쉬움)
+4. scripts/api.py               — 단가마스터_신규/수정 Pydantic 모델 + POST/PUT SQL문
+5. scripts/app.py               — load_단가마스터() 컬럼 리스트, 탭4 공용 단가맵 생성부, 단가관리 화면(표시/수정폼/추가폼) + INSERT/UPDATE SQL문
+6. frontend/components/Dashboard.tsx           — 단가행 타입
+7. frontend/app/page.tsx                        — loadPricing() 매핑
+8. frontend/components/PricingFormDialog.tsx    — 가격필드 타입·목록·초기 state·payload
+9. frontend/components/PricingMaster.tsx        — handleUpdated의 Pick<단가행,...> 타입(별도로 또 있음)
+10. frontend/components/PricingMasterTable.tsx  — 표 컬럼
+```
+
+**주의사항:**
+- 새 필드 추가 후 **반드시 실제 데이터로 `billing.build_단가맵()`을 직접 호출**해 결과 dict에 새 필드가 포함되는지 확인할 것(Python REPL/스크립트로 몇 줄이면 됨) — 화면·API 응답만 보고 "정상"이라 판단하면 이런 종류의 버그는 못 잡음(값이 0인 것과 필드가 아예 없는 것이 화면상 똑같아 보이기 때문)
+- 마이그레이션으로 기존 데이터에 기본값(0 또는 다른 필드 값으로 백필)을 넣을 때는, MariaDB(`init_db_mariadb.py`)와 SQLite(`init_db.py`) **양쪽 다** 빠짐없이 실행해서 두 DB의 값이 실제로 일치하는지 SQL로 직접 확인할 것
+
+---
+
+## SKILL-28. git repo root가 작업 폴더 한 단계 위 + HEAD가 여러 세션치 미커밋 변경으로 낡음
+
+**목적:** SKILL-20(계산 로직 리팩터링 회귀 검증, `git show HEAD:...` 방식)을 그대로 적용했다가 엉뚱한 "회귀"를 진짜 버그로 오인할 뻔한 함정 기록
+
+**검증 상태:** ✅ 완료
+
+**문제 상황:**
+- 이 프로젝트 폴더(`d:\AI\생산공정관리`)는 `git rev-parse --show-toplevel` 결과 `D:/AI`로 나옴 — **git repo root가 프로젝트 폴더 자체가 아니라 한 단계 위**임. 그래서 `git show HEAD:scripts/billing.py`처럼 프로젝트 폴더 기준 상대경로로 쓰면 `fatal: path '생산공정관리/scripts/billing.py' exists, but not 'scripts/billing.py'`로 실패함 — 반드시 `git show "HEAD:생산공정관리/scripts/billing.py"`처럼 상위 폴더를 포함해야 함
+- 이 프로젝트는 **커밋을 자주 하지 않는 작업 방식**이라(사용자 확정 없이는 커밋하지 않는 지침과 별개로, 실제로 여러 세션에 걸친 작업이 계속 미커밋 상태로 쌓여있음) HEAD가 최근 며칠~몇 주 치 작업보다도 훨씬 이전 버전을 가리킴
+- 2026-07-24 "추가봉입비/동봉물삽입비 분리" 작업의 회귀 검증(SKILL-20 방식)을 시도하다가, `git show HEAD`로 뽑은 "이전" 버전이 **2026-07-22의 각대대봉투 봉입비 버그 수정보다도 이전**이라, 그 수정으로 인한 차이(관련 없는 "봉투제작비" 150원 차이)까지 이번 변경의 회귀인 것처럼 섞여 나와 혼란을 겪음
+
+**주의사항:**
+- 이 프로젝트에서 `git show HEAD:...`로 회귀 검증할 때는 항상 `git rev-parse --show-toplevel`로 실제 repo root를 먼저 확인하고, HEAD가 "이번 세션 시작 시점"이 아니라 "마지막으로 커밋된 아주 오래전 시점"이라는 것을 감안할 것
+- HEAD 비교로 예상 못 한 차이가 나오면, 그게 **이번에 직접 건드린 부분과 무관한 이전 세션의 미커밋 수정**일 가능성부터 의심하고(`git diff`로 전체 diff를 훑어 변경 구간이 이번 수정과 겹치는지 확인), 진짜 회귀 검증이 필요하면 "이번 세션 시작 직전 상태"를 별도로 백업해두거나 수정된 필드만 골라 수식적으로 보존 여부를 직접 확인하는 방식을 우선 고려할 것
 
 ---
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense, use, useState } from "react";
 import LogoutButton from "./LogoutButton";
 import Tab1Summary from "./Tab1Summary";
 import Tab2Clients from "./Tab2Clients";
@@ -54,7 +54,7 @@ export type 미발행행 = {
 // 구조라 미발행행과 필드가 대부분 겹치지만, useInvoiceFilters(rows: 미발행행[])에 그대로 넘기면
 // base5 등 반환값 타입이 미발행행으로 좁혀져 거래명세서번호·발송여부에 접근할 수 없으므로
 // lib/useIssuedFilters.ts를 별도로 둔다(SKILL-10 — 필드셋 다르면 제네릭화 대신 명시적 복제).
-export type 발행행 = 미발행행 & { 거래명세서번호: string; 발송여부: 0 | 1 };
+export type 발행행 = 미발행행 & { 거래명세서번호: string; 발송여부: 0 | 1; 편집여부: 0 | 1 };
 
 // 탭5 "거래처 마스터" 전용 — GET /거래처마스터 응답 매핑. 거래처명이 PK라 생성 후 변경 불가
 // (단가마스터·거래명세서·운영통계자료가 거래처명을 FK 없이 문자열로만 참조하기 때문 — [4-D] 참고).
@@ -79,6 +79,7 @@ export type 단가행 = {
   출력단가: number;
   봉입단가: number;
   추가봉입단가: number;
+  동봉물삽입단가: number;
   용지제작단가: number;
   봉투제작단가: number;
   삽지제작단가: number;
@@ -99,20 +100,61 @@ const TABS = [
 
 type TabId = (typeof TABS)[number]["id"];
 
+// 로딩 중 표시 — 각 탭의 <Suspense> fallback으로 공용 사용.
+function TabLoading() {
+  return <div className="flex flex-1 items-center justify-center p-8 text-sm text-gray-400">불러오는 중...</div>;
+}
+
+// use()로 Promise를 풀어 기존 Tab 컴포넌트에 그대로 넘기는 얇은 wrapper들.
+// Tab1Summary~ClientMasterSection과 그 하위 컴포넌트는 건드리지 않고, 여기서만 스트리밍을 다룬다.
+function SummaryTab({ promise }: { promise: Promise<운영통계행[]> }) {
+  return <Tab1Summary rows={use(promise)} />;
+}
+function ClientsTab({ promise }: { promise: Promise<운영통계행[]> }) {
+  return <Tab2Clients rows={use(promise)} />;
+}
+function StaffTab({ promise }: { promise: Promise<운영통계행[]> }) {
+  return <Tab3Staff rows={use(promise)} />;
+}
+function InvoiceTab({
+  summaryPromise,
+  invoicePromise,
+  issuedPromise,
+}: {
+  summaryPromise: Promise<운영통계행[]>;
+  invoicePromise: Promise<미발행행[]>;
+  issuedPromise: Promise<발행행[]>;
+}) {
+  return <Tab4 rows={use(summaryPromise)} invoiceRows={use(invoicePromise)} issuedRows={use(issuedPromise)} />;
+}
+function ClientsMasterTab({
+  clientRows,
+  pricingPromise,
+  summaryPromise,
+}: {
+  clientRows: 거래처행[];
+  pricingPromise: Promise<단가행[]>;
+  summaryPromise: Promise<운영통계행[]>;
+}) {
+  return <ClientMasterSection clientRows={clientRows} pricingRows={use(pricingPromise)} taskRows={use(summaryPromise)} />;
+}
+
 // 탭마다 컴포넌트를 항상 다 마운트해두고 CSS(hidden)로만 숨김 처리.
 // 언마운트하면 각 탭이 들고 있는 useFilters() 상태(필터 선택값)가 날아가버리기 때문.
+// 데이터는 대부분 Promise로 받아 <Suspense>+use()로 스트리밍 — 로그인 직후 첫 화면이
+// 5개 API를 전부 기다리지 않고, 지금 보는 탭 데이터가 준비되는 대로 뜨게 하기 위함.
 export default function Dashboard({
-  rows,
-  invoiceRows,
-  issuedRows,
   clientRows,
-  pricingRows,
+  summaryPromise,
+  invoicePromise,
+  issuedPromise,
+  pricingPromise,
 }: {
-  rows: 운영통계행[];
-  invoiceRows: 미발행행[];
-  issuedRows: 발행행[];
   clientRows: 거래처행[];
-  pricingRows: 단가행[];
+  summaryPromise: Promise<운영통계행[]>;
+  invoicePromise: Promise<미발행행[]>;
+  issuedPromise: Promise<발행행[]>;
+  pricingPromise: Promise<단가행[]>;
 }) {
   const [tab, setTab] = useState<TabId>("summary");
 
@@ -141,19 +183,29 @@ export default function Dashboard({
 
       <div className="flex flex-1">
         <div className={tab === "summary" ? "flex flex-1" : "hidden"}>
-          <Tab1Summary rows={rows} />
+          <Suspense fallback={<TabLoading />}>
+            <SummaryTab promise={summaryPromise} />
+          </Suspense>
         </div>
         <div className={tab === "clients" ? "flex flex-1" : "hidden"}>
-          <Tab2Clients rows={rows} />
+          <Suspense fallback={<TabLoading />}>
+            <ClientsTab promise={summaryPromise} />
+          </Suspense>
         </div>
         <div className={tab === "staff" ? "flex flex-1" : "hidden"}>
-          <Tab3Staff rows={rows} />
+          <Suspense fallback={<TabLoading />}>
+            <StaffTab promise={summaryPromise} />
+          </Suspense>
         </div>
         <div className={tab === "invoice" ? "flex flex-1" : "hidden"}>
-          <Tab4 rows={rows} invoiceRows={invoiceRows} issuedRows={issuedRows} />
+          <Suspense fallback={<TabLoading />}>
+            <InvoiceTab summaryPromise={summaryPromise} invoicePromise={invoicePromise} issuedPromise={issuedPromise} />
+          </Suspense>
         </div>
         <div className={tab === "clients-master" ? "flex flex-1" : "hidden"}>
-          <ClientMasterSection clientRows={clientRows} pricingRows={pricingRows} taskRows={rows} />
+          <Suspense fallback={<TabLoading />}>
+            <ClientsMasterTab clientRows={clientRows} pricingPromise={pricingPromise} summaryPromise={summaryPromise} />
+          </Suspense>
         </div>
       </div>
     </div>

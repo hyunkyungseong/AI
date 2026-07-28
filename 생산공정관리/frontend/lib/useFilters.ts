@@ -56,6 +56,18 @@ export function usePrunedSelection(selected: string[], options: string[], setSel
   return selected;
 }
 
+// 필터 값(문자열로 직렬화한 key)이 바뀌면 콜백을 실행 — 주로 체크박스 선택(Set) 상태 초기화에
+// 사용. 화면에 안 보이는 이전 선택이 남아 집계표만 안 맞아 보이는 혼선을 막기 위함
+// (2026-07-24 사용자 제보). usePrunedSelection과 동일한 "렌더링 중 조정" 패턴이라
+// useEffect 기반과 달리 깜빡임·"setState in effect" 린트 경고가 없다.
+export function useResetOnFilterChange(filterKey: string, onReset: () => void): void {
+  const [prevKey, setPrevKey] = useState(filterKey);
+  if (filterKey !== prevKey) {
+    setPrevKey(filterKey);
+    onReset();
+  }
+}
+
 // 사업부 → 조회기간 → 담당자 → 거래처 → 업무명 캐스케이딩 필터 상태.
 // 탭마다 이 훅을 한 번씩 호출하면 자동으로 독립된 필터 상태를 갖게 됨(공유 안 함).
 export function useFilters(rows: 운영통계행[]) {
