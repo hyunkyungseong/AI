@@ -25,6 +25,7 @@ type Props = {
       | "삽지제작단가"
       | "각대대봉투단가"
       | "각대대봉투봉입단가"
+      | "부가세구분"
       | "비고"
       | "수정일"
     >
@@ -89,6 +90,10 @@ export default function PricingFormDialog({
     삽지제작단가: initial ? String(initial.삽지제작단가) : "",
     각대대봉투단가: initial ? String(initial.각대대봉투단가) : "",
   });
+  // 부가세구분: 이 거래처와의 계약이 단가에 부가세가 이미 포함됐는지("포함") 별도 10%를 더 청구
+  // 해야 하는지("별도") — 거래처 기본단가(업무명·작업명 공란) 행 값이 실제 계산에 쓰인다
+  // (billing.부가세_계산(), 2026-07-28). 기본값 "별도"는 DB 컬럼 기본값과 동일.
+  const [부가세구분, set부가세구분] = useState<"포함" | "별도">(initial?.부가세구분 ?? "별도");
   const [비고, set비고] = useState(initial?.비고 ?? "");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -131,6 +136,7 @@ export default function PricingFormDialog({
           업무명: 업무명.trim() || null,
           작업명: 작업명.trim() || null,
           ...Object.fromEntries(가격필드목록.map(({ key }) => [key, 숫자값(key)])),
+          부가세구분,
           비고: 비고.trim() || null,
         };
         const res = await fetch("/api/pricing-create", {
@@ -158,6 +164,7 @@ export default function PricingFormDialog({
           봉투제작단가: 숫자값("봉투제작단가"),
           삽지제작단가: 숫자값("삽지제작단가"),
           각대대봉투단가: 숫자값("각대대봉투단가"),
+          부가세구분,
           비고: 비고.trim(),
           등록일: 오늘,
           수정일: 오늘,
@@ -166,6 +173,7 @@ export default function PricingFormDialog({
         const payload = {
           id: initial!.id,
           ...Object.fromEntries(가격필드목록.map(({ key }) => [key, 숫자값(key)])),
+          부가세구분,
           비고: 비고.trim() || null,
         };
         const res = await fetch("/api/pricing-update", {
@@ -189,6 +197,7 @@ export default function PricingFormDialog({
           봉투제작단가: 숫자값("봉투제작단가"),
           삽지제작단가: 숫자값("삽지제작단가"),
           각대대봉투단가: 숫자값("각대대봉투단가"),
+          부가세구분,
           비고: 비고.trim(),
           수정일: 오늘,
         });
@@ -270,6 +279,21 @@ export default function PricingFormDialog({
               />
             </label>
           ))}
+
+          <label className={`${label} col-span-2`}>
+            부가세
+            <select
+              value={부가세구분}
+              onChange={(e) => set부가세구분(e.target.value as "포함" | "별도")}
+              className={input}
+            >
+              <option value="별도">별도(공급가액에 10% 추가 청구)</option>
+              <option value="포함">포함(단가에 부가세가 이미 포함됨)</option>
+            </select>
+            <span className="mt-1 block text-xs font-normal text-gray-400">
+              거래처 기본단가(업무명·작업명 공란) 행에 설정한 값이 이 거래처의 실제 청구 계산에 쓰입니다.
+            </span>
+          </label>
 
           <label className={`${label} col-span-2`}>
             비고

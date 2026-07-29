@@ -138,6 +138,7 @@ export default async function Home() {
       삽지제작단가: Number(r.삽지제작단가 ?? 0),
       각대대봉투단가: Number(r.각대대봉투단가 ?? 0),
       각대대봉투봉입단가: Number(r.각대대봉투봉입단가 ?? 0),
+      부가세구분: r.부가세구분 === "포함" ? "포함" : "별도",
       비고: r.비고 != null ? String(r.비고) : "",
       등록일: String(r.등록일 ?? ""),
       수정일: String(r.수정일 ?? ""),

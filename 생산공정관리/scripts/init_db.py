@@ -142,6 +142,7 @@ def migrate_단가마스터_컬럼(conn):
         "각대대봉투단가":     "REAL DEFAULT 0",
         "각대대봉투봉입단가": "REAL DEFAULT 0",
         "동봉물삽입단가":     "REAL DEFAULT 0",
+        "부가세구분":         "TEXT DEFAULT '별도'",
     }
     for col, col_type in 추가할컬럼.items():
         if col not in existing:
@@ -152,6 +153,10 @@ def migrate_단가마스터_컬럼(conn):
                 # 계산식 변경(2026-07-24, scripts/billing.py) 직후에도 총 청구액이 그대로 유지되도록 함.
                 conn.execute("UPDATE 단가마스터 SET 동봉물삽입단가 = 추가봉입단가")
                 print("  [마이그레이션] 단가마스터.동봉물삽입단가 → 추가봉입단가로 백필 완료")
+            if col == "부가세구분":
+                # DEFAULT '별도'가 ALTER TABLE 시점에 기존 행에도 자동으로 채워짐 — 지금까지 모든
+                # 거래처가 사실상 "별도"로 계산되고 있었으므로 이 기본값이 곧 기존 동작과 동일(2026-07-28).
+                print("  [마이그레이션] 단가마스터.부가세구분 컬럼 추가 완료(기존 행 전부 '별도'로 채워짐)")
     conn.commit()
 
 

@@ -108,6 +108,7 @@ export default function PricingMaster({
       | "삽지제작단가"
       | "각대대봉투단가"
       | "각대대봉투봉입단가"
+      | "부가세구분"
       | "비고"
       | "수정일"
     >

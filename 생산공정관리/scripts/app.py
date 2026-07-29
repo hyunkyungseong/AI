@@ -73,6 +73,8 @@ def load_단가마스터():
     _단가컬럼 = ["출력단가","봉입단가","추가봉입단가","동봉물삽입단가","용지제작단가","봉투제작단가","삽지제작단가","각대대봉투단가","각대대봉투봉입단가"]
     _단가컬럼 = [c for c in _단가컬럼 if c in df.columns]
     df[_단가컬럼] = df[_단가컬럼].apply(pd.to_numeric, errors="coerce").fillna(0)
+    if "부가세구분" in df.columns:
+        df["부가세구분"] = df["부가세구분"].fillna("별도")
     # None 유지 (dict 키 매칭용 — NaN → None 변환)
     df["업무명"] = df["업무명"].where(df["업무명"].notna(), None)
     df["작업명"] = df["작업명"].where(df["작업명"].notna(), None)
@@ -656,7 +658,12 @@ with tab4:
     _t4_단가맵 = {
         (r["거래처명"],
          None if pd.isna(r["업무명"]) else r["업무명"],
-         None if pd.isna(r["작업명"]) else r["작업명"]): {c: r[c] for c in _t4_단가컬럼}
+         None if pd.isna(r["작업명"]) else r["작업명"]): {
+            **{c: r[c] for c in _t4_단가컬럼},
+            # 부가세구분은 숫자가 아닌 "포함"/"별도" 문자열이라 위 단가컬럼과 분리 처리
+            # (billing.build_단가맵()과 동일한 구조, 2026-07-28).
+            "부가세구분": r.get("부가세구분") or "별도",
+        }
         for _, r in _t4_단가df.iterrows()
     }
 
@@ -828,8 +835,9 @@ with tab4:
                 담당자들  = ", ".join(선택된["마케팅담당자"].unique())
                 품목들    = ", ".join(선택된["업무명"].unique())
                 총공급_req = 선택된["예상공급가액"].sum()
-                세액_amt  = int(총공급_req * 0.1)
-                합계_amt  = int(총공급_req + 세액_amt)
+                세액_amt, 합계_amt = billing.부가세_계산(거래처, _t4_단가맵, int(총공급_req))
+                세액_amt  = int(세액_amt)
+                합계_amt  = int(합계_amt)
 
                 conn = get_conn()
                 거래명세서번호 = _발급_거래명세서번호(conn, 사업부)
@@ -1076,11 +1084,13 @@ with tab4:
                 if 해당_단가.empty:
                     st.info("등록된 단가가 없습니다. 아래에서 추가하세요.")
                 else:
-                    _표시컬럼 = [c for c in ["id","업무명","작업명","출력단가","봉입단가","추가봉입단가","동봉물삽입단가","각대대봉투봉입단가","용지제작단가","봉투제작단가","삽지제작단가","각대대봉투단가","비고"] if c in 해당_단가.columns]
+                    _표시컬럼 = [c for c in ["id","업무명","작업명","출력단가","봉입단가","추가봉입단가","동봉물삽입단가","각대대봉투봉입단가","용지제작단가","봉투제작단가","삽지제작단가","각대대봉투단가","부가세구분","비고"] if c in 해당_단가.columns]
                     표시df = 해당_단가[_표시컬럼].copy()
                     표시df["업무명"] = 표시df["업무명"].fillna("(기본단가)")
                     표시df["작업명"] = 표시df["작업명"].fillna("(기본단가)")
                     표시df["비고"]   = 표시df["비고"].fillna("")
+                    if "부가세구분" in 표시df.columns:
+                        표시df["부가세구분"] = 표시df["부가세구분"].fillna("별도")
                     표시df.insert(0, "선택", False)
 
                     # 체크박스만 편집 가능, 나머지 모두 읽기 전용
@@ -1101,6 +1111,7 @@ with tab4:
                             "봉투제작단가":      st.column_config.NumberColumn("봉투제작단가(원)", min_value=0, default=0, format="%.2f", disabled=True),
                             "삽지제작단가":      st.column_config.NumberColumn("삽지제작단가(원)", min_value=0, default=0, format="%.2f", disabled=True),
                             "각대대봉투단가":    st.column_config.NumberColumn("각대대봉투단가(원)",min_value=0, default=0, format="%.2f", disabled=True),
+                            "부가세구분":        st.column_config.TextColumn("부가세",              disabled=True),
                             "비고":              st.column_config.TextColumn("비고",              disabled=True),
                         },
                         use_container_width=True,
@@ -1127,8 +1138,16 @@ with tab4:
                             with p6: e_봉투     = st.number_input("봉투제작단가(원)",   min_value=0.0, value=float(row.get("봉투제작단가")   or 0), step=0.01, format="%.2f", key=f"단가_edit_봉투_{row_id}")
                             with p7: e_삽지     = st.number_input("삽지제작단가(원)",   min_value=0.0, value=float(row.get("삽지제작단가")   or 0), step=0.01, format="%.2f", key=f"단가_edit_삽지_{row_id}")
                             with p8: e_각대봉투 = st.number_input("각대대봉투단가(원)", min_value=0.0, value=float(row.get("각대대봉투단가") or 0), step=0.01, format="%.2f", key=f"단가_edit_각대봉투_{row_id}")
-                            p9, _, _, _ = st.columns(4)
+                            p9, p10, _, _ = st.columns(4)
                             with p9: e_동봉     = st.number_input("동봉물삽입단가(원)", min_value=0.0, value=float(row.get("동봉물삽입단가") or 0), step=0.01, format="%.2f", key=f"단가_edit_동봉_{row_id}")
+                            with p10:
+                                _부가세초기값 = row.get("부가세구분") or "별도"
+                                e_부가세구분 = st.selectbox(
+                                    "부가세", ["별도", "포함"],
+                                    index=["별도", "포함"].index(_부가세초기값) if _부가세초기값 in ("별도", "포함") else 0,
+                                    key=f"단가_edit_부가세_{row_id}",
+                                    help="거래처 기본단가 행 값이 실제 계산에 쓰입니다.",
+                                )
                             e_비고 = st.text_input("비고", value=str(row.get("비고") or ""), key=f"단가_edit_비고_{row_id}")
                             저장_클릭 = st.form_submit_button("저장", type="primary")
 
@@ -1140,10 +1159,10 @@ with tab4:
                                 UPDATE 단가마스터
                                 SET 출력단가=?, 봉입단가=?, 추가봉입단가=?, 동봉물삽입단가=?,
                                     용지제작단가=?, 봉투제작단가=?, 삽지제작단가=?,
-                                    각대대봉투단가=?, 각대대봉투봉입단가=?, 비고=?, 수정일=?
+                                    각대대봉투단가=?, 각대대봉투봉입단가=?, 부가세구분=?, 비고=?, 수정일=?
                                 WHERE id=?
                             """, (e_출력, e_봉입, e_추가, e_동봉, e_용지, e_봉투, e_삽지,
-                                  e_각대봉투, e_각대봉입,
+                                  e_각대봉투, e_각대봉입, e_부가세구분,
                                   e_비고 if e_비고 != "" else None,
                                   today, row_id))
                             conn.commit()
@@ -1205,8 +1224,13 @@ with tab4:
                     with p6: add_봉투 = st.number_input("봉투제작단가(원)", min_value=0.0, value=None, step=0.01, format="%.2f", placeholder="0.00", key="단가_add_봉투")
                     with p7: add_삽지 = st.number_input("삽지제작단가(원)", min_value=0.0, value=None, step=0.01, format="%.2f", placeholder="0.00", key="단가_add_삽지")
                     with p8: add_각대봉투 = st.number_input("각대대봉투단가(원)", min_value=0.0, value=None, step=0.01, format="%.2f", placeholder="0.00", key="단가_add_각대봉투")
-                    p9, _, _, _ = st.columns(4)
+                    p9, p10, _, _ = st.columns(4)
                     with p9: add_동봉 = st.number_input("동봉물삽입단가(원)", min_value=0.0, value=None, step=0.01, format="%.2f", placeholder="0.00", key="단가_add_동봉")
+                    with p10:
+                        add_부가세구분 = st.selectbox(
+                            "부가세", ["별도", "포함"], key="단가_add_부가세구분",
+                            help="거래처 기본단가 행 값이 실제 계산에 쓰입니다.",
+                        )
                     add_비고 = st.text_input("비고", key="단가_add_비고")
                     추가_클릭 = st.form_submit_button("추가", type="primary")
 
@@ -1218,11 +1242,11 @@ with tab4:
                     try:
                         conn.execute("""
                             INSERT INTO 단가마스터
-                                (거래처명,업무명,작업명,출력단가,봉입단가,추가봉입단가,동봉물삽입단가,용지제작단가,봉투제작단가,삽지제작단가,각대대봉투단가,각대대봉투봉입단가,비고,등록일,수정일)
-                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                                (거래처명,업무명,작업명,출력단가,봉입단가,추가봉입단가,동봉물삽입단가,용지제작단가,봉투제작단가,삽지제작단가,각대대봉투단가,각대대봉투봉입단가,부가세구분,비고,등록일,수정일)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                         """, (선택_거래처_단가, _업무명, _작업명,
                               add_출력 or 0, add_봉입 or 0, add_추가 or 0, add_동봉 or 0, add_용지 or 0, add_봉투 or 0, add_삽지 or 0,
-                              add_각대봉투 or 0, add_각대봉입 or 0,
+                              add_각대봉투 or 0, add_각대봉입 or 0, add_부가세구분,
                               add_비고 or None, str(_date.today()), str(_date.today())))
                         conn.commit()
                         st.cache_data.clear()
@@ -1495,13 +1519,15 @@ with tab4:
                             남을_요약 = [summary_map[n] for n in 남을_int if n in summary_map]
                             공급가맵_남은 = calc_공급가맵(남을_int)
                             공급가액 = sum(v["합계"] for v in 공급가맵_남은.values())
+                            거래처명_남은 = 원본_row["거래처명"]
                             항목["action"] = "update"
                             항목["새_목록"] = 남을_목록
                             항목["새_품목"] = ", ".join(sorted({s["업무명"] for s in 남을_요약}))
                             항목["새_담당자"] = ", ".join(sorted({s["마케팅담당자"] for s in 남을_요약}))
+                            _세액, _합계 = billing.부가세_계산(거래처명_남은, _t4_단가맵, int(공급가액))
                             항목["새_공급가액"] = int(공급가액)
-                            항목["새_세액"] = int(공급가액 * 0.1)
-                            항목["새_합계"] = 항목["새_공급가액"] + 항목["새_세액"]
+                            항목["새_세액"] = int(_세액)
+                            항목["새_합계"] = int(_합계)
                         계획.append(항목)
                     return 계획
 

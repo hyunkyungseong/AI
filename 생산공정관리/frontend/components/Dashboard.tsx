@@ -85,6 +85,7 @@ export type 단가행 = {
   삽지제작단가: number;
   각대대봉투단가: number;
   각대대봉투봉입단가: number;
+  부가세구분: "포함" | "별도";
   비고: string;
   등록일: string;
   수정일: string;

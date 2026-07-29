@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-export type 규칙조건단일 = { field: "코드" | "품목" | "작업명"; op: "==" | "contains"; value: string };
+export type 규칙조건단일 = { field: "코드" | "품목" | "작업명" | "단가"; op: "==" | "contains"; value: string };
 export type 규칙조건AND그룹 = { and: 규칙조건단일[] };
 export type 규칙조건 = { or: 규칙조건AND그룹[] };
 
@@ -10,12 +10,14 @@ const 필드옵션 = [
   { value: "코드" as const, label: "공정 코드" },
   { value: "품목" as const, label: "품목명" },
   { value: "작업명" as const, label: "작업명" },
+  { value: "단가" as const, label: "단가" },
 ];
 
 function 연산자옵션(field: string) {
-  // 코드는 정해진 값(P/M/MM/E/F 등) 중 하나라 일치함만 의미 있고, 품목·작업명(텍스트)은
+  // 코드·단가는 정해진 값(코드: P/M/MM/E/F 등, 단가: 숫자) 하나와 비교하는 것만 의미 있어
+  // 일치함만 지원(단가는 이·상하 같은 범위 비교는 이번 범위 아님, 2026-07-28). 품목·작업명(텍스트)은
   // 포함함(contains)도 지원 — billing.py 평가_조건()과 동일한 필드별 연산자 제한(2026-07-22).
-  if (field === "코드") return [{ value: "==" as const, label: "이 일치함" }];
+  if (field === "코드" || field === "단가") return [{ value: "==" as const, label: "이 일치함" }];
   return [
     { value: "==" as const, label: "이 일치함" },
     { value: "contains" as const, label: "을 포함함" },
@@ -34,13 +36,21 @@ type Props = {
   코드옵션?: string[]; // 지금 원본(왼쪽) 표에 실제 등장하는 값 — 오타 방지용 datalist 후보
   품목옵션?: string[];
   작업명옵션?: string[];
+  단가옵션?: string[];
   onSave: (결과: { 최종청구품명: string; 조건: 규칙조건 }) => void;
   onCancel: () => void;
 };
 
-function 값옵션(field: 규칙조건단일["field"], 코드옵션: string[], 품목옵션: string[], 작업명옵션: string[]) {
+function 값옵션(
+  field: 규칙조건단일["field"],
+  코드옵션: string[],
+  품목옵션: string[],
+  작업명옵션: string[],
+  단가옵션: string[]
+) {
   if (field === "코드") return 코드옵션;
   if (field === "품목") return 품목옵션;
+  if (field === "단가") return 단가옵션;
   return 작업명옵션;
 }
 
@@ -62,6 +72,7 @@ export default function ConditionRuleModal({
   코드옵션 = [],
   품목옵션 = [],
   작업명옵션 = [],
+  단가옵션 = [],
   onSave,
   onCancel,
 }: Props) {
@@ -183,7 +194,8 @@ export default function ConditionRuleModal({
                       ))}
                     </select>
                     <input
-                      type="text"
+                      type={cond.field === "단가" ? "number" : "text"}
+                      step={cond.field === "단가" ? "0.01" : undefined}
                       list={`값옵션-${gi}-${ci}`}
                       value={cond.value}
                       onChange={(e) => updateCond(gi, ci, { value: e.target.value })}
@@ -191,7 +203,7 @@ export default function ConditionRuleModal({
                       className={`w-28 ${inputCls}`}
                     />
                     <datalist id={`값옵션-${gi}-${ci}`}>
-                      {값옵션(cond.field, 코드옵션, 품목옵션, 작업명옵션).map((v) => (
+                      {값옵션(cond.field, 코드옵션, 품목옵션, 작업명옵션, 단가옵션).map((v) => (
                         <option key={v} value={v} />
                       ))}
                     </datalist>

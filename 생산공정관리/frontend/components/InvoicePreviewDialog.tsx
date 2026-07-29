@@ -25,6 +25,7 @@ export type 미리보기결과 = {
   규칙적용결과: 규칙적용행_API[];
   미분류: 미리보기품목[];
   총합계: number;
+  부가세구분: "포함" | "별도"; // 거래처 기본단가의 부가세 취급 — "포함"이면 세액을 더하지 않음(2026-07-28)
   규칙목록?: 저장된규칙[]; // Tab4Invoice가 GET /api/billing-rules로 따로 받아와 채워줌
 };
 
@@ -128,12 +129,24 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
 
   const 오른쪽합계 = useMemo(() => rightRows.reduce((s, r) => s + (Number.isFinite(r.금액) ? r.금액 : 0), 0), [rightRows]);
 
+  // 거래처가 "포함"(단가에 부가세가 이미 포함된 계약)이면 부가세를 추가로 더하지 않는다 —
+  // 실제 다운로드되는 Excel(billing.write_거래명세서_excel)과 같은 기준으로 미리보기 화면도
+  // 공급가액/부가세/합계를 보여줘서 화면과 파일의 숫자가 어긋나지 않게 한다(2026-07-28).
+  const 세액_왼쪽 = data?.부가세구분 === "포함" ? 0 : Math.round((data?.총합계 ?? 0) * 0.1);
+  const 세액_오른쪽 = data?.부가세구분 === "포함" ? 0 : Math.round(오른쪽합계 * 0.1);
+
   // 조건 편집 패널의 값 입력칸에서 오타 없이 원본 값을 골라 쓸 수 있도록, 지금 원본(왼쪽) 표에
   // 실제로 등장하는 코드·품목·작업명 목록을 추출(2026-07-22, 사용자 피드백: "직접 키인은 오타 위험").
   const 코드옵션 = useMemo(() => Array.from(new Set(data?.품목.map((r) => r.코드) ?? [])).sort(), [data]);
   const 품목옵션 = useMemo(() => Array.from(new Set(data?.품목.map((r) => r.품목) ?? [])).sort(), [data]);
   const 작업명옵션 = useMemo(
     () => Array.from(new Set((data?.품목.map((r) => r.작업명).filter(Boolean) as string[]) ?? [])).sort(),
+    [data]
+  );
+  // 단가는 숫자 입력(type="number")과 짝이라 toLocaleString()의 천단위 콤마를 넣으면 입력값
+  // 파싱이 깨짐 — 그냥 문자열로만 변환(2026-07-28, 조건식 "단가" 필드 추가).
+  const 단가옵션 = useMemo(
+    () => Array.from(new Set(data?.품목.map((r) => r.단가) ?? [])).sort((a, b) => a - b).map(String),
     [data]
   );
 
@@ -295,11 +308,23 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
                   ))}
                 </tbody>
                 <tfoot>
+                  <tr className="border-t border-gray-200 dark:border-gray-700">
+                    <td className={td} colSpan={5}>
+                      공급가액
+                    </td>
+                    <td className={tdRight}>{data.총합계.toLocaleString()}원</td>
+                  </tr>
+                  <tr className="dark:border-gray-700">
+                    <td className={td} colSpan={5}>
+                      부가세{data.부가세구분 === "포함" && <span className="text-gray-400">(단가 포함)</span>}
+                    </td>
+                    <td className={tdRight}>{세액_왼쪽.toLocaleString()}원</td>
+                  </tr>
                   <tr className="border-t border-gray-200 font-semibold dark:border-gray-700">
                     <td className={td} colSpan={5}>
                       합계
                     </td>
-                    <td className={tdRight}>{data.총합계.toLocaleString()}원</td>
+                    <td className={tdRight}>{Math.round(data.총합계 + 세액_왼쪽).toLocaleString()}원</td>
                   </tr>
                 </tfoot>
               </table>
@@ -428,11 +453,25 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
                   )}
                 </tbody>
                 <tfoot>
+                  <tr className="border-t border-gray-200 dark:border-gray-700">
+                    <td className={td} colSpan={3}>
+                      공급가액
+                    </td>
+                    <td className={tdRight}>{Math.round(오른쪽합계).toLocaleString()}원</td>
+                    <td className={td}></td>
+                  </tr>
+                  <tr className="dark:border-gray-700">
+                    <td className={td} colSpan={3}>
+                      부가세{data.부가세구분 === "포함" && <span className="text-gray-400">(단가 포함)</span>}
+                    </td>
+                    <td className={tdRight}>{세액_오른쪽.toLocaleString()}원</td>
+                    <td className={td}></td>
+                  </tr>
                   <tr className="border-t border-gray-200 font-semibold dark:border-gray-700">
                     <td className={td} colSpan={3}>
                       합계
                     </td>
-                    <td className={tdRight}>{Math.round(오른쪽합계).toLocaleString()}원</td>
+                    <td className={tdRight}>{Math.round(오른쪽합계 + 세액_오른쪽).toLocaleString()}원</td>
                     <td className={td}></td>
                   </tr>
                 </tfoot>
@@ -487,6 +526,7 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
             }
             코드옵션={코드옵션}
             품목옵션={품목옵션}
+            단가옵션={단가옵션}
             작업명옵션={작업명옵션}
             onSave={handleModalSave}
             onCancel={handleModalCancel}

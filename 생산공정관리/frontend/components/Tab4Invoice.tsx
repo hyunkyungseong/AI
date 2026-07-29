@@ -146,7 +146,9 @@ export default function Tab4Invoice({
   // 공급가액은 편집 후 오른쪽 표의 실제 금액 합계 기준(편집 전 예상치가 아님).
   async function handleConfirmSubmit(edited: { 품목_최종: 확정품목[]; 규칙: 확정규칙[] }) {
     const 공급가액 = Math.round(edited.품목_최종.reduce((s, r) => s + r.금액, 0));
-    const 세액 = Math.round(공급가액 * 0.1);
+    // 거래처가 "포함"(단가에 부가세가 이미 포함된 계약)이면 세액을 추가로 더하지 않는다 —
+    // previewData.부가세구분은 백엔드가 거래처 기본단가 행을 조회해 내려준 값(2026-07-28).
+    const 세액 = previewData?.부가세구분 === "포함" ? 0 : Math.round(공급가액 * 0.1);
     const payload = {
       거래처명: selectedRows[0].거래처명,
       사업부: selectedRows[0].사업부,

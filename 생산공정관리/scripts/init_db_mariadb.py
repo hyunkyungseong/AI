@@ -126,6 +126,7 @@ def get_db():
             삽지제작단가        DECIMAL(10,2) DEFAULT 0,
             각대대봉투단가      DECIMAL(10,2) DEFAULT 0,
             각대대봉투봉입단가  DECIMAL(10,2) DEFAULT 0,
+            부가세구분          ENUM('포함','별도') DEFAULT '별도',
             비고                TEXT,
             등록일              DATE DEFAULT (CURRENT_DATE),
             수정일              DATE DEFAULT (CURRENT_DATE),
@@ -265,6 +266,17 @@ def migrate():
                 print("  마이그레이션: 단가마스터.동봉물삽입단가 컬럼 추가 + 추가봉입단가로 백필 완료")
             else:
                 print("  마이그레이션: 단가마스터.동봉물삽입단가 컬럼 이미 존재 (건너뜀)")
+
+            if not _컬럼_존재(cur, "단가마스터", "부가세구분"):
+                cur.execute(
+                    "ALTER TABLE 단가마스터 ADD COLUMN 부가세구분 ENUM('포함','별도') DEFAULT '별도' "
+                    "AFTER 각대대봉투봉입단가"
+                )
+                # DEFAULT '별도'가 기존 행에도 자동으로 채워짐 — 지금까지 모든 거래처가 사실상
+                # "별도"(공급가액에 10% 별도 청구)로 계산되고 있었으므로 별도 백필 불필요(2026-07-28).
+                print("  마이그레이션: 단가마스터.부가세구분 컬럼 추가 완료(기존 행 전부 '별도'로 채워짐)")
+            else:
+                print("  마이그레이션: 단가마스터.부가세구분 컬럼 이미 존재 (건너뜀)")
 
 
 def main():

@@ -53,10 +53,11 @@ import json
 import sys
 from pathlib import Path
 from contextlib import contextmanager
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 import pandas as pd
 import pymysql
+from pymysql.constants import CLIENT
 from fastapi import FastAPI, HTTPException, Query, Depends, Response
 from pydantic import BaseModel, ConfigDict
 
@@ -82,6 +83,13 @@ def get_db():
         charset="utf8mb4",
         cursorclass=pymysql.cursors.DictCursor,
         autocommit=False,
+        # 기본값(FOUND_ROWS 미설정)은 cur.rowcount가 "실제로 값이 바뀐 행 수"를 반환해서, 제출한
+        # 값이 이미 DB와 같으면(예: 같은 날 두 번째로 같은 내용 저장) UPDATE는 정상 실행됐는데도
+        # rowcount=0이 되어 "해당 id가 없습니다"로 오판하는 버그가 있었다(2026-07-29 실사용 중
+        # 단가마스터 수정에서 발견). CLIENT.FOUND_ROWS를 켜서 rowcount가 "조건에 매칭된 행 수"를
+        # 반환하도록 통일 — 거래처마스터·단가마스터·거래명세서발행(취소) 등 `rowcount==0으로
+        # 존재 여부를 판정하는 모든 곳에 공통 적용됨.
+        client_flag=CLIENT.FOUND_ROWS,
     )
     try:
         yield conn
@@ -290,7 +298,7 @@ def 예상공급가액(사업부: Optional[List[str]] = Query(default=None)):
     응답 = []
     for 의뢰서, v in 결과.items():
         공급가액 = round(v["합계"])
-        세액 = round(공급가액 * 0.1)
+        세액, _ = billing.부가세_계산(v["거래처명"], 단가맵, 공급가액)
         응답.append({
             "업무의뢰서번호": str(의뢰서),
             "거래처명": v["거래처명"],
@@ -540,7 +548,11 @@ def 거래명세서엑셀(no: str):
             for r in 저장된_최종
         ]
         총합계 = sum(r["금액"] for r in 품목행목록)
-        엑셀바이트 = billing.write_거래명세서_excel(품목행목록, 총합계, 거래명세서["거래처명"], 업무명, 발행일)
+        # 편집된 건은 요청 시점에 이미 계산·저장된 세액을 그대로 재사용(재계산 안 함 — 발행 당시
+        # 확정한 금액을 그대로 유지하는 원칙과 동일, 2026-07-28 부가세 표기 기능 추가 시 누락됐던
+        # 호출부를 2026-07-29 실사용 중 다운로드 오류로 발견해 수정).
+        세액 = float(거래명세서["세액"] or 0)
+        엑셀바이트 = billing.write_거래명세서_excel(품목행목록, 총합계, 세액, 거래명세서["거래처명"], 업무명, 발행일)
     else:
         if not 원본행:
             raise HTTPException(status_code=404, detail="이 거래명세서의 업무의뢰서 데이터를 운영통계자료에서 찾을 수 없습니다")
@@ -655,9 +667,14 @@ def 거래명세서미리보기(요청: 거래명세서미리보기_요청):
     else:
         규칙적용결과, 미분류 = [], []
 
+    # 프론트가 세액을 무조건 공급가액×10%로 가정하지 않도록, 거래처 기본단가 행의 부가세구분을
+    # 함께 내려준다(편집으로 공급가액이 바뀌어도 프론트가 이 값 기준으로 재계산, 2026-07-28).
+    부가세구분 = (단가맵.get((거래처명, None, None)) or {}).get("부가세구분") or "별도"
+
     return {
         "거래처명": 거래처명,
         "업무명": 업무명,
+        "부가세구분": 부가세구분,
         "품목": [
             {"코드": row["코드"], "품목": row["품목"], "작업명": row["작업명"],
              "수량": row["수량"], "단가": row["단가"], "금액": row["금액"]}
@@ -804,6 +821,7 @@ class 단가마스터_신규(BaseModel):
     삽지제작단가: float = 0
     각대대봉투단가: float = 0
     각대대봉투봉입단가: float = 0
+    부가세구분: Literal["포함", "별도"] = "별도"
     비고: Optional[str] = None
 
 
@@ -830,11 +848,11 @@ def 단가마스터_추가(단가: 단가마스터_신규):
                     INSERT INTO 단가마스터
                         (거래처명, 업무명, 작업명, 출력단가, 봉입단가, 추가봉입단가, 동봉물삽입단가,
                          용지제작단가, 봉투제작단가, 삽지제작단가, 각대대봉투단가, 각대대봉투봉입단가,
-                         비고, 등록일, 수정일)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                         부가세구분, 비고, 등록일, 수정일)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 """, (단가.거래처명, 단가.업무명, 단가.작업명, 단가.출력단가, 단가.봉입단가, 단가.추가봉입단가, 단가.동봉물삽입단가,
                       단가.용지제작단가, 단가.봉투제작단가, 단가.삽지제작단가, 단가.각대대봉투단가, 단가.각대대봉투봉입단가,
-                      단가.비고, 오늘, 오늘))
+                      단가.부가세구분, 단가.비고, 오늘, 오늘))
                 새_id = cur.lastrowid
     except pymysql.err.IntegrityError:
         raise HTTPException(status_code=409, detail="동일한 거래처명·업무명·작업명 조합이 이미 존재합니다")
@@ -855,6 +873,7 @@ class 단가마스터_수정(BaseModel):
     삽지제작단가: float = 0
     각대대봉투단가: float = 0
     각대대봉투봉입단가: float = 0
+    부가세구분: Literal["포함", "별도"] = "별도"
     비고: Optional[str] = None
 
 
@@ -868,11 +887,11 @@ def 단가마스터_수정_요청(id: int, 단가: 단가마스터_수정):
                 UPDATE 단가마스터
                 SET 출력단가=%s, 봉입단가=%s, 추가봉입단가=%s, 동봉물삽입단가=%s,
                     용지제작단가=%s, 봉투제작단가=%s, 삽지제작단가=%s,
-                    각대대봉투단가=%s, 각대대봉투봉입단가=%s, 비고=%s, 수정일=%s
+                    각대대봉투단가=%s, 각대대봉투봉입단가=%s, 부가세구분=%s, 비고=%s, 수정일=%s
                 WHERE id=%s
             """, (단가.출력단가, 단가.봉입단가, 단가.추가봉입단가, 단가.동봉물삽입단가,
                   단가.용지제작단가, 단가.봉투제작단가, 단가.삽지제작단가,
-                  단가.각대대봉투단가, 단가.각대대봉투봉입단가, 단가.비고, 오늘, id))
+                  단가.각대대봉투단가, 단가.각대대봉투봉입단가, 단가.부가세구분, 단가.비고, 오늘, id))
             if cur.rowcount == 0:
                 raise HTTPException(status_code=404, detail="해당 id의 단가가 없습니다")
     return {"status": "ok"}
@@ -1175,8 +1194,8 @@ def 거래명세서부분취소(요청: 거래명세서부분취소_요청):
                 공급가맵 = billing.calc_공급가맵(df_남을, 단가맵, 자재map, 남을_번호셋)
 
                 공급가액 = round(sum(v["합계"] for v in 공급가맵.values()))
-                세액 = round(공급가액 * 0.1)
-                합계 = 공급가액 + 세액
+                거래처명 = df_남을["거래처명"].iloc[0]
+                세액, 합계 = billing.부가세_계산(거래처명, 단가맵, 공급가액)
                 품목 = ", ".join(sorted(set(summary["업무명"])))
                 담당자 = ", ".join(sorted(set(summary["마케팅담당자"])))
 
