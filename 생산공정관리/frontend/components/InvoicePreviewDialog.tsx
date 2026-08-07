@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import ConditionRuleModal from "./ConditionRuleModal";
 import type { 규칙조건 } from "./ConditionRuleModal";
 import { 적용_규칙 } from "@/lib/billingRules";
@@ -14,9 +14,10 @@ export type 규칙적용행_API = {
   수량: number;
   단가: number | null;
   금액: number;
+  조?: string;
 };
 
-export type 저장된규칙 = { 순서: number; 최종청구품명: string; 조건: 규칙조건 };
+export type 저장된규칙 = { 순서: number; 최종청구품명: string; 조건: 규칙조건; 조?: string };
 
 export type 미리보기결과 = {
   거래처명: string;
@@ -25,12 +26,16 @@ export type 미리보기결과 = {
   규칙적용결과: 규칙적용행_API[];
   미분류: 미리보기품목[];
   총합계: number;
-  부가세구분: "포함" | "별도"; // 거래처 기본단가의 부가세 취급 — "포함"이면 세액을 더하지 않음(2026-07-28)
-  규칙목록?: 저장된규칙[]; // Tab4Invoice가 GET /api/billing-rules로 따로 받아와 채워줌
+  // 실제로 청구된 작업명들 기준으로 판정한 부가세 취급 — "포함"이면 세액을 더하지 않음(2026-07-28).
+  // 작업명끼리 포함/별도가 섞여 있으면 null이 되고 부가세오류에 안내 문구가 담긴다(2026-08-04).
+  부가세구분: "포함" | "별도" | null;
+  부가세오류?: string | null;
+  규칙목록?: 저장된규칙[]; // POST /거래명세서미리보기 응답에 이미 포함되어 내려옴(2026-08-01,
+  // 별도 왕복 없이 한 번의 응답으로 끝내도록 단순화)
 };
 
-export type 확정품목 = { 코드: string | null; 품목: string; 수량: number; 단가: number | null; 금액: number };
-export type 확정규칙 = { 순서: number; 최종청구품명: string; 조건: 규칙조건 };
+export type 확정품목 = { 코드: string | null; 품목: string; 수량: number; 단가: number | null; 금액: number; 조?: string };
+export type 확정규칙 = { 순서: number; 최종청구품명: string; 조건: 규칙조건; 조?: string };
 
 type 편집행 = {
   key: string;
@@ -40,6 +45,7 @@ type 편집행 = {
   단가: number | null;
   금액: number;
   조건: 규칙조건 | null; // null이면 수동으로 추가/복사한 행(규칙 아님)
+  조?: string; // 조별 분할발급(2026-07-29) — 없으면 거래명세서 1건(하위호환)
 };
 
 type Props = {
@@ -95,6 +101,7 @@ function 초기_rightRows(data: 미리보기결과 | null): 편집행[] {
     단가: r.단가,
     금액: r.금액,
     조건: 규칙목록[i]?.조건 ?? null,
+    조: 규칙목록[i]?.조,
   }));
 }
 
@@ -114,17 +121,20 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
 
   // 왼쪽 원본 표에서 "이미 오른쪽 표(어느 규칙)에 반영된 항목"을 체크 표시로 구분하기 위한 정보 —
   // 미분류(안 걸린 항목)의 여집합을 참조 동등성(원본 배열 항목 그대로 필터링돼 참조가 같음)으로
-  // 구한다(2026-07-24 사용자 요청: "선택된 항목은 체크가 되어 식별이 쉬웠으면 좋겠어").
-  const { 미분류: 미분류표시, 매칭Set } = useMemo(() => {
-    if (!data) return { 미분류: [] as 원본품목[], 매칭Set: new Set<원본품목>() };
+  // 구한다(2026-07-24 사용자 요청: "선택된 항목은 체크가 되어 식별이 쉬웠으면 좋겠어"). 미분류
+  // 목록 자체는 왼쪽 체크 표시와 정보가 겹쳐 화면에서 제거했지만(2026-07-29 사용자 요청 — 항목이
+  // 많을 때 목록이 길어져 오른쪽 표 영역을 밀어내는 레이아웃 문제도 함께 있었음), 체크 계산에는
+  // 여전히 필요해 미분류Set만 남기고 계산 로직은 그대로 둔다.
+  const 매칭Set = useMemo(() => {
+    if (!data) return new Set<원본품목>();
     const 규칙행 = rightRows.filter((r) => r.조건 !== null);
-    if (규칙행.length === 0) return { 미분류: [] as 원본품목[], 매칭Set: new Set<원본품목>() };
+    if (규칙행.length === 0) return new Set<원본품목>();
     const { 미분류 } = 적용_규칙(
       data.품목,
       규칙행.map((r) => ({ 최종청구품명: r.최종청구품명, 조건: r.조건 as 규칙조건 }))
     );
     const 미분류Set = new Set(미분류);
-    return { 미분류, 매칭Set: new Set(data.품목.filter((r) => !미분류Set.has(r))) };
+    return new Set(data.품목.filter((r) => !미분류Set.has(r)));
   }, [data, rightRows]);
 
   const 오른쪽합계 = useMemo(() => rightRows.reduce((s, r) => s + (Number.isFinite(r.금액) ? r.금액 : 0), 0), [rightRows]);
@@ -132,8 +142,10 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
   // 거래처가 "포함"(단가에 부가세가 이미 포함된 계약)이면 부가세를 추가로 더하지 않는다 —
   // 실제 다운로드되는 Excel(billing.write_거래명세서_excel)과 같은 기준으로 미리보기 화면도
   // 공급가액/부가세/합계를 보여줘서 화면과 파일의 숫자가 어긋나지 않게 한다(2026-07-28).
-  const 세액_왼쪽 = data?.부가세구분 === "포함" ? 0 : Math.round((data?.총합계 ?? 0) * 0.1);
-  const 세액_오른쪽 = data?.부가세구분 === "포함" ? 0 : Math.round(오른쪽합계 * 0.1);
+  // 부가세구분이 null이면(작업명별 부가세 처리 방식이 섞여 판정 불가, 2026-08-04) 세액을 0으로
+  // 표시만 하고, 아래 부가세오류 배너 + "확정" 버튼 비활성화로 실제 발급 자체를 막는다.
+  const 세액_왼쪽 = data?.부가세구분 === "별도" ? Math.round((data?.총합계 ?? 0) * 0.1) : 0;
+  const 세액_오른쪽 = data?.부가세구분 === "별도" ? Math.round(오른쪽합계 * 0.1) : 0;
 
   // 조건 편집 패널의 값 입력칸에서 오타 없이 원본 값을 골라 쓸 수 있도록, 지금 원본(왼쪽) 표에
   // 실제로 등장하는 코드·품목·작업명 목록을 추출(2026-07-22, 사용자 피드백: "직접 키인은 오타 위험").
@@ -149,6 +161,29 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
     () => Array.from(new Set(data?.품목.map((r) => r.단가) ?? [])).sort((a, b) => a - b).map(String),
     [data]
   );
+  // 조 입력칸 datalist — 이 미리보기에서 이미 쓰인 조 이름 + 원본 표의 작업명(조 이름을 보통
+  // 작업명과 같게 짓는 경우가 많아 후보로 함께 제안, 2026-07-29).
+  const 조옵션 = useMemo(() => {
+    const 쓰인조 = rightRows.map((r) => r.조).filter((v): v is string => !!v);
+    return Array.from(new Set([...쓰인조, ...작업명옵션])).sort();
+  }, [rightRows, 작업명옵션]);
+
+  // 오른쪽 표를 조 단위로 그룹 표시(2026-07-29, 조별 분할발급) — 등장한 조가 2개 이상일 때만
+  // 그룹 헤더·소계를 보여준다(조를 안 쓰는 기존 사용자에게는 화면이 그대로 보이도록).
+  const 조_그룹목록 = useMemo(() => {
+    const 맵 = new Map<string, number[]>();
+    const 순서: string[] = [];
+    rightRows.forEach((r, i) => {
+      const key = r.조?.trim() || "";
+      if (!맵.has(key)) {
+        맵.set(key, []);
+        순서.push(key);
+      }
+      맵.get(key)!.push(i);
+    });
+    return 순서.map((조) => ({ 조, indices: 맵.get(조)! }));
+  }, [rightRows]);
+  const 분할표시 = 조_그룹목록.length > 1;
 
   if (!open || !data) return null;
 
@@ -164,7 +199,7 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
     setModalOpen(false);
     setModalTarget(null);
   }
-  function handleModalSave(result: { 최종청구품명: string; 조건: 규칙조건 }) {
+  function handleModalSave(result: { 최종청구품명: string; 조건: 규칙조건; 조?: string }) {
     setRightRows((prev) => {
       let next: 편집행[];
       if (modalTarget === null) {
@@ -178,10 +213,13 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
             단가: null,
             금액: 0,
             조건: result.조건,
+            조: result.조,
           },
         ];
       } else {
-        next = prev.map((r, i) => (i === modalTarget ? { ...r, 최종청구품명: result.최종청구품명, 조건: result.조건 } : r));
+        next = prev.map((r, i) =>
+          i === modalTarget ? { ...r, 최종청구품명: result.최종청구품명, 조건: result.조건, 조: result.조 } : r
+        );
       }
       return 원본행_recompute(next, data!.품목);
     });
@@ -195,7 +233,7 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
     // 처음부터 단가 입력칸이 바로 보여야 한다(2026-07-22, 사용자 요청).
     setRightRows((prev) => [
       ...prev,
-      { key: `manual-${신규행_카운터++}`, 최종청구품명: "", 코드: null, 수량: 0, 단가: 0, 금액: 0, 조건: null },
+      { key: `manual-${신규행_카운터++}`, 최종청구품명: "", 코드: null, 수량: 0, 단가: 0, 금액: 0, 조건: null, 조: undefined },
     ]);
   }
   function copyFromLeft() {
@@ -242,6 +280,103 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
     );
   }
 
+  // 오른쪽 표 한 행의 JSX — 조를 안 쓰는 화면(플랫 목록)과 조별로 묶어 보여주는 화면(2026-07-29)
+  // 양쪽에서 그대로 재사용한다(전자는 rightRows를 그대로, 후자는 조_그룹목록의 indices로 호출).
+  function renderRightRow(i: number) {
+    const row = rightRows[i];
+    return (
+      <tr key={row.key} className="border-t border-gray-100 dark:border-gray-800">
+        <td className={td}>
+          {row.조건 !== null ? (
+            <button
+              type="button"
+              onClick={() => openModalForRow(i)}
+              className="text-left text-blue-700 hover:underline dark:text-blue-400"
+              title="조건식 편집"
+            >
+              {row.최종청구품명 || "(품명 없음)"}
+            </button>
+          ) : (
+            <input
+              type="text"
+              value={row.최종청구품명}
+              onChange={(e) => updateField(i, { 최종청구품명: e.target.value })}
+              className={`w-full rounded border border-gray-300 bg-white px-1.5 py-0.5 text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100`}
+              placeholder="품명"
+            />
+          )}
+        </td>
+        <td className={td}>
+          <input
+            type="text"
+            list="조옵션-표"
+            value={row.조 ?? ""}
+            onChange={(e) => updateField(i, { 조: e.target.value || undefined })}
+            className="w-20 rounded border border-gray-300 bg-white px-1.5 py-0.5 text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+            placeholder="—"
+          />
+        </td>
+        <td className={tdRight}>
+          <input
+            type="number"
+            value={row.수량}
+            onChange={(e) => updateField(i, { 수량: Number(e.target.value) })}
+            className={numInput}
+          />
+        </td>
+        <td className={tdRight}>
+          {row.단가 === null ? (
+            <span className="text-gray-400" title="병합된 항목의 단가가 서로 달라 표시할 수 없습니다">
+              —
+            </span>
+          ) : (
+            <input
+              type="number"
+              value={row.단가}
+              onChange={(e) => updateField(i, { 단가: Number(e.target.value) })}
+              className={numInput}
+            />
+          )}
+        </td>
+        <td className={tdRight}>
+          <input
+            type="number"
+            value={Math.round(row.금액)}
+            onChange={(e) => updateField(i, { 금액: Number(e.target.value) })}
+            className={numInput}
+          />
+        </td>
+        <td className={td}>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => moveRow(i, -1)}
+              disabled={i === 0}
+              title="위로 이동"
+              aria-label="위로 이동"
+              className="text-xs text-gray-500 hover:text-gray-800 disabled:opacity-30 dark:text-gray-400 dark:hover:text-gray-100"
+            >
+              ▲
+            </button>
+            <button
+              type="button"
+              onClick={() => moveRow(i, 1)}
+              disabled={i === rightRows.length - 1}
+              title="아래로 이동"
+              aria-label="아래로 이동"
+              className="text-xs text-gray-500 hover:text-gray-800 disabled:opacity-30 dark:text-gray-400 dark:hover:text-gray-100"
+            >
+              ▼
+            </button>
+            <button type="button" onClick={() => removeRow(i)} className="text-xs text-red-600 hover:underline dark:text-red-400">
+              삭제
+            </button>
+          </div>
+        </td>
+      </tr>
+    );
+  }
+
   function handleConfirmClick() {
     const 품목_최종: 확정품목[] = rightRows.map((r) => ({
       코드: r.코드,
@@ -249,10 +384,11 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
       수량: r.수량,
       단가: r.단가,
       금액: r.금액,
+      조: r.조,
     }));
     const 규칙: 확정규칙[] = rightRows
       .filter((r) => r.조건 !== null)
-      .map((r, i) => ({ 순서: i + 1, 최종청구품명: r.최종청구품명, 조건: r.조건 as 규칙조건 }));
+      .map((r, i) => ({ 순서: i + 1, 최종청구품명: r.최종청구품명, 조건: r.조건 as 규칙조건, 조: r.조 }));
     onConfirm({ 품목_최종, 규칙 });
   }
 
@@ -267,6 +403,11 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
           아직 저장되지 않았습니다 — 오른쪽 표를 확인·수정한 뒤 &quot;확정&quot;을 눌러야 실제로
           요청됩니다. 오른쪽 품명 칸을 클릭하면 조건식으로 왼쪽 항목을 자동으로 묶을 수 있습니다.
         </p>
+        {data.부가세오류 && (
+          <p className="mt-2 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
+            {data.부가세오류}
+          </p>
+        )}
 
         <div className="mt-3 grid flex-1 grid-cols-2 gap-4 overflow-hidden">
           {/* 왼쪽: 원본(읽기 전용) */}
@@ -274,7 +415,7 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
             <h3 className="mb-1 text-xs font-semibold text-gray-500 dark:text-gray-400">
               시스템 자동계산 원본 ({data.품목.length}건)
             </h3>
-            <div className="overflow-auto rounded-md border border-gray-200 dark:border-gray-800">
+            <div className="min-h-0 flex-1 overflow-auto rounded-md border border-gray-200 dark:border-gray-800">
               <table className="w-full whitespace-nowrap text-sm">
                 <thead className="sticky top-0 bg-gray-50 dark:bg-gray-900">
                   <tr>
@@ -316,7 +457,9 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
                   </tr>
                   <tr className="dark:border-gray-700">
                     <td className={td} colSpan={5}>
-                      부가세{data.부가세구분 === "포함" && <span className="text-gray-400">(단가 포함)</span>}
+                      부가세
+                      {data.부가세구분 === "포함" && <span className="text-gray-400">(단가 포함)</span>}
+                      {data.부가세구분 === null && <span className="text-red-600 dark:text-red-400">(판정 불가)</span>}
                     </td>
                     <td className={tdRight}>{세액_왼쪽.toLocaleString()}원</td>
                   </tr>
@@ -350,11 +493,23 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
               </div>
             </div>
 
-            <div className="overflow-auto rounded-md border border-gray-200 dark:border-gray-800">
+            {분할표시 && (
+              <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">
+                조가 {조_그룹목록.length}개 등장했습니다 — 확정하면 거래명세서 1건이 발급되고,
+                다운로드하면 시트 {조_그룹목록.length}개짜리 통합 엑셀을 받습니다.
+              </p>
+            )}
+            <datalist id="조옵션-표">
+              {조옵션.map((v) => (
+                <option key={v} value={v} />
+              ))}
+            </datalist>
+            <div className="min-h-0 flex-1 overflow-auto rounded-md border border-gray-200 dark:border-gray-800">
               <table className="w-full whitespace-nowrap text-sm">
                 <thead className="sticky top-0 bg-gray-50 dark:bg-gray-900">
                   <tr>
                     <th className={th}>품명</th>
+                    <th className={th}>조</th>
                     <th className={thRight}>수량</th>
                     <th className={thRight}>단가</th>
                     <th className={thRight}>금액</th>
@@ -362,113 +517,56 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
                   </tr>
                 </thead>
                 <tbody>
-                  {rightRows.map((row, i) => (
-                    <tr key={row.key} className="border-t border-gray-100 dark:border-gray-800">
-                      <td className={td}>
-                        {row.조건 !== null ? (
-                          <button
-                            type="button"
-                            onClick={() => openModalForRow(i)}
-                            className="text-left text-blue-700 hover:underline dark:text-blue-400"
-                            title="조건식 편집"
-                          >
-                            {row.최종청구품명 || "(품명 없음)"}
-                          </button>
-                        ) : (
-                          <input
-                            type="text"
-                            value={row.최종청구품명}
-                            onChange={(e) => updateField(i, { 최종청구품명: e.target.value })}
-                            className={`w-full rounded border border-gray-300 bg-white px-1.5 py-0.5 text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100`}
-                            placeholder="품명"
-                          />
-                        )}
-                      </td>
-                      <td className={tdRight}>
-                        <input
-                          type="number"
-                          value={row.수량}
-                          onChange={(e) => updateField(i, { 수량: Number(e.target.value) })}
-                          className={numInput}
-                        />
-                      </td>
-                      <td className={tdRight}>
-                        {row.단가 === null ? (
-                          <span className="text-gray-400" title="병합된 항목의 단가가 서로 달라 표시할 수 없습니다">
-                            —
-                          </span>
-                        ) : (
-                          <input
-                            type="number"
-                            value={row.단가}
-                            onChange={(e) => updateField(i, { 단가: Number(e.target.value) })}
-                            className={numInput}
-                          />
-                        )}
-                      </td>
-                      <td className={tdRight}>
-                        <input
-                          type="number"
-                          value={Math.round(row.금액)}
-                          onChange={(e) => updateField(i, { 금액: Number(e.target.value) })}
-                          className={numInput}
-                        />
-                      </td>
-                      <td className={td}>
-                        <div className="flex items-center gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => moveRow(i, -1)}
-                            disabled={i === 0}
-                            title="위로 이동"
-                            aria-label="위로 이동"
-                            className="text-xs text-gray-500 hover:text-gray-800 disabled:opacity-30 dark:text-gray-400 dark:hover:text-gray-100"
-                          >
-                            ▲
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => moveRow(i, 1)}
-                            disabled={i === rightRows.length - 1}
-                            title="아래로 이동"
-                            aria-label="아래로 이동"
-                            className="text-xs text-gray-500 hover:text-gray-800 disabled:opacity-30 dark:text-gray-400 dark:hover:text-gray-100"
-                          >
-                            ▼
-                          </button>
-                          <button type="button" onClick={() => removeRow(i)} className="text-xs text-red-600 hover:underline dark:text-red-400">
-                            삭제
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
                   {rightRows.length === 0 && (
                     <tr>
-                      <td colSpan={5} className="px-3 py-4 text-center text-xs text-gray-500 dark:text-gray-400">
+                      <td colSpan={6} className="px-3 py-4 text-center text-xs text-gray-500 dark:text-gray-400">
                         저장된 규칙이 없습니다. &quot;조건 규칙 추가&quot;로 새로 만들거나 &quot;좌측
                         그대로 시작&quot;을 눌러 편집을 시작하세요.
                       </td>
                     </tr>
                   )}
+                  {!분할표시 && rightRows.map((_, i) => renderRightRow(i))}
+                  {분할표시 &&
+                    조_그룹목록.map(({ 조, indices }) => {
+                      const 그룹공급가액 = indices.reduce((s, i) => s + (rightRows[i].금액 || 0), 0);
+                      return (
+                        <Fragment key={조 || "미지정"}>
+                          <tr className="border-t border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800/60">
+                            <td colSpan={6} className="px-3 py-1 text-xs font-semibold text-gray-600 dark:text-gray-300">
+                              조: {조 || "미지정"} ({indices.length}건)
+                            </td>
+                          </tr>
+                          {indices.map((i) => renderRightRow(i))}
+                          <tr className="border-t border-gray-100 bg-gray-50/60 text-xs dark:border-gray-800 dark:bg-gray-800/30">
+                            <td className={td} colSpan={4}>
+                              소계
+                            </td>
+                            <td className={tdRight}>{Math.round(그룹공급가액).toLocaleString()}원</td>
+                            <td className={td}></td>
+                          </tr>
+                        </Fragment>
+                      );
+                    })}
                 </tbody>
                 <tfoot>
                   <tr className="border-t border-gray-200 dark:border-gray-700">
-                    <td className={td} colSpan={3}>
+                    <td className={td} colSpan={4}>
                       공급가액
                     </td>
                     <td className={tdRight}>{Math.round(오른쪽합계).toLocaleString()}원</td>
                     <td className={td}></td>
                   </tr>
                   <tr className="dark:border-gray-700">
-                    <td className={td} colSpan={3}>
-                      부가세{data.부가세구분 === "포함" && <span className="text-gray-400">(단가 포함)</span>}
+                    <td className={td} colSpan={4}>
+                      부가세
+                      {data.부가세구분 === "포함" && <span className="text-gray-400">(단가 포함)</span>}
+                      {data.부가세구분 === null && <span className="text-red-600 dark:text-red-400">(판정 불가)</span>}
                     </td>
                     <td className={tdRight}>{세액_오른쪽.toLocaleString()}원</td>
                     <td className={td}></td>
                   </tr>
                   <tr className="border-t border-gray-200 font-semibold dark:border-gray-700">
-                    <td className={td} colSpan={3}>
+                    <td className={td} colSpan={4}>
                       합계
                     </td>
                     <td className={tdRight}>{Math.round(오른쪽합계 + 세액_오른쪽).toLocaleString()}원</td>
@@ -477,21 +575,6 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
                 </tfoot>
               </table>
             </div>
-
-            {미분류표시.length > 0 && (
-              <div className="mt-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
-                <p className="font-medium">어느 규칙에도 안 걸린 원본 항목 {미분류표시.length}건 — 빠뜨리지 않았는지 확인해 주세요.</p>
-                <ul className="mt-1 list-disc pl-4">
-                  {미분류표시.map((row, i) => (
-                    <li key={i}>
-                      [{row.코드}] {row.품목}
-                      {row.작업명 ? `(${row.작업명})` : ""} — 수량 {row.수량.toLocaleString()}, 금액{" "}
-                      {Math.round(row.금액).toLocaleString()}원
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
           </div>
         </div>
 
@@ -507,7 +590,7 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
           <button
             type="button"
             onClick={handleConfirmClick}
-            disabled={submitting || rightRows.length === 0}
+            disabled={submitting || rightRows.length === 0 || !!data.부가세오류}
             className="rounded-md bg-gray-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-gray-700 disabled:opacity-50 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-gray-300"
           >
             {submitting ? "요청 중..." : "확정"}
@@ -521,13 +604,18 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
           <ConditionRuleModal
             initial={
               modalTarget !== null
-                ? { 최종청구품명: rightRows[modalTarget]?.최종청구품명 ?? "", 조건: rightRows[modalTarget]?.조건 ?? { or: [] } }
+                ? {
+                    최종청구품명: rightRows[modalTarget]?.최종청구품명 ?? "",
+                    조건: rightRows[modalTarget]?.조건 ?? { or: [] },
+                    조: rightRows[modalTarget]?.조,
+                  }
                 : null
             }
             코드옵션={코드옵션}
             품목옵션={품목옵션}
             단가옵션={단가옵션}
             작업명옵션={작업명옵션}
+            조옵션={조옵션}
             onSave={handleModalSave}
             onCancel={handleModalCancel}
           />

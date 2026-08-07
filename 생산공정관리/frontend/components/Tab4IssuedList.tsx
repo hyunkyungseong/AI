@@ -4,7 +4,7 @@ import { useCallback, useMemo, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import InvoiceFilterSidebar from "./InvoiceFilterSidebar";
 import InvoiceIssuedLevel1Table from "./InvoiceIssuedLevel1Table";
-import InvoiceIssuedLevel2Table from "./InvoiceIssuedLevel2Table";
+import InvoiceIssuedLevel2Table, { 레벨2키 } from "./InvoiceIssuedLevel2Table";
 import InvoiceDetailTable from "./InvoiceDetailTable";
 import ConfirmDialog from "./ConfirmDialog";
 import InvoiceHistoryDialog from "./InvoiceHistoryDialog";
@@ -102,13 +102,14 @@ export default function Tab4IssuedList({
     [groups]
   );
 
-  // 레벨1에서 체크된 그룹에 속하는 의뢰서(운영통계자료 원본 라인이 아니라 발행행 단위) 목록.
-  // 반드시 filters.base5(레벨1 집계와 동일한 필터 적용된 소스)에서 걸러야 한다 — scoped(필터 미적용
-  // 전체)에서 걸렀더니, 레벨1 합계는 필터링된 일부만 더하는데 레벨2 상세는 필터와 무관하게 그
-  // 거래명세서번호+업무명에 속한 전체가 나와버려서 "레벨1 합계 ≠ 레벨2 항목 합"이 되는 버그가
-  // 있었다(2026-07-22 실사용 중 발견 — 발행완료 화면 봉입건수가 실제와 다르게 보인다는 제보).
+  // 레벨1에서 체크된 그룹(거래명세서번호 단위, 2026-08-01)에 속하는 의뢰서(운영통계자료 원본
+  // 라인이 아니라 발행행 단위) 목록. 반드시 filters.base5(레벨1 집계와 동일한 필터 적용된 소스)에서
+  // 걸러야 한다 — scoped(필터 미적용 전체)에서 걸렀더니, 레벨1 합계는 필터링된 일부만 더하는데
+  // 레벨2 상세는 필터와 무관하게 그 거래명세서번호에 속한 전체가 나와버려서 "레벨1 합계 ≠ 레벨2
+  // 항목 합"이 되는 버그가 있었다(2026-07-22 실사용 중 발견 — 발행완료 화면 봉입건수가 실제와
+  // 다르게 보인다는 제보).
   const level2Rows = useMemo(
-    () => filters.base5.filter((r) => selected1.has(`${r.거래명세서번호}::${r.업무명}`)),
+    () => filters.base5.filter((r) => selected1.has(r.거래명세서번호)),
     [filters.base5, selected1]
   );
 
@@ -123,7 +124,7 @@ export default function Tab4IssuedList({
 
   const toggleAllRow2 = useCallback(
     (checked: boolean) => {
-      setSelected2(checked ? new Set(level2Rows.map((r) => r.의뢰서번호)) : new Set());
+      setSelected2(checked ? new Set(level2Rows.map(레벨2키)) : new Set());
     },
     [level2Rows]
   );
@@ -166,7 +167,7 @@ export default function Tab4IssuedList({
   // "취소"(부분취소) — 거래명세서_의뢰서는 의뢰서 단위 행이라 체크한 만큼만 정확히 취소되므로
   // "함께 처리됩니다" 안내가 필요 없다. 레벨1/레벨2 둘 다에서 호출 가능(scope로 구분).
   function handleCancelClick(scope: "level1" | "level2") {
-    const targetRows = scope === "level1" ? level2Rows : level2Rows.filter((r) => selected2.has(r.의뢰서번호));
+    const targetRows = scope === "level1" ? level2Rows : level2Rows.filter((r) => selected2.has(레벨2키(r)));
     if (targetRows.length === 0) {
       setBanner({ type: "warning", text: "선택된 항목이 없습니다." });
       return;
@@ -259,10 +260,26 @@ export default function Tab4IssuedList({
       }
     }
     if (성공행.length > 0) {
-      const 성공id = new Set(성공행.map((r) => r.의뢰서번호));
-      setRows((prev) => prev.filter((r) => !성공id.has(r.의뢰서번호)));
+      // 조별 분할발급(2026-07-29)으로 같은 의뢰서번호가 서로 다른 거래명세서번호에 동시에 걸려
+      //있을 수 있어, 의뢰서번호만으로 지우면 ①아직 취소 안 한 다른 거래명세서의 같은 의뢰서까지
+      // 화면에서 함께 사라지고 ②그 의뢰서가 미발행 목록에 중복으로 추가되는 버그가 있었다(실사용
+      // 제보로 발견) — 반드시 (거래명세서번호,의뢰서번호) 조합 단위로만 제거해야 한다.
+      const 취소된키 = new Set(성공행.map(레벨2키));
+      setRows((prev) => prev.filter((r) => !취소된키.has(레벨2키(r))));
+
+      // 이번 취소 후에도 그 의뢰서번호가 다른 거래명세서에 여전히 남아있으면(분할발급 중 일부만
+      // 취소한 경우) 아직 발행 상태이므로 미발행 목록으로 되돌리면 안 된다 — 완전히 사라진
+      // 의뢰서번호만, 중복 없이 한 번씩만 되돌린다.
+      const 남은의뢰서번호 = new Set(rows.filter((r) => !취소된키.has(레벨2키(r))).map((r) => r.의뢰서번호));
+      const 완전취소됨 = new Map<string, 발행행>();
+      for (const r of 성공행) {
+        if (!남은의뢰서번호.has(r.의뢰서번호) && !완전취소됨.has(r.의뢰서번호)) {
+          완전취소됨.set(r.의뢰서번호, r);
+        }
+      }
+
       onReturnToUnissued(
-        성공행.map(
+        Array.from(완전취소됨.values()).map(
           (r): 미발행행 => ({
             의뢰서번호: r.의뢰서번호,
             담당자: r.담당자,
@@ -394,7 +411,10 @@ export default function Tab4IssuedList({
           )}
 
           {selected2.size > 0 && (
-            <InvoiceDetailTable detailRows={detailRows} selectedIds={Array.from(selected2)} />
+            <InvoiceDetailTable
+              detailRows={detailRows}
+              selectedIds={Array.from(new Set(Array.from(selected2, (k) => k.slice(k.indexOf("::") + 2))))}
+            />
           )}
         </div>
       </main>

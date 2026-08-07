@@ -234,9 +234,9 @@ def _자재map_조회(cur, 의뢰서목록=None):
 def _규칙_조회(cur, 거래처명, 업무명):
     """거래처명+업무명으로 저장된 청구품목규칙을 순서대로 조회. 조건 컬럼은 MariaDB JSON 타입인데
     pymysql이 자동으로 dict로 파싱해주지 않는 경우가 있어(드라이버 버전에 따라 str로 올 수 있음)
-    str이면 직접 json.loads()로 변환한다."""
+    str이면 직접 json.loads()로 변환한다. 조(시트명, 2026-07-29 조별 분할발급) 컬럼도 함께 반환."""
     cur.execute(
-        "SELECT 순서, 최종청구품명, 조건 FROM 청구품목규칙 WHERE 거래처명=%s AND 업무명=%s ORDER BY 순서",
+        "SELECT 순서, 최종청구품명, 조건, 조 FROM 청구품목규칙 WHERE 거래처명=%s AND 업무명=%s ORDER BY 순서",
         (거래처명, 업무명),
     )
     행목록 = cur.fetchall()
@@ -248,13 +248,14 @@ def _규칙_조회(cur, 거래처명, 업무명):
 
 def _규칙_저장(cur, 거래처명, 업무명, 규칙목록):
     """그 거래처+업무명의 규칙 전체를 통째로 교체(DELETE 후 INSERT) — 단가마스터 등 다른 마스터
-    데이터 갱신과 동일한 관례. 규칙목록 각 원소는 {"순서","최종청구품명","조건"} dict."""
+    데이터 갱신과 동일한 관례. 규칙목록 각 원소는 {"순서","최종청구품명","조건","조"(선택)} dict."""
     cur.execute("DELETE FROM 청구품목규칙 WHERE 거래처명=%s AND 업무명=%s", (거래처명, 업무명))
     if 규칙목록:
         cur.executemany(
-            "INSERT INTO 청구품목규칙 (거래처명, 업무명, 순서, 최종청구품명, 조건) VALUES (%s,%s,%s,%s,%s)",
+            "INSERT INTO 청구품목규칙 (거래처명, 업무명, 순서, 최종청구품명, 조건, 조) VALUES (%s,%s,%s,%s,%s,%s)",
             [
-                (거래처명, 업무명, r["순서"], r["최종청구품명"], json.dumps(r["조건"], ensure_ascii=False))
+                (거래처명, 업무명, r["순서"], r["최종청구품명"],
+                 json.dumps(r["조건"], ensure_ascii=False), r.get("조"))
                 for r in 규칙목록
             ],
         )
@@ -298,7 +299,13 @@ def 예상공급가액(사업부: Optional[List[str]] = Query(default=None)):
     응답 = []
     for 의뢰서, v in 결과.items():
         공급가액 = round(v["합계"])
-        세액, _ = billing.부가세_계산(v["거래처명"], 단가맵, 공급가액)
+        # 이 목록은 아직 발급 전 예상치일 뿐이라(2026-08-04), 작업명별 부가세구분이 섞여 있어도
+        # 여기서 막지 않고 "별도"로 예상해 보여준다 — 실제 발급 차단은 POST /거래명세서요청이 담당.
+        try:
+            _구분 = billing.결정_부가세구분(v.get("부가세구분맵", {}))
+        except ValueError:
+            _구분 = "별도"
+        세액, _ = billing.부가세_계산(_구분, 공급가액)
         응답.append({
             "업무의뢰서번호": str(의뢰서),
             "거래처명": v["거래처명"],
@@ -400,6 +407,11 @@ def 발행목록(사업부: Optional[List[str]] = Query(default=None)):
     레벨1 요약이 (거래명세서번호, 업무명) 단위인데 저장값은 번호 전체 단위라 쪼갤 수 없고,
     /거래명세서엑셀/{no}도 이미 매번 라이브 재계산 방식이라 통일성을 유지한다(단가마스터가 그
     사이 바뀌면 저장값과 달라질 수 있음 — 기존에도 있던 특성).
+
+    조별 분할발급(2026-07-29)된 건은 의뢰서 하나가 거래명세서 여러 개에 동시에 속하므로(설계상
+    모든 조가 같은 의뢰서번호_목록 전체를 공유), 그 의뢰서를 속한 거래명세서 수만큼 각각의 행으로
+    중복 표시한다(사용자 확정: "의뢰서를 거래명세서별로 각각 표시" — 레벨1이 거래명세서번호 단위
+    요약이라 이 방식이 기존 집계 로직과 가장 잘 맞음). 분할 안 된 일반 건은 지금처럼 1행 그대로.
     """
     sql = """SELECT 업무의뢰서번호, 거래처명, 업무명, 업무명상세, 작업명, 사업부, 연월, 날짜,
                      마케팅담당자, 확정청구페이지, 건수, 출력페이지, 장수
@@ -425,7 +437,13 @@ def 발행목록(사업부: Optional[List[str]] = Query(default=None)):
             발행행목록 = cur.fetchall()
             if not 발행행목록:
                 return []
-            발행맵 = {r["업무의뢰서번호"]: (r["거래명세서번호"], r["발송여부"], r["편집여부"]) for r in 발행행목록}
+            # 의뢰서번호 하나가 거래명세서 여러 개에 속할 수 있어(조별 분할발급, 2026-07-29) 리스트로
+            # 누적 — 분할 안 된 일반 건은 리스트 길이가 항상 1이라 기존과 동일하게 동작한다.
+            발행맵: dict = {}
+            for r in 발행행목록:
+                발행맵.setdefault(r["업무의뢰서번호"], []).append(
+                    (r["거래명세서번호"], r["발송여부"], r["편집여부"])
+                )
 
             df_all = pd.DataFrame(원본행)
             df_발행 = df_all[df_all["업무의뢰서번호"].isin(발행맵.keys())].copy()
@@ -452,86 +470,60 @@ def 발행목록(사업부: Optional[List[str]] = Query(default=None)):
     응답 = []
     for _, r in summary.iterrows():
         의뢰서번호 = r["업무의뢰서번호"]
-        거래명세서번호, 발송여부, 편집여부 = 발행맵[의뢰서번호]
         가격 = 공급가맵.get(int(float(의뢰서번호)))
         예상공급가액 = round(가격["합계"]) if (가격 and 가격["합계"] > 0) else None
-        응답.append({
-            "의뢰서번호": 의뢰서번호,
-            "거래명세서번호": 거래명세서번호,
-            "발송여부": int(발송여부),
-            "편집여부": int(편집여부),
-            "담당자": r["마케팅담당자"],
-            "사업부": r["사업부"],
-            "거래처명": r["거래처명"],
-            "업무명": r["업무명"],
-            "업무명상세": r["업무명상세"],
-            "작업일자": r["날짜"],
-            "청구페이지": int(r["확정청구페이지"]),
-            "장수": int(r["장수_합"]),
-            "봉입건수": int(r["봉입건수_합"]),
-            "용지수량": int(r["용지_사용량_합"]),
-            "봉투수량": int(r["봉투_사용량_합"]),
-            "삽지수량": int(r["삽지_사용량_합"]),
-            "예상공급가액": 예상공급가액,
-        })
+        for 거래명세서번호, 발송여부, 편집여부 in 발행맵[의뢰서번호]:
+            응답.append({
+                "의뢰서번호": 의뢰서번호,
+                "거래명세서번호": 거래명세서번호,
+                "발송여부": int(발송여부),
+                "편집여부": int(편집여부),
+                "담당자": r["마케팅담당자"],
+                "사업부": r["사업부"],
+                "거래처명": r["거래처명"],
+                "업무명": r["업무명"],
+                "업무명상세": r["업무명상세"],
+                "작업일자": r["날짜"],
+                "청구페이지": int(r["확정청구페이지"]),
+                "장수": int(r["장수_합"]),
+                "봉입건수": int(r["봉입건수_합"]),
+                "용지수량": int(r["용지_사용량_합"]),
+                "봉투수량": int(r["봉투_사용량_합"]),
+                "삽지수량": int(r["삽지_사용량_합"]),
+                "예상공급가액": 예상공급가액,
+            })
     응답.sort(key=lambda x: x["작업일자"], reverse=True)
     return 응답
 
 
-@app.get("/거래명세서엑셀/{no}", dependencies=인증필요)
-def 거래명세서엑셀(no: str):
-    """
-    거래명세서 Excel 파일 생성·다운로드. 발행 시점에만 만들 수 있던 app.py 세션 임시저장 방식과
-    달리, 발행완료 건이면 언제든 재호출 가능.
+def _거래명세서_엑셀_바이트(cur, 거래명세서번호):
+    """거래명세서번호 하나에 대한 엑셀 바이트를 만든다 — 기존 GET /거래명세서엑셀/{no}의 단일 파일
+    생성 로직 그대로(스냅샷 우선, 없으면 실시간 재계산). 조별 분할발급 통합엑셀(2026-07-29)에서
+    묶음에 속한 형제 거래명세서 각각의 시트를 만들 때도 이 함수를 재사용한다."""
+    cur.execute("SELECT * FROM 거래명세서 WHERE 거래명세서번호=%s", (거래명세서번호,))
+    거래명세서 = cur.fetchone()
+    if not 거래명세서:
+        raise HTTPException(status_code=404, detail="거래명세서번호를 찾을 수 없습니다")
 
-    거래명세서_품목에 구분='최종' 스냅샷이 저장돼 있으면(편집·규칙 적용을 거친 건) 재계산 없이
-    그 내용을 그대로 billing.write_거래명세서_excel()에 넘긴다 — 편집 이후 단가마스터가 바뀌어도
-    발행 당시 확정한 금액이 그대로 유지되어야 하기 때문. 스냅샷이 없는(이 기능 이전에 발행됐거나
-    편집 없이 그대로 발행된) 건은 지금처럼 운영통계자료에서 매번 실시간 재계산한다(2026-07-22).
+    cur.execute("SELECT 업무의뢰서번호 FROM 거래명세서_의뢰서 WHERE 거래명세서번호=%s", (거래명세서번호,))
+    의뢰서목록 = [r["업무의뢰서번호"] for r in cur.fetchall()]
+    if not 의뢰서목록:
+        raise HTTPException(status_code=404, detail="이 거래명세서에 연결된 업무의뢰서가 없습니다")
 
-    경로 파라미터명은 'no'(영문 고정) — Starlette가 중괄호 경로 파라미터명에 한글을 쓰면
-    내부 정규식이 이를 인식 못 해 라우팅 자체가 항상 404로 실패하는 문제가 있어(실측 확인),
-    다른 경로들(/단가마스터/{id} 등)과 동일하게 영문 파라미터명으로 통일함.
-    """
-    거래명세서번호 = no
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM 거래명세서 WHERE 거래명세서번호=%s", (거래명세서번호,))
-            거래명세서 = cur.fetchone()
-            if not 거래명세서:
-                raise HTTPException(status_code=404, detail="거래명세서번호를 찾을 수 없습니다")
+    자리표시자 = ", ".join(["%s"] * len(의뢰서목록))
+    cur.execute(
+        f"SELECT DISTINCT 업무명 FROM 운영통계자료 WHERE 업무의뢰서번호 IN ({자리표시자})",
+        의뢰서목록,
+    )
+    업무명행 = cur.fetchall()
+    업무명 = 업무명행[0]["업무명"] if 업무명행 else None
 
-            cur.execute("SELECT 업무의뢰서번호 FROM 거래명세서_의뢰서 WHERE 거래명세서번호=%s", (거래명세서번호,))
-            의뢰서목록 = [r["업무의뢰서번호"] for r in cur.fetchall()]
-            if not 의뢰서목록:
-                raise HTTPException(status_code=404, detail="이 거래명세서에 연결된 업무의뢰서가 없습니다")
-
-            자리표시자 = ", ".join(["%s"] * len(의뢰서목록))
-            cur.execute(
-                f"SELECT DISTINCT 업무명 FROM 운영통계자료 WHERE 업무의뢰서번호 IN ({자리표시자})",
-                의뢰서목록,
-            )
-            업무명행 = cur.fetchall()
-            업무명 = 업무명행[0]["업무명"] if 업무명행 else None
-
-            cur.execute(
-                "SELECT 코드, 품목, 수량, 단가, 금액 FROM 거래명세서_품목 "
-                "WHERE 거래명세서번호=%s AND 구분='최종' ORDER BY 순서",
-                (거래명세서번호,),
-            )
-            저장된_최종 = cur.fetchall()
-
-            원본행 = 단가행 = 자재행 = None
-            if not 저장된_최종:
-                cur.execute(
-                    f"SELECT 업무의뢰서번호, 작업명, 거래처명, 업무명, 확정청구페이지, 건수, 장수 "
-                    f"FROM 운영통계자료 WHERE 업무의뢰서번호 IN ({자리표시자})",
-                    의뢰서목록,
-                )
-                원본행 = cur.fetchall()
-                cur.execute("SELECT * FROM 단가마스터")
-                단가행 = cur.fetchall()
-                자재행 = _자재map_조회(cur, 의뢰서목록)
+    cur.execute(
+        "SELECT 코드, 품목, 수량, 단가, 금액 FROM 거래명세서_품목 "
+        "WHERE 거래명세서번호=%s AND 구분='최종' ORDER BY 순서",
+        (거래명세서번호,),
+    )
+    저장된_최종 = cur.fetchall()
 
     from datetime import date
     발행일 = 거래명세서["발행일자"] or date.today()
@@ -552,27 +544,198 @@ def 거래명세서엑셀(no: str):
         # 확정한 금액을 그대로 유지하는 원칙과 동일, 2026-07-28 부가세 표기 기능 추가 시 누락됐던
         # 호출부를 2026-07-29 실사용 중 다운로드 오류로 발견해 수정).
         세액 = float(거래명세서["세액"] or 0)
-        엑셀바이트 = billing.write_거래명세서_excel(품목행목록, 총합계, 세액, 거래명세서["거래처명"], 업무명, 발행일)
-    else:
+        return billing.write_거래명세서_excel(품목행목록, 총합계, 세액, 거래명세서["거래처명"], 업무명, 발행일)
+
+    cur.execute(
+        f"SELECT 업무의뢰서번호, 작업명, 거래처명, 업무명, 확정청구페이지, 건수, 장수 "
+        f"FROM 운영통계자료 WHERE 업무의뢰서번호 IN ({자리표시자})",
+        의뢰서목록,
+    )
+    원본행 = cur.fetchall()
+    if not 원본행:
+        raise HTTPException(status_code=404, detail="이 거래명세서의 업무의뢰서 데이터를 운영통계자료에서 찾을 수 없습니다")
+
+    cur.execute("SELECT * FROM 단가마스터")
+    단가행 = cur.fetchall()
+    자재행 = _자재map_조회(cur, 의뢰서목록)
+
+    df_all = pd.DataFrame(원본행)
+    단가df = pd.DataFrame(단가행) if 단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명"])
+    자재df = pd.DataFrame(자재행) if 자재행 else pd.DataFrame(columns=["업무의뢰서번호", "작업이름", "자재종류", "자재형태", "사용량"])
+
+    단가맵 = billing.build_단가맵(단가df)
+    자재map = billing.build_자재map(자재df)
+    의뢰서번호셋 = {int(float(x)) for x in 의뢰서목록}
+    try:
+        return billing.generate_거래명세서_excel(df_all, 단가맵, 자재map, 의뢰서번호셋, 발행일)
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=f"부가세 처리 방식 불일치로 다운로드할 수 없습니다: {e}")
+
+
+def _거래명세서_엑셀_시트목록(cur, 거래명세서번호):
+    """거래명세서 1건의 저장된 최종 품목을 "조" 값으로 나눠 시트별 엑셀 바이트 목록을 만든다
+    (2026-08-01 — 조는 이제 거래명세서를 여러 건으로 쪼개지 않고, 한 건 안의 시트 구성에만 쓰인다).
+    [(엑셀바이트, 시트명), ...] 형태로 반환 — billing.combine_거래명세서_시트들()에 그대로 넘길 수 있는
+    입력 형식(len<=1이면 그 파일 그대로 반환하므로 조가 없거나 1개뿐이어도 문제없음).
+    스냅샷(거래명세서_품목)이 없으면(구 발행 건 또는 편집 없이 원본 그대로 발행된 건) 조 개념 자체가
+    없었으므로 기존처럼 실시간 재계산한 단일 시트 1개짜리 목록을 반환한다."""
+    cur.execute("SELECT * FROM 거래명세서 WHERE 거래명세서번호=%s", (거래명세서번호,))
+    거래명세서 = cur.fetchone()
+    if not 거래명세서:
+        raise HTTPException(status_code=404, detail="거래명세서번호를 찾을 수 없습니다")
+
+    cur.execute("SELECT 업무의뢰서번호 FROM 거래명세서_의뢰서 WHERE 거래명세서번호=%s", (거래명세서번호,))
+    의뢰서목록 = [r["업무의뢰서번호"] for r in cur.fetchall()]
+    if not 의뢰서목록:
+        raise HTTPException(status_code=404, detail="이 거래명세서에 연결된 업무의뢰서가 없습니다")
+
+    자리표시자 = ", ".join(["%s"] * len(의뢰서목록))
+    cur.execute(
+        f"SELECT DISTINCT 업무명 FROM 운영통계자료 WHERE 업무의뢰서번호 IN ({자리표시자})",
+        의뢰서목록,
+    )
+    업무명행 = cur.fetchall()
+    업무명 = 업무명행[0]["업무명"] if 업무명행 else None
+
+    from datetime import date
+    발행일 = 거래명세서["발행일자"] or date.today()
+
+    cur.execute(
+        "SELECT 조, 코드, 품목, 수량, 단가, 금액 FROM 거래명세서_품목 "
+        "WHERE 거래명세서번호=%s AND 구분='최종' ORDER BY 순서",
+        (거래명세서번호,),
+    )
+    저장된_최종 = cur.fetchall()
+
+    if not 저장된_최종:
+        cur.execute(
+            f"SELECT 업무의뢰서번호, 작업명, 거래처명, 업무명, 확정청구페이지, 건수, 장수 "
+            f"FROM 운영통계자료 WHERE 업무의뢰서번호 IN ({자리표시자})",
+            의뢰서목록,
+        )
+        원본행 = cur.fetchall()
         if not 원본행:
             raise HTTPException(status_code=404, detail="이 거래명세서의 업무의뢰서 데이터를 운영통계자료에서 찾을 수 없습니다")
-
+        cur.execute("SELECT * FROM 단가마스터")
+        단가행 = cur.fetchall()
+        자재행 = _자재map_조회(cur, 의뢰서목록)
         df_all = pd.DataFrame(원본행)
         단가df = pd.DataFrame(단가행) if 단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명"])
         자재df = pd.DataFrame(자재행) if 자재행 else pd.DataFrame(columns=["업무의뢰서번호", "작업이름", "자재종류", "자재형태", "사용량"])
-
         단가맵 = billing.build_단가맵(단가df)
         자재map = billing.build_자재map(자재df)
         의뢰서번호셋 = {int(float(x)) for x in 의뢰서목록}
-        엑셀바이트 = billing.generate_거래명세서_excel(df_all, 단가맵, 자재map, 의뢰서번호셋, 발행일)
+        try:
+            바이트 = billing.generate_거래명세서_excel(df_all, 단가맵, 자재map, 의뢰서번호셋, 발행일)
+        except ValueError as e:
+            raise HTTPException(status_code=500, detail=f"부가세 처리 방식 불일치로 다운로드할 수 없습니다: {e}")
+        return [(바이트, None)]
 
+    cur.execute("SELECT * FROM 단가마스터")
+    단가행 = cur.fetchall()
+    단가df = pd.DataFrame(단가행) if 단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명"])
+    단가맵 = billing.build_단가맵(단가df)
+
+    # 부가세구분은 조 그룹마다 다시 판정하지 않고 인보이스 전체 기준으로 한 번만 결정한다(부가세
+    # 취급은 인보이스 단위 결정이라는 원칙). "최종" 구분 행은 작업명이 비어 있어(정렬행_원본목록 참고)
+    # 조 그룹 단위로는 판정할 수 없으므로, 같이 저장돼 있는 "원본" 구분 행의 작업명을 대신 쓴다
+    # (2026-08-04 — 기본단가 행이 없는 거래처는 항상 "별도"로 잘못 계산되던 버그 수정).
+    cur.execute(
+        "SELECT DISTINCT 작업명 FROM 거래명세서_품목 WHERE 거래명세서번호=%s AND 구분='원본'",
+        (거래명세서번호,),
+    )
+    작업명목록 = [r["작업명"] for r in cur.fetchall()]
+    부가세구분맵 = {}
+    for 작업 in (작업명목록 or [None]):
+        rates = (
+            단가맵.get((거래명세서["거래처명"], 업무명, 작업))
+            or 단가맵.get((거래명세서["거래처명"], 업무명, None))
+            or 단가맵.get((거래명세서["거래처명"], None, None))
+            or {}
+        )
+        부가세구분맵[작업] = rates.get("부가세구분") or "별도"
+    try:
+        부가세구분 = billing.결정_부가세구분(부가세구분맵)
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=f"부가세 처리 방식 불일치로 다운로드할 수 없습니다: {e}")
+
+    그룹순서 = []
+    그룹맵 = {}
+    for r in 저장된_최종:
+        key = r["조"] or None
+        if key not in 그룹맵:
+            그룹맵[key] = []
+            그룹순서.append(key)
+        그룹맵[key].append(r)
+
+    시트_목록 = []
+    for 조 in 그룹순서:
+        품목행목록 = [
+            {
+                "코드": r["코드"],
+                "표시품명": r["품목"],
+                "수량": float(r["수량"]),
+                "단가": float(r["단가"]) if r["단가"] is not None else None,
+                "금액": float(r["금액"]),
+            }
+            for r in 그룹맵[조]
+        ]
+        그룹공급가액 = sum(x["금액"] for x in 품목행목록)
+        그룹세액, _ = billing.부가세_계산(부가세구분, 그룹공급가액)
+        바이트 = billing.write_거래명세서_excel(
+            품목행목록, 그룹공급가액, 그룹세액, 거래명세서["거래처명"], 업무명, 발행일
+        )
+        시트_목록.append((바이트, 조))
+
+    return 시트_목록
+
+
+@app.get("/거래명세서엑셀/{no}", dependencies=인증필요)
+def 거래명세서엑셀(no: str):
+    """
+    거래명세서 Excel 파일 생성·다운로드. 발행 시점에만 만들 수 있던 app.py 세션 임시저장 방식과
+    달리, 발행완료 건이면 언제든 재호출 가능.
+
+    묶음번호가 있으면(2026-07-29~2026-08-01에 조별로 각각 채번·저장됐던 예전 발행 건 — 하위호환
+    전용, 새 건은 이 값이 절대 안 생김) 같은 묶음번호를 가진 형제 거래명세서 전부를 각각
+    _거래명세서_엑셀_바이트()로 만들어 합친다. 묶음번호가 없으면(2026-08-01부터의 모든 새 건 +
+    조를 아예 안 쓰는 기존 건) _거래명세서_엑셀_시트목록()으로 이 거래명세서 1건이 가진 품목들을
+    "조" 값 기준으로 나눠 시트를 만든다. 두 경우 모두 billing.combine_거래명세서_시트들()로
+    최종 워크북(여러 시트)을 만든다(시트가 1개뿐이면 그 파일 그대로 반환).
+
+    경로 파라미터명은 'no'(영문 고정) — Starlette가 중괄호 경로 파라미터명에 한글을 쓰면
+    내부 정규식이 이를 인식 못 해 라우팅 자체가 항상 404로 실패하는 문제가 있어(실측 확인),
+    다른 경로들(/단가마스터/{id} 등)과 동일하게 영문 파라미터명으로 통일함.
+    """
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 묶음번호 FROM 거래명세서 WHERE 거래명세서번호=%s", (no,))
+            거래명세서 = cur.fetchone()
+            if not 거래명세서:
+                raise HTTPException(status_code=404, detail="거래명세서번호를 찾을 수 없습니다")
+
+            묶음번호 = 거래명세서["묶음번호"]
+            if 묶음번호:
+                cur.execute(
+                    "SELECT 거래명세서번호, 시트명 FROM 거래명세서 WHERE 묶음번호=%s ORDER BY 등록일, 거래명세서번호",
+                    (묶음번호,),
+                )
+                형제목록 = cur.fetchall()
+                시트_목록 = [
+                    (_거래명세서_엑셀_바이트(cur, r["거래명세서번호"]), r["시트명"])
+                    for r in 형제목록
+                ]
+            else:
+                시트_목록 = _거래명세서_엑셀_시트목록(cur, no)
+
+    엑셀바이트 = billing.combine_거래명세서_시트들(시트_목록)
     if 엑셀바이트 is None:
         raise HTTPException(status_code=500, detail="Excel 생성 실패 — 해당 업무의뢰서에 등록된 단가가 없을 수 있습니다")
 
     return Response(
         content=엑셀바이트,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{거래명세서번호}.xlsx"'},
+        headers={"Content-Disposition": f'attachment; filename="{no}.xlsx"'},
     )
 
 
@@ -655,7 +818,7 @@ def 거래명세서미리보기(요청: 거래명세서미리보기_요청):
             자재map = billing.build_자재map(자재df)
             의뢰서번호셋 = {int(float(x)) for x in 요청.의뢰서번호_목록}
 
-            정렬행, 총합계, 거래처명, 업무명, 코드맵 = billing.build_품목행(df_all, 단가맵, 자재map, 의뢰서번호셋)
+            정렬행, 총합계, 거래처명, 업무명, 코드맵, 부가세구분맵 = billing.build_품목행(df_all, 단가맵, 자재map, 의뢰서번호셋)
             if not 정렬행:
                 raise HTTPException(status_code=500, detail="미리보기 생성 실패 — 해당 업무의뢰서에 등록된 단가가 없을 수 있습니다")
 
@@ -664,17 +827,33 @@ def 거래명세서미리보기(요청: 거래명세서미리보기_요청):
 
     if 규칙목록:
         규칙적용결과, 미분류 = billing.적용_규칙(원본목록, 규칙목록)
+        # 매칭된 원본 항목이 하나도 없는 규칙은 결과에서 제외한다(2026-08-01, 실사용 제보: "쓰레기
+        # 값" — 이번 선택과 무관한 저장된 규칙까지 수량0·금액0인 빈 줄로 노출되는 문제 방지).
+        # billing.적용_규칙()은 규칙 개수만큼 결과를 무조건 1개씩 만드는 구조(줄 순서를 규칙목록과
+        # 인덱스로 맞추기 위함)라 필터링은 이 호출부에서 담당 — 규칙적용결과·규칙목록을 반드시
+        # 같이 걸러내 인덱스 대응을 유지한다(InvoicePreviewDialog.tsx가 둘을 인덱스로 1:1 매칭해서 씀).
+        유지 = [i for i, r in enumerate(규칙적용결과) if r["수량"] != 0 or r["금액"] != 0]
+        규칙적용결과 = [규칙적용결과[i] for i in 유지]
+        규칙목록 = [규칙목록[i] for i in 유지]
     else:
         규칙적용결과, 미분류 = [], []
 
-    # 프론트가 세액을 무조건 공급가액×10%로 가정하지 않도록, 거래처 기본단가 행의 부가세구분을
-    # 함께 내려준다(편집으로 공급가액이 바뀌어도 프론트가 이 값 기준으로 재계산, 2026-07-28).
-    부가세구분 = (단가맵.get((거래처명, None, None)) or {}).get("부가세구분") or "별도"
+    # 프론트가 세액을 무조건 공급가액×10%로 가정하지 않도록, 실제로 청구된 작업명들의 부가세구분을
+    # 판정해 함께 내려준다(편집으로 공급가액이 바뀌어도 프론트가 이 값 기준으로 재계산, 2026-07-28).
+    # 작업명끼리 포함/별도가 섞여 있으면(2026-08-04, 기본단가 행이 없는 거래처는 항상 "별도"로
+    # 잘못 계산되던 버그로 발견) 부가세구분=None + 부가세오류 메시지를 내려 프론트가 발급을 막는다.
+    try:
+        부가세구분 = billing.결정_부가세구분(부가세구분맵)
+        부가세오류 = None
+    except ValueError as e:
+        부가세구분 = None
+        부가세오류 = str(e)
 
     return {
         "거래처명": 거래처명,
         "업무명": 업무명,
         "부가세구분": 부가세구분,
+        "부가세오류": 부가세오류,
         "품목": [
             {"코드": row["코드"], "품목": row["품목"], "작업명": row["작업명"],
              "수량": row["수량"], "단가": row["단가"], "금액": row["금액"]}
@@ -682,13 +861,20 @@ def 거래명세서미리보기(요청: 거래명세서미리보기_요청):
         ],
         "규칙적용결과": [
             {"최종청구품명": row["표시품명"], "코드": row["코드"] or None,
-             "수량": row["수량"], "단가": row["단가"], "금액": row["금액"]}
+             "수량": row["수량"], "단가": row["단가"], "금액": row["금액"], "조": row.get("조")}
             for row in 규칙적용결과
         ],
         "미분류": [
             {"코드": row["코드"], "품목": row["품목"], "작업명": row["작업명"],
              "수량": row["수량"], "단가": row["단가"], "금액": row["금액"]}
             for row in 미분류
+        ],
+        # 규칙목록(순서·최종청구품명·조건·조) — 프론트가 GET /청구품목규칙로 따로 재조회하지 않고
+        # 이 응답을 그대로 써서 규칙적용결과와 인덱스 1:1 대응을 유지한다(2026-08-01, 별도
+        # 왕복 없이 한 번의 응답으로 끝내도록 단순화).
+        "규칙목록": [
+            {"순서": r["순서"], "최종청구품명": r["최종청구품명"], "조건": r["조건"], "조": r.get("조")}
+            for r in 규칙목록
         ],
         "총합계": round(총합계),
     }
@@ -700,6 +886,7 @@ class 청구품목규칙_행(BaseModel):
     순서: int
     최종청구품명: str
     조건: dict  # {"or": [{"and": [{"field","op","value"}, ...]}, ...]} — {"or": []}이면 전체 매칭
+    조: Optional[str] = None  # 조별 분할발급 시트명(2026-07-29) — 없으면 미지정(하위호환)
 
 
 @app.get("/청구품목규칙", dependencies=인증필요)
@@ -930,6 +1117,7 @@ class 품목행_입력(BaseModel):
     수량: float
     단가: Optional[float] = None  # 병합된 항목의 단가가 갈리면 None("—")
     금액: float
+    조: Optional[str] = None  # 조별 분할발급(2026-07-29) — 없으면 거래명세서 1건(하위호환)
 
 
 class 거래명세서요청_요청(BaseModel):
@@ -958,6 +1146,17 @@ def 거래명세서요청(요청: 거래명세서요청_요청):
     다르면 편집여부=1로 저장하며, 원본·최종 스냅샷을 거래명세서_품목에 남긴다(이력 보존).
     규칙을 함께 보내면 그 거래처+업무명의 청구품목규칙도 함께 갱신해 다음 명세서부터 재사용된다
     (2026-07-22, [거래명세서편집_규칙엔진] 착수 순서 3).
+
+    원본은 품목_최종 여부와 무관하게 항상 재계산한다 — 이번에 청구되는 작업명들의 부가세구분
+    (포함/별도)이 서로 다르면 발급 자체를 400으로 막는다(2026-08-04, 기본단가 행이 없는 거래처는
+    항상 "별도"로 잘못 계산되던 버그 수정 — billing.결정_부가세구분() 참고).
+
+    거래명세서는 항상 1건만 생성한다(2026-08-01) — 품목_최종의 각 행에 실린 "조"는
+    거래명세서_품목에 그대로 저장해두고, 다운로드 시점(GET /거래명세서엑셀/{no})에 그 값으로
+    시트를 나눠 통합 엑셀을 만드는 데만 쓴다. (2026-07-29~2026-08-01엔 조가 2개 이상이면
+    거래명세서 자체를 조 개수만큼 각각 채번·저장했었으나, 실사용 중 "발행요청목록에 번호가
+    여러 개 생겨 불편하다"는 피드백으로 변경 — 그 시절 만들어진 기존 발행 건은
+    `거래명세서.묶음번호`로 여전히 인식·다운로드된다, GET /거래명세서엑셀/{no} 참고.)
     """
     if not 요청.의뢰서번호_목록:
         raise HTTPException(status_code=400, detail="의뢰서번호_목록이 비어 있습니다")
@@ -982,34 +1181,40 @@ def 거래명세서요청(요청: 거래명세서요청_요청):
     if 요청.규칙 is not None and not 요청.업무명:
         raise HTTPException(status_code=400, detail="규칙을 저장하려면 업무명이 필요합니다")
 
-    # 품목_최종이 왔으면 원본을 다시 계산해 편집여부를 판정하고 거래명세서_품목 저장 준비를 한다
-    # (서버가 직접 재계산 — 화면에서 보낸 "원본"을 그대로 믿지 않음, 조작 방지 겸 정합성 보장).
-    원본목록 = []
-    if 요청.품목_최종 is not None:
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                자리표시자 = ", ".join(["%s"] * len(요청.의뢰서번호_목록))
-                cur.execute(
-                    f"SELECT 업무의뢰서번호, 작업명, 거래처명, 업무명, 확정청구페이지, 건수, 장수 "
-                    f"FROM 운영통계자료 WHERE 업무의뢰서번호 IN ({자리표시자})",
-                    요청.의뢰서번호_목록,
-                )
-                원본행 = cur.fetchall()
-                cur.execute("SELECT * FROM 단가마스터")
-                단가행 = cur.fetchall()
-                자재행 = _자재map_조회(cur, 요청.의뢰서번호_목록)
+    # 원본을 항상 다시 계산한다(서버가 직접 재계산 — 화면에서 보낸 "원본"을 그대로 믿지 않음, 조작
+    # 방지 겸 정합성 보장). 품목_최종이 왔으면 편집여부 판정·거래명세서_품목 저장에도 재사용하고,
+    # 어느 경우든 부가세구분 일관성 검증에 쓴다(2026-08-04 — 예전엔 품목_최종이 없으면 이 계산을
+    # 건너뛰어 부가세 검증이 전혀 없었음).
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            자리표시자 = ", ".join(["%s"] * len(요청.의뢰서번호_목록))
+            cur.execute(
+                f"SELECT 업무의뢰서번호, 작업명, 거래처명, 업무명, 확정청구페이지, 건수, 장수 "
+                f"FROM 운영통계자료 WHERE 업무의뢰서번호 IN ({자리표시자})",
+                요청.의뢰서번호_목록,
+            )
+            원본행 = cur.fetchall()
+            cur.execute("SELECT * FROM 단가마스터")
+            단가행 = cur.fetchall()
+            자재행 = _자재map_조회(cur, 요청.의뢰서번호_목록)
 
-        df_all = pd.DataFrame(원본행)
-        단가df = pd.DataFrame(단가행) if 단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명"])
-        자재df = pd.DataFrame(자재행) if 자재행 else pd.DataFrame(columns=["업무의뢰서번호", "작업이름", "자재종류", "자재형태", "사용량"])
-        단가맵 = billing.build_단가맵(단가df)
-        자재map = billing.build_자재map(자재df)
-        의뢰서번호셋 = {int(float(x)) for x in 요청.의뢰서번호_목록}
-        정렬행, _총, _거래처, _업무, 코드맵 = billing.build_품목행(df_all, 단가맵, 자재map, 의뢰서번호셋)
-        원본목록 = billing.정렬행_원본목록(정렬행, 코드맵)
+    df_all = pd.DataFrame(원본행)
+    단가df = pd.DataFrame(단가행) if 단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명"])
+    자재df = pd.DataFrame(자재행) if 자재행 else pd.DataFrame(columns=["업무의뢰서번호", "작업이름", "자재종류", "자재형태", "사용량"])
+    단가맵 = billing.build_단가맵(단가df)
+    자재map = billing.build_자재map(자재df)
+    의뢰서번호셋 = {int(float(x)) for x in 요청.의뢰서번호_목록}
+    정렬행, _총, _거래처, _업무, 코드맵, 부가세구분맵 = billing.build_품목행(df_all, 단가맵, 자재map, 의뢰서번호셋)
+    원본목록 = billing.정렬행_원본목록(정렬행, 코드맵)
+
+    try:
+        billing.결정_부가세구분(부가세구분맵)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     최종목록 = [
-        {"코드": r.코드 or "", "표시품명": r.품목, "수량": r.수량, "단가": r.단가, "금액": round(r.금액, 2)}
+        {"코드": r.코드 or "", "표시품명": r.품목, "수량": r.수량, "단가": r.단가,
+         "금액": round(r.금액, 2), "조": r.조 or None}
         for r in (요청.품목_최종 or [])
     ]
 
@@ -1024,6 +1229,12 @@ def 거래명세서요청(요청: 거래명세서요청_요청):
 
     from datetime import date
     오늘 = str(date.today())
+
+    품목_삽입_sql = """
+        INSERT INTO 거래명세서_품목
+            (거래명세서번호, 구분, 순서, 코드, 품목, 작업명, 조, 수량, 단가, 금액)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    """
 
     try:
         with get_db() as conn:
@@ -1042,17 +1253,12 @@ def 거래명세서요청(요청: 거래명세서요청_요청):
                 )
 
                 if 요청.품목_최종 is not None:
-                    품목_삽입_sql = """
-                        INSERT INTO 거래명세서_품목
-                            (거래명세서번호, 구분, 순서, 코드, 품목, 작업명, 수량, 단가, 금액)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """
                     cur.executemany(품목_삽입_sql, [
-                        (거래명세서번호, "원본", i, r["코드"], r.get("품목"), r.get("작업명"), r["수량"], r["단가"], r["금액"])
+                        (거래명세서번호, "원본", i, r["코드"], r.get("품목"), r.get("작업명"), None, r["수량"], r["단가"], r["금액"])
                         for i, r in enumerate(원본목록)
                     ])
                     cur.executemany(품목_삽입_sql, [
-                        (거래명세서번호, "최종", i, r["코드"] or None, r["표시품명"], None, r["수량"], r["단가"], r["금액"])
+                        (거래명세서번호, "최종", i, r["코드"] or None, r["표시품명"], None, r["조"], r["수량"], r["단가"], r["금액"])
                         for i, r in enumerate(최종목록)
                     ])
 
@@ -1061,7 +1267,11 @@ def 거래명세서요청(요청: 거래명세서요청_요청):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"거래명세서 요청 실패: {e}")
 
-    return {"status": "ok", "거래명세서번호": 거래명세서번호, "편집여부": 편집여부}
+    return {
+        "status": "ok",
+        "거래명세서번호": 거래명세서번호,
+        "편집여부": 편집여부,
+    }
 
 
 class 거래명세서번호_요청(BaseModel):
@@ -1194,8 +1404,14 @@ def 거래명세서부분취소(요청: 거래명세서부분취소_요청):
                 공급가맵 = billing.calc_공급가맵(df_남을, 단가맵, 자재map, 남을_번호셋)
 
                 공급가액 = round(sum(v["합계"] for v in 공급가맵.values()))
-                거래처명 = df_남을["거래처명"].iloc[0]
-                세액, 합계 = billing.부가세_계산(거래처명, 단가맵, 공급가액)
+                병합_부가세구분맵 = {}
+                for v in 공급가맵.values():
+                    병합_부가세구분맵.update(v.get("부가세구분맵", {}))
+                try:
+                    부가세구분 = billing.결정_부가세구분(병합_부가세구분맵)
+                except ValueError as e:
+                    raise HTTPException(status_code=400, detail=str(e))
+                세액, 합계 = billing.부가세_계산(부가세구분, 공급가액)
                 품목 = ", ".join(sorted(set(summary["업무명"])))
                 담당자 = ", ".join(sorted(set(summary["마케팅담당자"])))
 

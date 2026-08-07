@@ -1,14 +1,16 @@
 import type { 발행행 } from "@/components/Dashboard";
 
-// 레벨1(요약) 그리드 한 행 — 거래명세서번호+업무명 기준으로 같은 업무명끼리 합산한 것.
-// (사용자 결정, 2026-07-19: Streamlit의 (이력_id,업무명) 그룹핑과 동일한 그레인을
-//  거래명세서번호 PK 기준으로 재구성 — _이력_id 같은 내부 ID 개념은 더 이상 필요 없음)
+// 레벨1(요약) 그리드 한 행 — 거래명세서번호 기준으로 합산한 것(2026-08-01, 거래명세서번호 단독
+// 그룹핑으로 변경 — 그 전엔 거래명세서번호+업무명 기준이라, 거래명세서 1건이 업무명 여러 개에
+// 걸치면(예: 조건식 병합으로 여러 업무명을 함께 요청) 같은 번호가 화면에 여러 줄로 쪼개져 보이는
+// 문제가 있었음. 거래명세서는 이제 항상 1건만 생성되므로(POST /거래명세서요청 참고),
+// "번호 1개 = 화면 1줄"이 되도록 되돌림).
 export type 레벨1그룹 = {
-  key: string; // `${거래명세서번호}::${업무명}`
+  key: string; // 거래명세서번호
   거래명세서번호: string;
   사업부: string;
   거래처명: string;
-  업무명: string;
+  업무명: string; // 그룹에 등장한 고유 업무명을 ", "로 합친 문자열(담당자와 동일 패턴)
   담당자: string;
   의뢰서건수: number;
   청구페이지: number;
@@ -25,7 +27,7 @@ export type 레벨1그룹 = {
 export function build레벨1그룹(rows: 발행행[]): 레벨1그룹[] {
   const map = new Map<string, 발행행[]>();
   for (const r of rows) {
-    const key = `${r.거래명세서번호}::${r.업무명}`;
+    const key = r.거래명세서번호;
     const arr = map.get(key);
     if (arr) arr.push(r);
     else map.set(key, [r]);
@@ -39,7 +41,7 @@ export function build레벨1그룹(rows: 발행행[]): 레벨1그룹[] {
       거래명세서번호: lines[0].거래명세서번호,
       사업부: lines[0].사업부,
       거래처명: lines[0].거래처명,
-      업무명: lines[0].업무명,
+      업무명: Array.from(new Set(lines.map((l) => l.업무명))).sort((a, b) => a.localeCompare(b, "ko")).join(", "),
       담당자: Array.from(new Set(lines.map((l) => l.담당자))).sort((a, b) => a.localeCompare(b, "ko")).join(", "),
       의뢰서건수: lines.length,
       청구페이지: sum((l) => l.청구페이지),

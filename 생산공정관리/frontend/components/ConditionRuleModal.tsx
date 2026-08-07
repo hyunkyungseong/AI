@@ -32,14 +32,23 @@ const inputCls =
   "rounded-md border border-gray-300 bg-white px-2 py-1 text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100";
 
 type Props = {
-  initial: { 최종청구품명: string; 조건: 규칙조건 } | null; // null = 새 규칙(빈 값으로 시작)
+  initial: { 최종청구품명: string; 조건: 규칙조건; 조?: string } | null; // null = 새 규칙(빈 값으로 시작)
   코드옵션?: string[]; // 지금 원본(왼쪽) 표에 실제 등장하는 값 — 오타 방지용 datalist 후보
   품목옵션?: string[];
   작업명옵션?: string[];
   단가옵션?: string[];
-  onSave: (결과: { 최종청구품명: string; 조건: 규칙조건 }) => void;
+  조옵션?: string[]; // 이미 쓰인 조 이름 + 원본 표의 작업명 목록(조별 분할발급, 2026-07-29)
+  onSave: (결과: { 최종청구품명: string; 조건: 규칙조건; 조?: string }) => void;
   onCancel: () => void;
 };
+
+// 지금 편집 중인 조건이 "작업명 == X" 단일 조건(그룹 1개·조건 1개)이면 X를 반환 — 조 입력칸의
+// 기본값 자동 채움에 쓰는 흔한 케이스(2026-07-29 사용자 확정: "조 이름은 보통 작업명과 같다").
+function 단일_작업명조건값(groups: 규칙조건AND그룹[]): string | undefined {
+  if (groups.length !== 1 || groups[0].and.length !== 1) return undefined;
+  const c = groups[0].and[0];
+  return c.field === "작업명" && c.op === "==" && c.value ? c.value : undefined;
+}
 
 function 값옵션(
   field: 규칙조건단일["field"],
@@ -73,6 +82,7 @@ export default function ConditionRuleModal({
   품목옵션 = [],
   작업명옵션 = [],
   단가옵션 = [],
+  조옵션 = [],
   onSave,
   onCancel,
 }: Props) {
@@ -80,6 +90,13 @@ export default function ConditionRuleModal({
   const [groups, setGroups] = useState<규칙조건AND그룹[]>(
     () => initial?.조건.or.map((g) => ({ and: g.and.map((c) => ({ ...c })) })) ?? []
   );
+  const [조, set조] = useState(initial?.조 ?? "");
+  // 사용자가 조 입력칸을 직접 건드리기 전까지는(첫 렌더에 이미 값이 있던 경우 포함) "작업명==X"
+  // 단일 조건의 X를 실시간으로 자동 채워 보여준다 — 한 번이라도 직접 입력하면 그 뒤로는 사용자
+  // 값을 그대로 존중(자동채움을 덮어씀, 2026-07-29 사용자 확정).
+  const [조수동입력됨, set조수동입력됨] = useState(!!initial?.조);
+  const 자동조 = 단일_작업명조건값(groups);
+  const 조표시값 = 조수동입력됨 ? 조 : 자동조 ?? 조;
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -122,7 +139,12 @@ export default function ConditionRuleModal({
 
   function handleSave() {
     if (!최종청구품명.trim()) return;
-    onSave({ 최종청구품명: 최종청구품명.trim(), 조건: { or: groups.filter((g) => g.and.length > 0) } });
+    const 조_최종 = 조표시값.trim();
+    onSave({
+      최종청구품명: 최종청구품명.trim(),
+      조건: { or: groups.filter((g) => g.and.length > 0) },
+      조: 조_최종 || undefined,
+    });
   }
 
   return (
@@ -147,6 +169,31 @@ export default function ConditionRuleModal({
             <option key={v} value={v} />
           ))}
         </datalist>
+      </label>
+
+      <label className="mt-3 block text-sm text-gray-700 dark:text-gray-300">
+        조(시트명) <span className="text-gray-400">— 비워두면 분리발급 안 함</span>
+        <input
+          type="text"
+          list="조옵션"
+          value={조표시값}
+          onChange={(e) => {
+            set조수동입력됨(true);
+            set조(e.target.value);
+          }}
+          placeholder="예: 1조 (비워두면 거래명세서 1건)"
+          className={`mt-1 w-full ${inputCls}`}
+        />
+        <datalist id="조옵션">
+          {조옵션.map((v) => (
+            <option key={v} value={v} />
+          ))}
+        </datalist>
+        {!조수동입력됨 && 자동조 && (
+          <span className="mt-1 block text-xs text-gray-400">
+            &quot;작업명 == {자동조}&quot; 조건에서 자동으로 채웠습니다 — 직접 입력하면 그 값을 씁니다.
+          </span>
+        )}
       </label>
 
         <div className="mt-4 space-y-3">

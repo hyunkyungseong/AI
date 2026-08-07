@@ -11,6 +11,7 @@ generate_거래명세서_excel()을 그대로 옮기되, df_all/단가맵/자재
 df_all 규격:  최소 컬럼 업무의뢰서번호·작업명·거래처명·업무명·확정청구페이지·건수·장수을 가진 DataFrame
 """
 
+import io
 import math
 import os
 import re
@@ -50,7 +51,11 @@ def _혼합단가_행목록(일반수량, 대대수량, 일반단가, 대대단�
 
 def calc_공급가맵(df_all, 단가맵, 자재map, 의뢰서번호셋):
     """의뢰서번호 집합 → {의뢰서번호int: {"합계": float, "거래처명": str, "업무명": str,
-                                           "항목": {품명: 금액}, "수량": {품명: 수량}, "단가": {품명: 단가}}}"""
+                                           "항목": {품명: 금액}, "수량": {품명: 수량}, "단가": {품명: 단가},
+                                           "부가세구분맵": {작업명: "포함"/"별도"}}}
+    부가세구분맵은 이 의뢰서에 실제로 매칭된 각 작업명의 단가마스터 부가세구분 값 — 거래처 기본단가
+    행 하나가 아니라 실제 청구된 작업명 기준으로 부가세를 판정하기 위함(결정_부가세구분() 참고,
+    2026-08-04 — 기본단가 행이 없는 거래처(예: KB국민카드)는 항상 "별도"로 잘못 계산되던 버그 수정)."""
     _tgt = df_all[df_all["업무의뢰서번호"].apply(
         lambda x: int(float(x)) if pd.notna(x) else -1
     ).isin(의뢰서번호셋)].copy()
@@ -75,6 +80,10 @@ def calc_공급가맵(df_all, 단가맵, 자재map, 의뢰서번호셋):
         )
         if not rates:
             continue
+        if 의뢰서 not in 결과:
+            결과[의뢰서] = {"합계": 0, "거래처명": 거래처, "업무명": 업무,
+                            "항목": {}, "수량": {}, "단가": {}, "부가세구분맵": {}}
+        결과[의뢰서]["부가세구분맵"][작업] = rates.get("부가세구분") or "별도"
         z = 자재map.get((의뢰서, 작업), {"일반봉투_수량": 0, "각대대봉투_수량": 0, "용지_수량": 0, "삽지_수량": 0})
         일반봉투 = z["일반봉투_수량"]
         각대대봉투 = z["각대대봉투_수량"]
@@ -119,9 +128,6 @@ def calc_공급가맵(df_all, 단가맵, 자재map, 의뢰서번호셋):
             "삽지봉입비": rates.get("삽지제작단가", 0),
         }
         소계 = sum(항목금액.values())
-        if 의뢰서 not in 결과:
-            결과[의뢰서] = {"합계": 0, "거래처명": 거래처, "업무명": 업무,
-                            "항목": {k: 0 for k in 항목금액}, "수량": {k: 0 for k in 항목수량}, "단가": {}}
         결과[의뢰서]["합계"] += 소계
         for k in 항목금액:
             결과[의뢰서]["항목"][k] = 결과[의뢰서]["항목"].get(k, 0) + 항목금액[k]
@@ -131,9 +137,11 @@ def calc_공급가맵(df_all, 단가맵, 자재map, 의뢰서번호셋):
 
 
 def build_품목행(df_all, 단가맵, 자재map, 의뢰서번호셋):
-    """의뢰서번호 집합 → (정렬행, 총합계, 거래처명, 업무명, 코드맵)
+    """의뢰서번호 집합 → (정렬행, 총합계, 거래처명, 업무명, 코드맵, 부가세구분맵)
 
     정렬행: [((품목, 작업명, 단가), {"수량": float, "금액": float}), ...] — 품목순서→코드표순서 정렬 완료
+    부가세구분맵: {작업명: "포함"/"별도"} — 실제로 매칭된 단가마스터 행 기준(결정_부가세구분() 참고,
+    2026-08-04 — 기본단가 행이 없는 거래처는 항상 "별도"로 잘못 계산되던 버그 수정).
     generate_거래명세서_excel()과 화면 미리보기 API(POST /거래명세서미리보기) 공용 —
     원래 generate_거래명세서_excel() 안에 있던 계산 블록을 그대로 옮긴 것뿐, 로직은 한 글자도 안 바뀜.
     대상 의뢰서가 없거나(정렬행=[]) 등록된 단가가 없어 품목이 하나도 안 생기면 정렬행=[]로 반환한다
@@ -149,7 +157,7 @@ def build_품목행(df_all, 단가맵, 자재map, 의뢰서번호셋):
         lambda x: int(float(x)) if pd.notna(x) else -1
     ).isin(의뢰서번호셋)].copy()
     if _tgt.empty:
-        return [], 0, None, None, 코드맵
+        return [], 0, None, None, 코드맵, {}
 
     _g = _tgt.groupby(["작업명", "거래처명", "업무명"], sort=False).agg(
         청구페이지=("확정청구페이지", "sum"),
@@ -161,6 +169,7 @@ def build_품목행(df_all, 단가맵, 자재map, 의뢰서번호셋):
     업무명 = _g.iloc[0]["업무명"]
 
     행데이터 = defaultdict(lambda: {"수량": 0.0, "금액": 0.0})
+    부가세구분맵 = {}
     for _, _r in _g.iterrows():
         작업 = _r["작업명"]
         거래처 = _r["거래처명"]
@@ -172,6 +181,7 @@ def build_품목행(df_all, 단가맵, 자재map, 의뢰서번호셋):
         )
         if not rates:
             continue
+        부가세구분맵[작업] = rates.get("부가세구분") or "별도"
         일반봉투 = 각대대봉투 = 용지 = 삽지 = 0
         for 번호 in 의뢰서번호셋:
             z = 자재map.get((번호, 작업), {})
@@ -214,7 +224,7 @@ def build_품목행(df_all, 단가맵, 자재map, 의뢰서번호셋):
         순서맵.get(x[0][0], 99),
     ))
     총합계 = sum(v["금액"] for _, v in 정렬행) if 정렬행 else 0
-    return 정렬행, 총합계, 거래처명, 업무명, 코드맵
+    return 정렬행, 총합계, 거래처명, 업무명, 코드맵, 부가세구분맵
 
 
 def 정렬행_원본목록(정렬행, 코드맵):
@@ -308,6 +318,7 @@ def 적용_규칙(원본행목록, 규칙목록):
             "수량": 수량합,
             "단가": 단가집합.pop() if len(단가집합) == 1 else None,
             "금액": 금액합,
+            "조": 규칙.get("조"),  # 조별 분할발급(2026-07-29) — 없으면 None(하위호환, 거래명세서 1건)
         })
     미분류 = [row for i, row in enumerate(원본행목록) if not 매칭됨[i]]
     return 결과, 미분류
@@ -317,12 +328,14 @@ def generate_거래명세서_excel(df_all, 단가맵, 자재map, 의뢰서번호
     """zipfile+regex로 템플릿 xlsx 가변 셀만 교체 — Excel 불필요, 빠름.
     build_품목행()으로 원본 품목을 계산한 뒤 write_거래명세서_excel()에 위임(로직은 그대로,
     Excel 작성부만 별도 함수로 분리해 GET /거래명세서엑셀/{no}가 DB에 저장된 품목으로도
-    같은 함수를 재사용할 수 있게 한다)."""
-    정렬행, 총합계, 거래처명, 업무명, 코드맵 = build_품목행(df_all, 단가맵, 자재map, 의뢰서번호셋)
+    같은 함수를 재사용할 수 있게 한다).
+    청구된 작업명들의 부가세구분이 섞여 있으면(결정_부가세구분()) ValueError를 낸다 — 호출부(api.py)가
+    이를 HTTPException으로 변환해 발급/다운로드를 막는다(2026-08-04)."""
+    정렬행, 총합계, 거래처명, 업무명, 코드맵, 부가세구분맵 = build_품목행(df_all, 단가맵, 자재map, 의뢰서번호셋)
     if not 정렬행:
         return None
     품목행목록 = 정렬행_원본목록(정렬행, 코드맵)
-    세액, _ = 부가세_계산(거래처명, 단가맵, 총합계)
+    세액, _ = 부가세_계산(결정_부가세구분(부가세구분맵), 총합계)
     return write_거래명세서_excel(품목행목록, 총합계, 세액, 거래처명, 업무명, 발행일)
 
 
@@ -526,6 +539,158 @@ def write_거래명세서_excel(품목행목록, 총합계, 세액, 거래처명
         return f.read()
 
 
+def combine_거래명세서_시트들(시트_목록):
+    """write_거래명세서_excel()이 만든 완성된 단일-데이터-시트 xlsx(표지 sheet1 + 데이터 sheet2)를
+    여러 개 [(엑셀바이트, 시트명), ...] 로 받아, 표지 시트("요청내용")·셀 코멘트(comments1.xml)·
+    vmlDrawing은 통합본에서 제외하고 데이터 시트만 하나의 워크북에 이어붙인 xlsx bytes를 반환한다
+    (거래명세서 조별 분할발급, 2026-07-29 — `.claude/plans/plan_거래명세서_조별분할발급_통합엑셀.md`).
+
+    모든 입력 파일이 같은 템플릿(거래명세서_템플릿_base.xlsx)·같은 직인 이미지에서 나온다는 전제로,
+    styles.xml·sharedStrings.xml·theme·직인 이미지·printerSettings는 전부 첫 파일(컨테이너) 것을
+    그대로 공유 재사용한다(생성 코드가 셀 값만 바꿀 뿐 스타일·공유문자열·이미지는 절대 건드리지
+    않으므로 모든 출력이 바이트 단위로 동일 — 재넘버링 불필요, 구현 전 zipfile 실제 덤프로 확인)."""
+    if len(시트_목록) <= 1:
+        return 시트_목록[0][0] if 시트_목록 else None
+
+    file_maps = []
+    for 엑셀바이트, _ in 시트_목록:
+        with zipfile.ZipFile(io.BytesIO(엑셀바이트)) as z:
+            file_maps.append({name: z.read(name) for name in z.namelist()})
+
+    def _safe_sheet_name(name, used):
+        name = re.sub(r"[\[\]\*\?:/\\']", "", str(name or "")).strip()[:31] or "시트"
+        원본, n = name, 2
+        while name in used:
+            접미 = f"({n})"
+            name = 원본[: 31 - len(접미)] + 접미
+            n += 1
+        used.add(name)
+        return name
+
+    def _xml_esc(text):
+        return (str(text).replace("&", "&amp;").replace("<", "&lt;")
+                .replace(">", "&gt;").replace('"', "&quot;"))
+
+    def _strip_comment_ref(sheet_xml, rels_xml):
+        """legacyDrawing(VML 셀 코멘트) 관계를 rId 번호 하드코딩 없이 Type 기준으로 찾아 제거."""
+        vml_m = re.search(r'<Relationship Id="(rId\d+)"[^>]*Type="[^"]*/vmlDrawing"[^>]*/>', rels_xml)
+        comment_m = re.search(r'<Relationship Id="(rId\d+)"[^>]*Type="[^"]*/comments"[^>]*/>', rels_xml)
+        if vml_m:
+            sheet_xml = sheet_xml.replace(f'<legacyDrawing r:id="{vml_m.group(1)}"/>', '')
+            rels_xml = rels_xml.replace(vml_m.group(0), '')
+        if comment_m:
+            rels_xml = rels_xml.replace(comment_m.group(0), '')
+        return sheet_xml, rels_xml
+
+    def _relink_drawing(rels_xml, new_target):
+        return re.sub(
+            r'(<Relationship Id="rId\d+" Type="[^"]*/drawing" Target=")[^"]*(")',
+            rf'\g<1>{new_target}\g<2>',
+            rels_xml,
+        )
+
+    def _print_area_range(wb_xml):
+        m = re.search(
+            r"<definedName name=\"_xlnm\.Print_Area\" localSheetId=\"1\">"
+            r"'[^']*'!(\$[A-Z]+\$\d+:\$[A-Z]+\$\d+)</definedName>",
+            wb_xml,
+        )
+        return m.group(1) if m else "$B$1:$N$31"
+
+    base = dict(file_maps[0])
+    for key in (
+        "xl/worksheets/sheet1.xml", "xl/worksheets/_rels/sheet1.xml.rels",
+        "xl/comments1.xml", "xl/drawings/vmlDrawing1.vml",
+        "xl/printerSettings/printerSettings1.bin",
+    ):
+        base.pop(key, None)
+
+    ct = base["[Content_Types].xml"].decode("utf-8")
+    ct = re.sub(r'<Override PartName="/xl/worksheets/sheet1\.xml"[^>]*/>', '', ct)
+    ct = re.sub(r'<Override PartName="/xl/comments1\.xml"[^>]*/>', '', ct)
+
+    wb_xml = base["xl/workbook.xml"].decode("utf-8")
+    wb_rels = base["xl/_rels/workbook.xml.rels"].decode("utf-8")
+
+    sheet1_rel_m = re.search(r'<Relationship Id="(rId\d+)"[^>]*Target="worksheets/sheet1\.xml"[^>]*/>', wb_rels)
+    wb_rels = wb_rels.replace(sheet1_rel_m.group(0), '')
+    wb_xml = re.sub(rf'<sheet [^>]*r:id="{sheet1_rel_m.group(1)}"[^>]*/>', '', wb_xml, count=1)
+
+    data_rid = re.search(
+        r'<Relationship Id="(rId\d+)"[^>]*Target="worksheets/sheet2\.xml"[^>]*/>', wb_rels
+    ).group(1)
+    next_id = max(int(n) for n in re.findall(r'rId(\d+)', wb_rels)) + 1
+
+    used_names = set()
+    sheet_entries = []   # [(시트명, rid), ...] — <sheets> 재구성용
+    print_areas = []     # [(localSheetId, 시트명, 범위), ...] — Print_Area 재구성용
+
+    for i, (엑셀바이트, 시트명) in enumerate(시트_목록):
+        이름 = _safe_sheet_name(시트명 or f"시트{i+1}", used_names)
+        범위 = _print_area_range(file_maps[i]["xl/workbook.xml"].decode("utf-8"))
+        print_areas.append((i, 이름, 범위))
+
+        own_sheet = file_maps[i]["xl/worksheets/sheet2.xml"].decode("utf-8")
+        own_rels = file_maps[i]["xl/worksheets/_rels/sheet2.xml.rels"].decode("utf-8")
+        own_sheet, own_rels = _strip_comment_ref(own_sheet, own_rels)
+
+        if i == 0:
+            sheet_entries.append((이름, data_rid))
+            base["xl/worksheets/sheet2.xml"] = own_sheet.encode("utf-8")
+            base["xl/worksheets/_rels/sheet2.xml.rels"] = own_rels.encode("utf-8")
+            continue
+
+        new_rid = f"rId{next_id}"
+        next_id += 1
+        sheet_num = i + 2  # sheet2.xml은 이미 사용 중(첫 파일) → 3, 4, ...
+        sheet_entries.append((이름, new_rid))
+
+        wb_rels = wb_rels.replace(
+            "</Relationships>",
+            f'<Relationship Id="{new_rid}" '
+            'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+            f'Target="worksheets/sheet{sheet_num}.xml"/></Relationships>',
+        )
+        ct = ct.replace(
+            "</Types>",
+            f'<Override PartName="/xl/worksheets/sheet{sheet_num}.xml" '
+            'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+            f'<Override PartName="/xl/drawings/drawing{sheet_num}.xml" '
+            'ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/></Types>',
+        )
+
+        own_rels = _relink_drawing(own_rels, f"../drawings/drawing{sheet_num}.xml")
+        base[f"xl/worksheets/sheet{sheet_num}.xml"] = own_sheet.encode("utf-8")
+        base[f"xl/worksheets/_rels/sheet{sheet_num}.xml.rels"] = own_rels.encode("utf-8")
+        # 도장 이미지(image1.png 로고·image2.png 직인)는 base 컨테이너 것을 그대로 참조하므로
+        # drawing 파일 자체(내부 rId1/rId2)와 그 rels는 이름만 바꿔 그대로 복사하면 된다.
+        base[f"xl/drawings/drawing{sheet_num}.xml"] = file_maps[i]["xl/drawings/drawing1.xml"]
+        base[f"xl/drawings/_rels/drawing{sheet_num}.xml.rels"] = file_maps[i]["xl/drawings/_rels/drawing1.xml.rels"]
+
+    sheets_block = "".join(
+        f'<sheet name="{_xml_esc(name)}" sheetId="{1000 + idx}" r:id="{rid}"/>'
+        for idx, (name, rid) in enumerate(sheet_entries)
+    )
+    wb_xml = re.sub(r'<sheets>.*?</sheets>', f'<sheets>{sheets_block}</sheets>', wb_xml, count=1, flags=re.DOTALL)
+
+    wb_xml = re.sub(r'<definedName name="_xlnm\.Print_Area"[^<]*</definedName>', '', wb_xml, count=1)
+    print_area_block = "".join(
+        f'<definedName name="_xlnm.Print_Area" localSheetId="{idx}">\'{_xml_esc(name)}\'!{범위}</definedName>'
+        for idx, name, 범위 in print_areas
+    )
+    wb_xml = wb_xml.replace("<definedNames>", "<definedNames>" + print_area_block, 1)
+
+    base["[Content_Types].xml"] = ct.encode("utf-8")
+    base["xl/workbook.xml"] = wb_xml.encode("utf-8")
+    base["xl/_rels/workbook.xml.rels"] = wb_rels.encode("utf-8")
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zout:
+        for name, data in base.items():
+            zout.writestr(name, data)
+    return buf.getvalue()
+
+
 def build_단가맵(단가df):
     """단가마스터 DataFrame(거래처명·업무명·작업명·8개 단가 필드) → calc_공급가맵/generate_거래명세서_excel이 쓰는 dict로 변환.
     MariaDB DECIMAL 컬럼은 pymysql이 Decimal로 반환하는데, 계산 도중 float(0.0)과 섞이면
@@ -547,15 +712,28 @@ def build_단가맵(단가df):
     }
 
 
-def 부가세_계산(거래처명, 단가맵, 공급가액):
-    """거래처 기본단가 행(업무명·작업명이 둘 다 없는 행)의 부가세구분을 기준으로 세액·합계를 계산.
-    부가세 취급은 개별 품목·작업명이 아니라 거래처와의 계약 조건이라, 업무명·작업명별 예외단가
-    행에 다른 값이 들어 있어도 흔들리지 않도록 항상 거래처 기본단가 행 하나만 본다(2026-07-28,
-    사용자 확정: 거래처마다 단가에 부가세가 이미 포함된 경우/별도인 경우가 나뉨).
+def 결정_부가세구분(부가세구분맵):
+    """{작업명: "포함"/"별도"} 맵(build_품목행()·calc_공급가맵()이 반환)을 받아, 이 거래명세서에
+    실제로 청구된 작업명들의 부가세 취급이 전부 같으면 그 값을 반환한다.
+    맵이 비어 있으면(매칭된 단가가 하나도 없는 예외 상황) 기본값 '별도'.
+    섞여 있으면(포함/별도 혼재) ValueError를 낸다 — 거래명세서 발급·다운로드·부분취소를 막고
+    단가마스터를 통일하도록 안내하기 위함(2026-08-04, 사용자 확정: 거래처 기본단가 행이 아니라
+    실제 청구된 작업명 기준으로 판정해야 하고, 작업명끼리 값이 다르면 발급 자체를 막아야 함 —
+    기본단가 행이 없는 거래처(예: KB국민카드)는 항상 '별도'로 잘못 계산되던 버그로 발견됨)."""
+    구분들 = set(부가세구분맵.values()) if 부가세구분맵 else {"별도"}
+    if len(구분들) > 1:
+        상세 = ", ".join(f"{작업}={구분}" for 작업, 구분 in 부가세구분맵.items())
+        raise ValueError(
+            f"작업명별 부가세 처리 방식이 서로 다릅니다({상세}). 단가마스터에서 통일한 뒤 다시 시도해 주세요."
+        )
+    return next(iter(구분들))
+
+
+def 부가세_계산(부가세구분, 공급가액):
+    """이미 결정된 단일 부가세구분("포함"/"별도", 결정_부가세구분() 참고)으로 세액·합계를 계산.
     '포함'이면 단가에 이미 부가세가 포함된 것으로 보고 세액=0, 합계=공급가액 그대로.
     '별도'(기본값)면 공급가액의 10%를 세액으로 더한다."""
-    rates = 단가맵.get((거래처명, None, None)) or {}
-    if (rates.get("부가세구분") or "별도") == "포함":
+    if 부가세구분 == "포함":
         return 0, 공급가액
     세액 = round(공급가액 * 0.1)
     return 세액, 공급가액 + 세액

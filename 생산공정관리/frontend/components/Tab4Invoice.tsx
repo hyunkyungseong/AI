@@ -7,6 +7,7 @@ import InvoiceSelectionTable from "./InvoiceSelectionTable";
 import InvoiceSelectionSummaryBar from "./InvoiceSelectionSummaryBar";
 import InvoiceDetailTable from "./InvoiceDetailTable";
 import InvoicePreviewDialog from "./InvoicePreviewDialog";
+import ConfirmDialog from "./ConfirmDialog";
 import type { 미리보기결과, 확정품목, 확정규칙 } from "./InvoicePreviewDialog";
 import { useInvoiceFilters } from "@/lib/useInvoiceFilters";
 import { useResetOnFilterChange } from "@/lib/useFilters";
@@ -37,11 +38,16 @@ export default function Tab4Invoice({
 }) {
   const filters = useInvoiceFilters(rows);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  // 필터(사업부·기간·담당자·거래처·업무명)가 바뀌면 이전 선택을 자동 초기화 — 화면에 안 보이는
-  // 이전 선택이 남아 집계표만 안 맞아 보이는 혼선 방지(2026-07-24 사용자 제보 후 확정: 여러
-  // 필터를 오가며 선택을 이어가는 기능보다 "화면과 집계표가 항상 일치"하는 쪽을 우선함).
+  // 필터(사업부·기간·담당자·거래처·업무명)가 바뀌면 선택을 유지할지 해제할지 팝업으로 물어봄
+  // (2026-07-31, 사용자 요청 — "같은 거래처에서 업무명 A로 체크한 뒤 업무명 B를 필터에 추가하면
+  // A의 선택이 사라지는" 불편 해소). selectedRows는 filters.base5가 아니라 rows(전체) 기준으로
+  // 계산되므로(아래 참고), 선택을 유지해도 상단 합계가 깨지지 않음 — 선택이 0건이면 잃을 게
+  // 없으므로 팝업 없이 조용히 넘어감.
+  const [confirmFilterChange, setConfirmFilterChange] = useState(false);
   const filterKey = JSON.stringify([filters.사업부, filters.시작일, filters.종료일, filters.담당자, filters.거래처, filters.업무명]);
-  useResetOnFilterChange(filterKey, () => setSelected(new Set()));
+  useResetOnFilterChange(filterKey, () => {
+    if (selected.size > 0) setConfirmFilterChange(true);
+  });
   const [banner, setBanner] = useState<배너 | null>(null);
   const [submitting, setSubmitting] = useState(false);
   // 미리보기 팝업(2026-07-20 신규) — "거래명세서 요청" 클릭 시 바로 저장하지 않고 먼저 이 상태를
@@ -55,8 +61,8 @@ export default function Tab4Invoice({
   // 린트 회피), 새 미리보기 데이터를 받을 때마다 key를 바꿔 컴포넌트를 통째로 재마운트해야 한다.
   const [previewSeq, setPreviewSeq] = useState(0);
 
-  // 검증·요청 payload는 화면에 보이는 filters.base5가 아니라 rows(전체) 기준으로 계산한다 — 위
-  // useResetOnFilterChange로 필터가 바뀌면 선택이 항상 초기화되므로 실질적으로는 같은 값이지만,
+  // 검증·요청 payload는 화면에 보이는 filters.base5가 아니라 rows(전체) 기준으로 계산한다 —
+  // "선택 유지"를 택하면 필터 변경 후에도 화면에 안 보이는 항목이 selected에 남아있을 수 있으므로,
   // 요청 처리 자체는 필터와 무관하게 선택된 실제 항목 기준으로 계산하는 게 원칙적으로 맞다.
   const selectedRows = useMemo(() => rows.filter((r) => selected.has(r.의뢰서번호)), [rows, selected]);
 
@@ -119,19 +125,8 @@ export default function Tab4Invoice({
         setBanner({ type: "error", text: data.detail ?? "미리보기 처리 중 오류가 발생했습니다." });
         return;
       }
-      // 이 거래처+업무명에 저장된 재사용 규칙을 함께 불러와 오른쪽 표 초안에 반영
-      // (2026-07-22, [거래명세서편집_규칙엔진]) — 규칙적용결과와 순서가 1:1로 대응된다는
-      // 전제로 InvoicePreviewDialog가 인덱스로 조건을 매칭한다.
-      try {
-        const rulesRes = await fetch(
-          `/api/billing-rules?거래처명=${encodeURIComponent(data.거래처명)}&업무명=${encodeURIComponent(data.업무명)}`
-        );
-        if (rulesRes.ok) {
-          data.규칙목록 = await rulesRes.json();
-        }
-      } catch {
-        // 규칙 조회 실패는 치명적이지 않음 — 규칙 없이 시작(사용자가 직접 만들면 됨)
-      }
+      // 규칙목록(조건식)은 이 응답에 이미 포함되어 내려온다(2026-08-01, 별도 왕복 없이 한 번의
+      // 응답으로 끝내도록 단순화).
       setPreviewData(data);
       setPreviewSeq((s) => s + 1);
       setPreviewOpen(true);
@@ -145,10 +140,17 @@ export default function Tab4Invoice({
   // 미리보기 팝업의 "확정" 클릭 시에만 실행 — 편집된 최종 품목·규칙을 받아 payload를 구성해 POST한다.
   // 공급가액은 편집 후 오른쪽 표의 실제 금액 합계 기준(편집 전 예상치가 아님).
   async function handleConfirmSubmit(edited: { 품목_최종: 확정품목[]; 규칙: 확정규칙[] }) {
+    // 미리보기 다이얼로그가 이미 부가세오류가 있으면 "확정" 버튼을 막아두지만, 이중 안전장치로
+    // 여기서도 한 번 더 막는다(작업명별 부가세 처리 방식이 섞여 판정 불가, 2026-08-04).
+    if (previewData?.부가세오류) {
+      setBanner({ type: "error", text: previewData.부가세오류 });
+      return;
+    }
     const 공급가액 = Math.round(edited.품목_최종.reduce((s, r) => s + r.금액, 0));
     // 거래처가 "포함"(단가에 부가세가 이미 포함된 계약)이면 세액을 추가로 더하지 않는다 —
-    // previewData.부가세구분은 백엔드가 거래처 기본단가 행을 조회해 내려준 값(2026-07-28).
-    const 세액 = previewData?.부가세구분 === "포함" ? 0 : Math.round(공급가액 * 0.1);
+    // previewData.부가세구분은 백엔드가 실제로 청구된 작업명들 기준으로 판정해 내려준 값
+    // (2026-07-28 신규, 2026-08-04 판정 기준을 거래처 기본단가 행 → 작업명 기준으로 변경).
+    const 세액 = previewData?.부가세구분 === "별도" ? Math.round(공급가액 * 0.1) : 0;
     const payload = {
       거래처명: selectedRows[0].거래처명,
       사업부: selectedRows[0].사업부,
@@ -178,13 +180,20 @@ export default function Tab4Invoice({
       }
       const 제거대상 = selected;
       setRows((prev) => prev.filter((r) => !제거대상.has(r.의뢰서번호)));
+      // 조별 분할발급(2026-07-29)이면 서버가 거래명세서를 여러 건(거래명세서번호_목록) 만들고
+      // 전부 같은 의뢰서번호_목록 전체를 공유한다 — 낙관적 업데이트도 의뢰서마다 그 개수만큼
+      // 발행행을 만들어야 새로고침 전후로 화면이 똑같이 보인다(1건짜리 발급이면 목록 길이가 1이라
+      // 기존과 동일하게 동작).
+      const 번호목록: string[] = data.거래명세서번호_목록 ?? [data.거래명세서번호];
       onIssued(
-        selectedRows.map((r) => ({
-          ...r,
-          거래명세서번호: data.거래명세서번호,
-          발송여부: 0,
-          편집여부: data.편집여부 ?? 0,
-        }))
+        selectedRows.flatMap((r) =>
+          번호목록.map((번호) => ({
+            ...r,
+            거래명세서번호: 번호,
+            발송여부: 0,
+            편집여부: data.편집여부 ?? 0,
+          }))
+        )
       );
       setSelected(new Set());
       setPreviewOpen(false);
@@ -257,6 +266,19 @@ export default function Tab4Invoice({
         submitting={submitting}
         onConfirm={handleConfirmSubmit}
         onClose={handlePreviewClose}
+      />
+
+      <ConfirmDialog
+        open={confirmFilterChange}
+        title="필터 조건이 변경되었습니다"
+        message={`선택된 ${selected.size.toLocaleString()}건을 해제할까요? "선택 유지"를 누르면 화면에 안 보이는 항목도 선택 상태로 계속 유지되며, 합계에도 계속 포함됩니다.`}
+        confirmLabel="선택 해제"
+        cancelLabel="선택 유지"
+        onConfirm={() => {
+          setSelected(new Set());
+          setConfirmFilterChange(false);
+        }}
+        onClose={() => setConfirmFilterChange(false)}
       />
     </>
   );

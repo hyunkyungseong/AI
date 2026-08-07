@@ -1,6 +1,6 @@
 # 플랜: 1단계 — 백엔드 구축 (MariaDB + FastAPI)
 
-> 상태: 🔄 진행중 (2026-07-19 착수) | 선행: 2단계 완료 ✅
+> 상태: ✅ 완료 (2026-07-20, [6단계] 이관까지 완료 — [4단계]는 Next.js 직행으로 보류 확정, [5단계]는 `plan_Vercel배포.md`로 분리) | 선행: 2단계 완료 ✅
 > **2026-07-19 방향 확정:** 최종 목표가 "Next.js + FastAPI + MariaDB + Vercel"로 커짐에 따라,
 > 기존에 따로 있던 이 플랜(MariaDB 전환)과 `plan_4단계_FastAPI백엔드분리.md`(API 분리)를 하나로 합침.
 > "Streamlit이 MariaDB에 직접 접속하는 중간 단계"는 생략하고, 처음부터 **FastAPI를 경유**하도록 설계.
@@ -106,10 +106,6 @@ Streamlit app.py → requests → FastAPI(api.py, port 8000) → MariaDB
 - [ ] 14. (보류) 문법 검사 + 탭별 화면 동작 확인
 - [ ] 15. (보류) `FastAPI_실행.bat` 신규, `대시보드_실행.bat` 수정 (FastAPI 먼저 기동 후 Streamlit)
 
-## [5단계] 외부 접속 통로 준비 (Vercel 대비)
-
-- [ ] 16. Cloudflare Tunnel 설치·구성 (무료, 공인 IP·포트포워딩 노출 없이 HTTPS 주소 확보) — 사용자 동의 필요
-
 ## [6단계] 로컬 PC → 사무실 PC(원격서버) 이관 — ✅ 완료 (2026-07-20)
 
 > 사무실 PC 원격 데스크톱 접속 가능해져 실제 이관 진행. 사용자가 사무실 PC 화면에서 직접 실행, Claude는 단계별 명령어 안내 + 로컬 PC 쪽 작업 담당.
@@ -128,11 +124,9 @@ Streamlit app.py → requests → FastAPI(api.py, port 8000) → MariaDB
 ## 확인 필요 (진행하면서 사용자에게 물어볼 것)
 
 - ~~로그인 계정 관리 방식~~ → 담당자별 개별 계정으로 확정, 10번에서 구현 완료
-- Cloudflare Tunnel 설치 동의 여부 (미확인 — [5단계] 착수 시 필요)
+- ~~Cloudflare Tunnel 설치 동의 여부~~ → `plan_Vercel배포.md`로 이관, 그 플랜 착수 시 확인
 
 ## 다음 플랜
 
-- **`plan_5단계_Next.js프론트엔드.md` (신규, 2026-07-19) — 다음 세션에서 여기부터 시작**
-  - [4단계]를 건너뛰고 바로 착수. 시작 화면: **탭1(작업현황요약)** — 쓰기 작업이 없고 `GET /summary` 하나만 필요해 가장 단순
-  - 상세 설계(폴더 구조·Node.js 설치 확인 등)는 아직 확정 전 — 새 세션에서 계획 수립 후 승인받고 진행
-  - [5단계](Cloudflare Tunnel)·[6단계](사무실 PC 이관)는 프론트엔드 선택과 무관하게 그대로 유효 (백엔드 작업)
+- **`plan_5단계_Next.js프론트엔드.md`** — Next.js 프론트엔드 구현, 전체 완료(2026-07-19)
+- **`plan_Vercel배포.md`** (신규, 2026-07-31 분리) — Cloudflare Tunnel·Vercel 배포는 이 파일에서 별도 진행 (사용자가 배포 시점 판단 후 착수)

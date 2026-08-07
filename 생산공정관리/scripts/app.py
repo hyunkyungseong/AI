@@ -592,12 +592,15 @@ def _부분취소_dialog(변경계획, key_prefix):
     for p in 변경계획:
         if p["action"] == "delete":
             st.caption(f"• {p['거래명세서번호']}: 전체 {p['전체_건수']}건 취소 → 요청 자체가 사라지고 미발행 목록으로 복귀")
+        elif p.get("부가세오류"):
+            st.error(f"• {p['거래명세서번호']}: {p['부가세오류']}")
         else:
             st.caption(f"• {p['거래명세서번호']}: {p['취소_건수']}건 취소, {p['전체_건수'] - p['취소_건수']}건 유지 (번호는 그대로 유지됩니다)")
     st.caption("취소 후 복구할 수 없습니다.")
+    부가세오류있음 = any(p.get("부가세오류") for p in 변경계획)
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("확인", type="primary", use_container_width=True, key="dlg_부분취소_confirm"):
+        if st.button("확인", type="primary", use_container_width=True, key="dlg_부분취소_confirm", disabled=부가세오류있음):
             import json as _json_cancel
             conn = get_conn()
             for p in 변경계획:
@@ -835,7 +838,19 @@ with tab4:
                 담당자들  = ", ".join(선택된["마케팅담당자"].unique())
                 품목들    = ", ".join(선택된["업무명"].unique())
                 총공급_req = 선택된["예상공급가액"].sum()
-                세액_amt, 합계_amt = billing.부가세_계산(거래처, _t4_단가맵, int(총공급_req))
+
+                # 선택된 의뢰서들의 작업명별 부가세구분을 합쳐서 판정 — 섞여 있으면(2026-08-04,
+                # 기본단가 행이 없는 거래처는 항상 "별도"로 잘못 계산되던 버그로 발견) 발급을 막는다.
+                _병합_구분맵 = {}
+                for _n in 번호목록:
+                    _병합_구분맵.update(공급가맵.get(int(float(_n)), {}).get("부가세구분맵", {}))
+                try:
+                    _부가세구분 = billing.결정_부가세구분(_병합_구분맵)
+                except ValueError as e:
+                    st.warning(str(e))
+                    st.stop()
+
+                세액_amt, 합계_amt = billing.부가세_계산(_부가세구분, int(총공급_req))
                 세액_amt  = int(세액_amt)
                 합계_amt  = int(합계_amt)
 
@@ -1519,15 +1534,24 @@ with tab4:
                             남을_요약 = [summary_map[n] for n in 남을_int if n in summary_map]
                             공급가맵_남은 = calc_공급가맵(남을_int)
                             공급가액 = sum(v["합계"] for v in 공급가맵_남은.values())
-                            거래처명_남은 = 원본_row["거래처명"]
                             항목["action"] = "update"
                             항목["새_목록"] = 남을_목록
                             항목["새_품목"] = ", ".join(sorted({s["업무명"] for s in 남을_요약}))
                             항목["새_담당자"] = ", ".join(sorted({s["마케팅담당자"] for s in 남을_요약}))
-                            _세액, _합계 = billing.부가세_계산(거래처명_남은, _t4_단가맵, int(공급가액))
-                            항목["새_공급가액"] = int(공급가액)
-                            항목["새_세액"] = int(_세액)
-                            항목["새_합계"] = int(_합계)
+                            # 남는 의뢰서들의 작업명별 부가세구분을 합쳐서 판정 — 섞여 있으면(2026-08-04)
+                            # 이 항목의 부분취소를 막고 다이얼로그에 에러로 표시한다(_부분취소_dialog 참고).
+                            _병합_구분맵 = {}
+                            for _v in 공급가맵_남은.values():
+                                _병합_구분맵.update(_v.get("부가세구분맵", {}))
+                            try:
+                                _부가세구분 = billing.결정_부가세구분(_병합_구분맵)
+                            except ValueError as e:
+                                항목["부가세오류"] = str(e)
+                            else:
+                                _세액, _합계 = billing.부가세_계산(_부가세구분, int(공급가액))
+                                항목["새_공급가액"] = int(공급가액)
+                                항목["새_세액"] = int(_세액)
+                                항목["새_합계"] = int(_합계)
                         계획.append(항목)
                     return 계획
 

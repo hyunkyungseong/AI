@@ -3,10 +3,17 @@
 import { memo } from "react";
 import type { 발행행 } from "@/components/Dashboard";
 
+// 레벨2 선택 키 — 조별 분할발급(2026-07-29)으로 같은 의뢰서번호가 서로 다른 거래명세서번호
+// 아래 중복 표시될 수 있어(사용자 확정: "의뢰서를 거래명세서별로 각각 표시") 의뢰서번호 단독으로는
+// React key·선택 Set 둘 다 충돌한다 — 반드시 거래명세서번호까지 합친 복합키를 쓴다.
+export function 레벨2키(r: { 거래명세서번호: string; 의뢰서번호: string }): string {
+  return `${r.거래명세서번호}::${r.의뢰서번호}`;
+}
+
 type Props = {
   rows: 발행행[]; // 레벨1에서 선택된 그룹으로 이미 스코프된 상태로 전달됨
   selected: Set<string>;
-  onToggleRow: (의뢰서번호: string) => void;
+  onToggleRow: (key: string) => void;
   onToggleAll: (checked: boolean) => void;
 };
 
@@ -14,7 +21,7 @@ type RowProps = {
   row: 발행행;
   index: number;
   checked: boolean;
-  onToggle: (의뢰서번호: string) => void;
+  onToggle: (key: string) => void;
 };
 
 // InvoiceSelectionTable.tsx와 컬럼(거래명세서번호 추가)·그레인(레벨1 그룹이 아니라 의뢰서 단위)이
@@ -26,7 +33,7 @@ const Row = memo(function Row({ row: r, index, checked, onToggle }: RowProps) {
         <input
           type="checkbox"
           checked={checked}
-          onChange={() => onToggle(r.의뢰서번호)}
+          onChange={() => onToggle(레벨2키(r))}
           aria-label={`${r.의뢰서번호} 선택`}
         />
       </td>
@@ -65,7 +72,7 @@ const Row = memo(function Row({ row: r, index, checked, onToggle }: RowProps) {
 });
 
 export default function InvoiceIssuedLevel2Table({ rows, selected, onToggleRow, onToggleAll }: Props) {
-  const 전체선택됨 = rows.length > 0 && rows.every((r) => selected.has(r.의뢰서번호));
+  const 전체선택됨 = rows.length > 0 && rows.every((r) => selected.has(레벨2키(r)));
 
   return (
     <div className="max-h-[60vh] overflow-auto rounded-lg border border-gray-200 dark:border-gray-800">
@@ -100,7 +107,7 @@ export default function InvoiceIssuedLevel2Table({ rows, selected, onToggleRow, 
         </thead>
         <tbody>
           {rows.map((r, i) => (
-            <Row key={r.의뢰서번호} row={r} index={i} checked={selected.has(r.의뢰서번호)} onToggle={onToggleRow} />
+            <Row key={레벨2키(r)} row={r} index={i} checked={selected.has(레벨2키(r))} onToggle={onToggleRow} />
           ))}
           {rows.length === 0 && (
             <tr>
