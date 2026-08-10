@@ -121,23 +121,34 @@ function InvoiceTab({
   summaryPromise,
   invoicePromise,
   issuedPromise,
+  active,
 }: {
   summaryPromise: Promise<운영통계행[]>;
   invoicePromise: Promise<미발행행[]>;
   issuedPromise: Promise<발행행[]>;
+  active: boolean;
 }) {
-  return <Tab4 rows={use(summaryPromise)} invoiceRows={use(invoicePromise)} issuedRows={use(issuedPromise)} />;
+  return <Tab4 rows={use(summaryPromise)} invoiceRows={use(invoicePromise)} issuedRows={use(issuedPromise)} active={active} />;
 }
 function ClientsMasterTab({
   clientRows,
   pricingPromise,
   summaryPromise,
+  active,
 }: {
   clientRows: 거래처행[];
   pricingPromise: Promise<단가행[]>;
   summaryPromise: Promise<운영통계행[]>;
+  active: boolean;
 }) {
-  return <ClientMasterSection clientRows={clientRows} pricingRows={use(pricingPromise)} taskRows={use(summaryPromise)} />;
+  return (
+    <ClientMasterSection
+      clientRows={clientRows}
+      pricingRows={use(pricingPromise)}
+      taskRows={use(summaryPromise)}
+      active={active}
+    />
+  );
 }
 
 // 탭마다 컴포넌트를 항상 다 마운트해두고 CSS(hidden)로만 숨김 처리.
@@ -200,12 +211,22 @@ export default function Dashboard({
         </div>
         <div className={tab === "invoice" ? "flex flex-1" : "hidden"}>
           <Suspense fallback={<TabLoading />}>
-            <InvoiceTab summaryPromise={summaryPromise} invoicePromise={invoicePromise} issuedPromise={issuedPromise} />
+            <InvoiceTab
+              summaryPromise={summaryPromise}
+              invoicePromise={invoicePromise}
+              issuedPromise={issuedPromise}
+              active={tab === "invoice"}
+            />
           </Suspense>
         </div>
         <div className={tab === "clients-master" ? "flex flex-1" : "hidden"}>
           <Suspense fallback={<TabLoading />}>
-            <ClientsMasterTab clientRows={clientRows} pricingPromise={pricingPromise} summaryPromise={summaryPromise} />
+            <ClientsMasterTab
+              clientRows={clientRows}
+              pricingPromise={pricingPromise}
+              summaryPromise={summaryPromise}
+              active={tab === "clients-master"}
+            />
           </Suspense>
         </div>
       </div>

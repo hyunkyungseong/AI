@@ -1,12 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import type { 거래처행 } from "@/components/Dashboard";
+import { useEffect, useMemo, useState } from "react";
+import EditableCombo from "./EditableCombo";
+import type { 거래처행, 운영통계행 } from "@/components/Dashboard";
 
 type Props = {
   open: boolean;
   mode: "create" | "edit";
   initial: 거래처행 | null; // create 모드에선 null
+  clientRows: 거래처행[]; // 이미 등록된 거래처명 제외용(2026-08-09, 거래처명 자동완성 후보 계산)
+  taskRows: 운영통계행[]; // 거래처명 자동완성 후보 추출용(표시는 안 함) — PricingFormDialog.tsx와 동일 패턴
   onClose: () => void;
   onCreated: (row: 거래처행) => void;
   onUpdated: (거래처명: string, patch: Pick<거래처행, "사업자등록번호" | "수신이메일" | "비고" | "수정일">) => void;
@@ -22,7 +25,16 @@ const input =
 // 메시지 대신 실제 입력 필드로 채운 프로젝트 첫 입력 폼 모달 ([4-D] 거래처 마스터 신규/수정 겸용).
 // 거래처명은 다른 테이블들이 FK 없이 문자열로만 참조하고 있어 생성 후 절대 수정 불가 —
 // edit 모드에선 읽기전용 입력창으로만 보여주고, 실제 PUT 요청 바디에도 이 필드를 아예 안 보낸다.
-export default function ClientFormDialog({ open, mode, initial, onClose, onCreated, onUpdated }: Props) {
+export default function ClientFormDialog({
+  open,
+  mode,
+  initial,
+  clientRows,
+  taskRows,
+  onClose,
+  onCreated,
+  onUpdated,
+}: Props) {
   // 부모(ClientMaster.tsx)가 다이얼로그를 열 때마다 key를 바꿔 이 컴포넌트를 강제 리마운트하므로,
   // useState 초기값이 항상 그 시점의 initial을 정확히 반영한다 — useEffect로 재동기화할 필요가
   // 없다(Next.js 16 react-hooks/set-state-in-effect 규칙 위반 회피, Tab4의 usePrunedSelection과
@@ -33,6 +45,15 @@ export default function ClientFormDialog({ open, mode, initial, onClose, onCreat
   const [비고, set비고] = useState(initial?.비고 ?? "");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  // 실제 운영통계자료에 등장하지만 아직 거래처마스터에 등록 안 된 거래처명 후보(2026-08-09,
+  // 사용자 요청: "직접 키인도 가능하고 콤보박스로 등록된 거래처명이 보였으면 좋겠다") — 오타로
+  // 실제 데이터와 이름이 어긋나는 걸 방지하되, 직접 타이핑도 그대로 허용(EditableCombo).
+  const 거래처명후보 = useMemo(() => {
+    const 등록됨 = new Set(clientRows.map((c) => c.거래처명));
+    const set = new Set(taskRows.map((t) => t.거래처명).filter((n) => n && !등록됨.has(n)));
+    return Array.from(set).sort();
+  }, [taskRows, clientRows]);
 
   useEffect(() => {
     if (!open) return;
@@ -107,19 +128,29 @@ export default function ClientFormDialog({ open, mode, initial, onClose, onCreat
         )}
 
         <div className="mt-4 space-y-3">
-          <label className={label}>
-            거래처명 {mode === "create" && "*"}
-            <input
-              value={거래처명}
-              onChange={(e) => set거래처명(e.target.value)}
-              readOnly={mode === "edit"}
-              className={
-                mode === "edit"
-                  ? `${input} cursor-not-allowed bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400`
-                  : input
-              }
-            />
-          </label>
+          {/* EditableCombo의 드롭다운 목록(<ul>)이 <label> 안에 들어가면 label의 접근성 텍스트가
+              "거래처명"+후보 항목 전체로 합쳐지는 문제가 있어(PricingFormDialog.tsx에서 실측으로
+              발견된 것과 동일한 이유), <label> 대신 <div>+<span> 조합과 aria-label을 쓴다. */}
+          <div>
+            <span className={label}>거래처명 {mode === "create" && "*"}</span>
+            {mode === "edit" ? (
+              <input
+                value={거래처명}
+                readOnly
+                aria-label="거래처명"
+                className={`${input} cursor-not-allowed bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400`}
+              />
+            ) : (
+              <EditableCombo
+                value={거래처명}
+                onChange={set거래처명}
+                options={거래처명후보}
+                placeholder="직접 입력하거나 목록에서 선택"
+                aria-label="거래처명"
+                className={input}
+              />
+            )}
+          </div>
           <label className={label}>
             사업자등록번호
             <input value={사업자등록번호} onChange={(e) => set사업자등록번호(e.target.value)} className={input} />

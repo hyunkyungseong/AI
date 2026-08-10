@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Tab4Invoice from "./Tab4Invoice";
 import Tab4IssuedList from "./Tab4IssuedList";
 import type { 운영통계행, 미발행행, 발행행 } from "./Dashboard";
@@ -22,14 +22,40 @@ export default function Tab4({
   rows,
   invoiceRows,
   issuedRows,
+  active,
 }: {
   rows: 운영통계행[];
   invoiceRows: 미발행행[];
   issuedRows: 발행행[];
+  active: boolean; // "거래명세서 관리" 최상위 탭이 지금 보이는 중인지(Dashboard.tsx)
 }) {
   const [subTab, setSubTab] = useState<SubTabId>("unissued");
   const [invoice, setInvoice] = useState(invoiceRows);
   const [issued, setIssued] = useState(issuedRows);
+
+  // "거래명세서 관리" 탭을 다시 클릭할 때마다 미발행 목록을 서버에서 새로 받아온다(2026-08-09,
+  // 사용자 요청) — 예상공급가액은 서버(billing.py)가 단가마스터 기준으로 계산해 내려주는 값인데,
+  // 이 화면은 페이지를 처음 열 때 딱 한 번만 받아온 뒤로는 다시 안 받아오고 있어서, "단가관리"
+  // 탭에서 방금 등록한 단가가 미발행 목록의 "단가 미등록" 표시에 실시간 반영되지 않는 문제가 있었음.
+  // 최초 마운트 시(기본 탭이 "summary"라 active=false로 시작)에는 이미 서버에서 막 받아온 최신
+  // 데이터라 다시 부를 필요 없음 — false→true로 "새로 켜질 때"만 트리거한다.
+  const 이전active = useRef(active);
+  useEffect(() => {
+    const 방금까지비활성 = !이전active.current;
+    이전active.current = active;
+    if (!active || !방금까지비활성) return;
+    (async () => {
+      try {
+        const res = await fetch("/api/invoice-list");
+        if (!res.ok) return;
+        const data: 미발행행[] = await res.json();
+        setInvoice(data);
+      } catch {
+        // 새로고침 실패는 조용히 무시 — 화면에 이미 떠 있는 기존 데이터를 그대로 유지한다
+        // (백그라운드 갱신이라 사용자 작업을 막는 오류 표시까지는 불필요).
+      }
+    })();
+  }, [active]);
 
   // FastAPI(/미발행목록·/발행목록)는 작업일자 내림차순으로 정렬해서 내려주는데, 여기서 단순
   // append만 하면 방금 옮겨온 항목이 정렬 순서를 깨고 배열 맨 끝(화면상 맨 아래)에 붙어버린다.

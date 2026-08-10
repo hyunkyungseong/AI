@@ -1,10 +1,11 @@
 "use client";
 
 import { useCallback, useMemo, useState } from "react";
+import type { Dispatch, SetStateAction } from "react";
 import ClientMasterTable from "./ClientMasterTable";
 import ClientFormDialog from "./ClientFormDialog";
 import ConfirmDialog from "./ConfirmDialog";
-import type { 거래처행 } from "@/components/Dashboard";
+import type { 거래처행, 운영통계행 } from "@/components/Dashboard";
 
 type 배너 = { type: "success" | "warning" | "error"; text: string };
 
@@ -14,11 +15,20 @@ const 배너색상: Record<배너["type"], string> = {
   error: "border-red-300 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-300",
 };
 
-// "거래처 마스터" 탭 오케스트레이터 — 다른 탭과 상태를 공유하지 않는 단일 화면이라 Tab4처럼
-// 상태를 부모로 끌어올릴 필요 없이 로컬 useState(initialProp)로 충분하다. 생성/수정/삭제 성공 시
-// 서버 재조회 없이 로컬 배열만 갱신한다(Tab4Invoice.tsx가 거래명세서 요청 성공 후 처리하는 방식과 동일).
-export default function ClientMaster({ rows: initialRows }: { rows: 거래처행[] }) {
-  const [clients, setClients] = useState<거래처행[]>(initialRows);
+// "거래처 마스터" 탭 오케스트레이터 — rows/setRows는 Dashboard.tsx가 소유한 controlled state
+// (2026-08-09, Tab4Invoice.tsx의 rows/setRows와 동일한 패턴으로 변경) — "단가관리" 하위 탭
+// (PricingMaster.tsx)도 같은 clientRows를 보고 있어서, 여기서만 로컬 사본을 갱신하면 신규 등록한
+// 거래처가 단가관리 화면의 거래처 선택 목록에 안 보이는 버그가 있었다. 생성/수정/삭제 성공 시
+// 서버 재조회 없이 이 공용 배열만 갱신한다(Tab4Invoice.tsx가 거래명세서 요청 성공 후 처리하는 방식과 동일).
+export default function ClientMaster({
+  rows,
+  setRows,
+  taskRows,
+}: {
+  rows: 거래처행[];
+  setRows: Dispatch<SetStateAction<거래처행[]>>;
+  taskRows: 운영통계행[];
+}) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [banner, setBanner] = useState<배너 | null>(null);
 
@@ -32,7 +42,7 @@ export default function ClientMaster({ rows: initialRows }: { rows: 거래처행
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
-  const selectedRows = useMemo(() => clients.filter((c) => selected.has(c.거래처명)), [clients, selected]);
+  const selectedRows = useMemo(() => rows.filter((c) => selected.has(c.거래처명)), [rows, selected]);
 
   const toggleRow = useCallback((거래처명: string) => {
     setSelected((prev) => {
@@ -45,9 +55,9 @@ export default function ClientMaster({ rows: initialRows }: { rows: 거래처행
 
   const toggleAll = useCallback(
     (checked: boolean) => {
-      setSelected(checked ? new Set(clients.map((c) => c.거래처명)) : new Set());
+      setSelected(checked ? new Set(rows.map((c) => c.거래처명)) : new Set());
     },
-    [clients]
+    [rows]
   );
 
   function openCreate() {
@@ -65,13 +75,13 @@ export default function ClientMaster({ rows: initialRows }: { rows: 거래처행
   }
 
   function handleCreated(row: 거래처행) {
-    setClients((prev) => [...prev, row].sort((a, b) => a.거래처명.localeCompare(b.거래처명)));
+    setRows((prev) => [...prev, row].sort((a, b) => a.거래처명.localeCompare(b.거래처명)));
     setFormOpen(false);
     setBanner({ type: "success", text: `'${row.거래처명}' 거래처가 등록되었습니다.` });
   }
 
   function handleUpdated(거래처명: string, patch: Pick<거래처행, "사업자등록번호" | "수신이메일" | "비고" | "수정일">) {
-    setClients((prev) => prev.map((c) => (c.거래처명 === 거래처명 ? { ...c, ...patch } : c)));
+    setRows((prev) => prev.map((c) => (c.거래처명 === 거래처명 ? { ...c, ...patch } : c)));
     setFormOpen(false);
     setBanner({ type: "success", text: `'${거래처명}' 거래처가 수정되었습니다.` });
   }
@@ -100,7 +110,7 @@ export default function ClientMaster({ rows: initialRows }: { rows: 거래처행
         return;
       }
       const 삭제대상 = selected;
-      setClients((prev) => prev.filter((c) => !삭제대상.has(c.거래처명)));
+      setRows((prev) => prev.filter((c) => !삭제대상.has(c.거래처명)));
       setSelected(new Set());
       setBanner({ type: "success", text: "선택한 거래처가 삭제되었습니다." });
     } catch {
@@ -120,7 +130,7 @@ export default function ClientMaster({ rows: initialRows }: { rows: 거래처행
       <div className="sticky top-0 z-10 space-y-3 border-b border-gray-200 bg-background px-6 py-4 dark:border-gray-800">
         <div>
           <h1 className="text-lg font-semibold text-gray-900 dark:text-gray-100">거래처 마스터 [거래처관리]</h1>
-          <p className="text-xs text-gray-500 dark:text-gray-400">등록된 거래처 {clients.length.toLocaleString()}건</p>
+          <p className="text-xs text-gray-500 dark:text-gray-400">등록된 거래처 {rows.length.toLocaleString()}건</p>
         </div>
 
         {banner && <div className={`rounded-md border px-3 py-2 text-sm ${배너색상[banner.type]}`}>{banner.text}</div>}
@@ -146,7 +156,7 @@ export default function ClientMaster({ rows: initialRows }: { rows: 거래처행
 
       <div className="p-6">
         <ClientMasterTable
-          rows={clients}
+          rows={rows}
           selected={selected}
           onToggleRow={toggleRow}
           onToggleAll={toggleAll}
@@ -159,6 +169,8 @@ export default function ClientMaster({ rows: initialRows }: { rows: 거래처행
         open={formOpen}
         mode={formMode}
         initial={editing}
+        clientRows={rows}
+        taskRows={taskRows}
         onClose={() => setFormOpen(false)}
         onCreated={handleCreated}
         onUpdated={handleUpdated}

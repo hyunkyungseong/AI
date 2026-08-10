@@ -1,7 +1,7 @@
 """
 MariaDB(dashboard DB) 초기화 스크립트 — 이 프로젝트 전용 신규 인스턴스
 실행: python scripts/init_db_mariadb.py
-결과: db_config.py에 지정된 DB(기본값 dashboard)에 10개 테이블 생성
+결과: db_config.py에 지정된 DB(기본값 dashboard)에 11개 테이블 생성
 
 테이블 목록:
   1. 운영통계자료      — preprocess.py 산출물(processed.pkl) 대체용 원본+파생 데이터
@@ -13,13 +13,17 @@ MariaDB(dashboard DB) 초기화 스크립트 — 이 프로젝트 전용 신규 
   6. 거래명세서_의뢰서  — 거래명세서에 속한 업무의뢰서번호 (구 업무의뢰서번호목록 JSON-in-TEXT 정규화)
   7. 거래명세서번호_카운터 — 사업부·연월별 채번 순번 (기존 SQLite 구조 동일)
   8. 사용자            — 로그인 계정 (담당자별 개별 계정, 비밀번호는 bcrypt 해시로 저장)
-  9. 청구품목규칙      — 거래처+업무명별로 저장되는 재사용 청구 규칙(조건식→최종 청구품명 매핑) (2026-07-22 추가)
+  9. 청구품목규칙      — 거래처+업무명(단수)별로 저장되는 재사용 청구 규칙(조건식→최종 청구품명 매핑) (2026-07-22 추가)
   10. 거래명세서_품목   — 거래명세서별 원본/최종 품목 스냅샷(편집 이력용) (2026-07-22 추가)
+  11. 청구품목통합규칙  — 거래처+업무명조합(2개 이상)별로 저장되는 재사용 청구 규칙, 개별조건식(9번)보다
+                       우선 적용됨 (2026-08-08 재설계로 정식 복원 — 아래 이력 참고)
 
-(2026-07-31~2026-08-01에 "청구품목통합규칙" 테이블(여러 업무명 조합별 재사용 규칙, "통합조건식")을
- 한때 추가했다가, 복잡도 대비 실익이 적어 원복함 — 이 스크립트에서는 더 이상 만들지 않지만, 이미
- 이 테이블을 만든 DB가 있다면(사무실 PC 등) 데이터 보존을 위해 테이블 자체는 그대로 남아있고
- 코드에서만 참조를 끊었다. docs/CHANGELOG.md 2026-08-01 항목 참고.)
+(2026-07-31~2026-08-01에 이 "청구품목통합규칙" 테이블을 "통합조건식" 기능으로 처음 시도했다가
+ 부작용(매칭 0건 규칙 노출, 단일 업무명 요청 차단)으로 같은 날 코드를 원복함 — 그때는 이 스크립트에서
+ 더 이상 만들지 않았으나, 이미 그 테이블을 만든 DB(사무실 PC)에는 테이블과 실 데이터가 남아있었음.
+ 2026-08-08 재설계(부족/초과 시 업무명조합을 UPDATE로 재조정하는 방식)로 정식 복원 — 사무실 PC의
+ 기존 데이터는 8/1 테스트 중 남은 leftover라 배포 시 정리(삭제) 후 빈 테이블로 재사용하기로 함
+ (docs/CHANGELOG.md 2026-08-08 항목 참고).)
 """
 
 import sys
@@ -215,6 +219,21 @@ def get_db():
             금액            DECIMAL(14,2),
             FOREIGN KEY (거래명세서번호) REFERENCES 거래명세서(거래명세서번호)
                 ON UPDATE CASCADE ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """,
+
+    "청구품목통합규칙": """
+        CREATE TABLE IF NOT EXISTS 청구품목통합규칙 (
+            id              INT AUTO_INCREMENT PRIMARY KEY,
+            거래처명        VARCHAR(100) NOT NULL,
+            업무명조합      VARCHAR(500) NOT NULL,
+            순서            INT NOT NULL,
+            최종청구품명    VARCHAR(200) NOT NULL,
+            조건            JSON NOT NULL,
+            조              VARCHAR(50),
+            등록일          DATETIME DEFAULT CURRENT_TIMESTAMP,
+            수정일          DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_통합규칙 (거래처명, 업무명조합, 순서)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """,
 }

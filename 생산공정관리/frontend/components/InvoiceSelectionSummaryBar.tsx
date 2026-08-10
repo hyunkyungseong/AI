@@ -4,6 +4,9 @@ import type { 미발행행 } from "@/components/Dashboard";
 
 type Props = {
   selectedRows: 미발행행[];
+  // "선택 유지" 이후 새로 체크한 항목만 별도로 보여줄 때 재사용하기 위한 캡션 커스터마이즈
+  // (2026-08-09) — 기본값은 기존 문구 그대로.
+  caption?: string;
 };
 
 const th = "px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300";
@@ -17,7 +20,7 @@ const td = "px-3 py-1.5 text-right tabular-nums font-semibold text-gray-900 dark
 // 세로 공간을 더 차지하는 문제가 있었음. 버튼 바로 밑에 쌓으면 화면 폭과 무관하게 항상 버튼
 // 근처(=사용자가 이미 보고 있는 위치)에 나타나 두 문제를 모두 피한다. "선택 합계" 같은 중복
 // 라벨 없이 "선택 N건" 캡션 하나만 붙여 최대한 컴팩트하게 유지한다.
-export default function InvoiceSelectionSummaryBar({ selectedRows }: Props) {
+export default function InvoiceSelectionSummaryBar({ selectedRows, caption = "선택" }: Props) {
   const 총청구 = selectedRows.reduce((s, r) => s + r.청구페이지, 0);
   const 총봉입 = selectedRows.reduce((s, r) => s + r.봉입건수, 0);
   const 총장수 = selectedRows.reduce((s, r) => s + r.장수, 0);
@@ -31,7 +34,9 @@ export default function InvoiceSelectionSummaryBar({ selectedRows }: Props) {
 
   return (
     <section>
-      <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">선택 {selectedRows.length.toLocaleString()}건</p>
+      <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">
+        {caption} {selectedRows.length.toLocaleString()}건
+      </p>
       <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-800">
         <table className="whitespace-nowrap text-sm">
           <thead className="bg-gray-50 dark:bg-gray-900">

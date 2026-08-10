@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { fastapiFetch } from "@/lib/fastapi";
+import { mapClientRow, mapInvoiceRow, mapPricingRow } from "@/lib/serverMappers";
 import Dashboard, {
   type 운영통계행,
   type 미발행행,
@@ -30,14 +31,7 @@ export default async function Home() {
     throw new Error(`거래처 마스터를 불러오지 못했습니다 (status ${clientRes.status})`);
   }
   const rawClients: 거래처원본행[] = await clientRes.json();
-  const clientRows: 거래처행[] = rawClients.map((r) => ({
-    거래처명: String(r.거래처명 ?? ""),
-    사업자등록번호: r.사업자등록번호 != null ? String(r.사업자등록번호) : "",
-    수신이메일: r.수신이메일 != null ? String(r.수신이메일) : "",
-    비고: r.비고 != null ? String(r.비고) : "",
-    등록일: String(r.등록일 ?? ""),
-    수정일: String(r.수정일 ?? ""),
-  }));
+  const clientRows: 거래처행[] = rawClients.map(mapClientRow);
 
   async function loadSummary(): Promise<운영통계행[]> {
     const res = await summaryResPromise;
@@ -73,22 +67,7 @@ export default async function Home() {
       throw new Error(`미발행 목록을 불러오지 못했습니다 (status ${res.status})`);
     }
     const raw: 미발행원본행[] = await res.json();
-    return raw.map((r) => ({
-      의뢰서번호: String(r.의뢰서번호 ?? ""),
-      담당자: String(r.담당자 ?? ""),
-      사업부: String(r.사업부 ?? ""),
-      거래처명: String(r.거래처명 ?? ""),
-      업무명: String(r.업무명 ?? ""),
-      업무명상세: String(r.업무명상세 ?? ""),
-      작업일자: String(r.작업일자 ?? ""),
-      청구페이지: Number(r.청구페이지 ?? 0),
-      장수: Number(r.장수 ?? 0),
-      봉입건수: Number(r.봉입건수 ?? 0),
-      용지수량: Number(r.용지수량 ?? 0),
-      봉투수량: Number(r.봉투수량 ?? 0),
-      삽지수량: Number(r.삽지수량 ?? 0),
-      예상공급가액: r.예상공급가액 != null ? Number(r.예상공급가액) : null,
-    }));
+    return raw.map(mapInvoiceRow);
   }
 
   async function loadIssued(): Promise<발행행[]> {
@@ -124,25 +103,7 @@ export default async function Home() {
       throw new Error(`단가 정보를 불러오지 못했습니다 (status ${res.status})`);
     }
     const raw: 단가원본행[] = await res.json();
-    return raw.map((r) => ({
-      id: Number(r.id ?? 0),
-      거래처명: String(r.거래처명 ?? ""),
-      업무명: r.업무명 != null ? String(r.업무명) : "",
-      작업명: r.작업명 != null ? String(r.작업명) : "",
-      출력단가: Number(r.출력단가 ?? 0),
-      봉입단가: Number(r.봉입단가 ?? 0),
-      추가봉입단가: Number(r.추가봉입단가 ?? 0),
-      동봉물삽입단가: Number(r.동봉물삽입단가 ?? 0),
-      용지제작단가: Number(r.용지제작단가 ?? 0),
-      봉투제작단가: Number(r.봉투제작단가 ?? 0),
-      삽지제작단가: Number(r.삽지제작단가 ?? 0),
-      각대대봉투단가: Number(r.각대대봉투단가 ?? 0),
-      각대대봉투봉입단가: Number(r.각대대봉투봉입단가 ?? 0),
-      부가세구분: r.부가세구분 === "포함" ? "포함" : "별도",
-      비고: r.비고 != null ? String(r.비고) : "",
-      등록일: String(r.등록일 ?? ""),
-      수정일: String(r.수정일 ?? ""),
-    }));
+    return raw.map(mapPricingRow);
   }
 
   return (

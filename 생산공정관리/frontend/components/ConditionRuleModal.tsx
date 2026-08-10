@@ -172,7 +172,7 @@ export default function ConditionRuleModal({
       </label>
 
       <label className="mt-3 block text-sm text-gray-700 dark:text-gray-300">
-        조(시트명) <span className="text-gray-400">— 비워두면 분리발급 안 함</span>
+        작업구분(시트명) <span className="text-gray-400">— 비워두면 분리발급 안 함</span>
         <input
           type="text"
           list="조옵션"
@@ -181,7 +181,7 @@ export default function ConditionRuleModal({
             set조수동입력됨(true);
             set조(e.target.value);
           }}
-          placeholder="예: 1조 (비워두면 거래명세서 1건)"
+          placeholder="예: 은행A (비워두면 거래명세서 1건)"
           className={`mt-1 w-full ${inputCls}`}
         />
         <datalist id="조옵션">

@@ -8,7 +8,7 @@ import InvoiceSelectionSummaryBar from "./InvoiceSelectionSummaryBar";
 import InvoiceDetailTable from "./InvoiceDetailTable";
 import InvoicePreviewDialog from "./InvoicePreviewDialog";
 import ConfirmDialog from "./ConfirmDialog";
-import type { 미리보기결과, 확정품목, 확정규칙 } from "./InvoicePreviewDialog";
+import type { 미리보기결과, 확정품목, 확정규칙, 통합조건식_해결 } from "./InvoicePreviewDialog";
 import { useInvoiceFilters } from "@/lib/useInvoiceFilters";
 import { useResetOnFilterChange } from "@/lib/useFilters";
 import type { 미발행행, 운영통계행, 발행행 } from "./Dashboard";
@@ -44,6 +44,11 @@ export default function Tab4Invoice({
   // 계산되므로(아래 참고), 선택을 유지해도 상단 합계가 깨지지 않음 — 선택이 0건이면 잃을 게
   // 없으므로 팝업 없이 조용히 넘어감.
   const [confirmFilterChange, setConfirmFilterChange] = useState(false);
+  // "선택 유지"를 누른 시점의 선택 스냅샷(2026-08-09 사용자 요청) — 그 이후 새로 체크한 항목만
+  // 별도 통계표로 보여주기 위한 기준점. 한 번도 "선택 유지"를 안 눌렀으면 null(신규 통계표 자체를
+  // 안 보여줌). "선택 해제"·거래명세서 요청 성공 시 null로 되돌려 다음 선택 사이클에 이전
+  // 기준점이 남아있지 않게 한다.
+  const [유지기준선택, set유지기준선택] = useState<Set<string> | null>(null);
   const filterKey = JSON.stringify([filters.사업부, filters.시작일, filters.종료일, filters.담당자, filters.거래처, filters.업무명]);
   useResetOnFilterChange(filterKey, () => {
     if (selected.size > 0) setConfirmFilterChange(true);
@@ -65,6 +70,12 @@ export default function Tab4Invoice({
   // "선택 유지"를 택하면 필터 변경 후에도 화면에 안 보이는 항목이 selected에 남아있을 수 있으므로,
   // 요청 처리 자체는 필터와 무관하게 선택된 실제 항목 기준으로 계산하는 게 원칙적으로 맞다.
   const selectedRows = useMemo(() => rows.filter((r) => selected.has(r.의뢰서번호)), [rows, selected]);
+  // "선택 유지" 이후 새로 체크한 항목만(2026-08-09) — 기준점이 없으면(아직 선택 유지를 안 거쳤으면)
+  // 빈 배열이라 아래 렌더링에서 별도 통계표 자체가 안 나타난다.
+  const 새로선택된Rows = useMemo(
+    () => (유지기준선택 === null ? [] : selectedRows.filter((r) => !유지기준선택.has(r.의뢰서번호))),
+    [selectedRows, 유지기준선택]
+  );
 
   // useCallback으로 함수 참조를 고정 — InvoiceSelectionTable의 행 컴포넌트가 React.memo로
   // 리렌더를 건너뛰려면 onToggleRow 등 콜백 props도 매 렌더마다 새로 만들어지면 안 된다.
@@ -111,14 +122,24 @@ export default function Tab4Invoice({
       setBanner({ type: "warning", text: `선택한 의뢰서의 사업부가 서로 다릅니다(${사업부목록.join(", ")}). 사업부를 통일해서 선택해 주세요.` });
       return;
     }
+    // 거래처명 혼합 방어 (2026-08-08) — 통합조건식 키가 (거래처명, 업무명조합)이라 거래처명이
+    // 뒤섞이면 키 자체가 무의미해진다(서버도 동일하게 최종 방어선으로 검증, 사업부 혼합과 동일 관례).
+    const 거래처명목록 = Array.from(new Set(selectedRows.map((r) => r.거래처명)));
+    if (거래처명목록.length > 1) {
+      setBanner({ type: "warning", text: `선택한 의뢰서의 거래처명이 서로 다릅니다(${거래처명목록.join(", ")}). 거래처를 통일해서 선택해 주세요.` });
+      return;
+    }
 
     setPreviewLoading(true);
     setBanner(null);
     try {
+      // 업무명_목록 — 다중 업무명 규칙조회(통합조건식) 판정에 서버가 사용(2026-08-08). 서버가
+      // 운영통계자료에서 재계산한 값과 다르면 400으로 막아 선택이 최신 상태인지 보장한다.
+      const 업무명_목록 = Array.from(new Set(selectedRows.map((r) => r.업무명)));
       const res = await fetch("/api/invoice-preview", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 의뢰서번호_목록: selectedRows.map((r) => r.의뢰서번호) }),
+        body: JSON.stringify({ 의뢰서번호_목록: selectedRows.map((r) => r.의뢰서번호), 업무명_목록 }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -139,7 +160,7 @@ export default function Tab4Invoice({
 
   // 미리보기 팝업의 "확정" 클릭 시에만 실행 — 편집된 최종 품목·규칙을 받아 payload를 구성해 POST한다.
   // 공급가액은 편집 후 오른쪽 표의 실제 금액 합계 기준(편집 전 예상치가 아님).
-  async function handleConfirmSubmit(edited: { 품목_최종: 확정품목[]; 규칙: 확정규칙[] }) {
+  async function handleConfirmSubmit(edited: { 품목_최종: 확정품목[]; 규칙: 확정규칙[]; 통합조건식_해결?: 통합조건식_해결 | null }) {
     // 미리보기 다이얼로그가 이미 부가세오류가 있으면 "확정" 버튼을 막아두지만, 이중 안전장치로
     // 여기서도 한 번 더 막는다(작업명별 부가세 처리 방식이 섞여 판정 불가, 2026-08-04).
     if (previewData?.부가세오류) {
@@ -160,7 +181,14 @@ export default function Tab4Invoice({
       세액,
       합계: 공급가액 + 세액,
       의뢰서번호_목록: selectedRows.map((r) => r.의뢰서번호),
-      업무명: previewData?.업무명 ?? selectedRows[0].업무명,
+      // 2026-08-08 다중업무명 규칙조회 재설계 — 예전엔 대표 업무명 1개(previewData?.업무명)만
+      // 규칙 저장 키로 썼는데, 이게 바로 "다른 업무명 규칙이 무시되는" 버그의 원인이었다.
+      // 이제 선택된 업무명 전체를 그대로 보내고, 서버가 1개/2개 이상 여부로 개별·통합조건식을
+      // 알아서 나눠 저장한다. 업무명조합_사용중·통합조건식_해결은 미리보기 응답/사용자 선택을
+      // 그대로 echo — 서버가 어떤 통합조건식을 갱신할지 판단하는 근거로 쓴다.
+      업무명_목록: previewData?.업무명_목록 ?? Array.from(new Set(selectedRows.map((r) => r.업무명))),
+      업무명조합_사용중: previewData?.업무명조합_사용중 ?? null,
+      통합조건식_해결: edited.통합조건식_해결 ?? null,
       품목_최종: edited.품목_최종,
       규칙: edited.규칙,
     };
@@ -196,6 +224,7 @@ export default function Tab4Invoice({
         )
       );
       setSelected(new Set());
+      set유지기준선택(null);
       setPreviewOpen(false);
       setPreviewData(null);
       setBanner({ type: "success", text: `거래명세서 요청이 완료되었습니다. (거래명세서번호: ${data.거래명세서번호})` });
@@ -241,7 +270,14 @@ export default function Tab4Invoice({
             >
               {previewLoading ? "불러오는 중..." : "거래명세서 요청"}
             </button>
-            {selectedRows.length > 0 && <InvoiceSelectionSummaryBar selectedRows={selectedRows} />}
+            {selectedRows.length > 0 && (
+              <div className="flex flex-wrap gap-4">
+                <InvoiceSelectionSummaryBar selectedRows={selectedRows} />
+                {새로선택된Rows.length > 0 && (
+                  <InvoiceSelectionSummaryBar selectedRows={새로선택된Rows} caption="새로 선택" />
+                )}
+              </div>
+            )}
           </div>
         </div>
 
@@ -276,9 +312,15 @@ export default function Tab4Invoice({
         cancelLabel="선택 유지"
         onConfirm={() => {
           setSelected(new Set());
+          set유지기준선택(null);
           setConfirmFilterChange(false);
         }}
-        onClose={() => setConfirmFilterChange(false)}
+        onClose={() => {
+          // "선택 유지" — 지금 선택 상태를 기준점으로 저장해, 이 이후 새로 체크하는 항목만
+          // 별도 통계표로 구분해서 보여준다(2026-08-09 사용자 요청).
+          set유지기준선택(new Set(selected));
+          setConfirmFilterChange(false);
+        }}
       />
     </>
   );
