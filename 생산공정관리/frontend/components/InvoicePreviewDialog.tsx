@@ -16,9 +16,21 @@ export type 규칙적용행_API = {
   단가: number | null;
   금액: number;
   조?: string;
+  // 거래명세서 Excel 구분(B열)·규격(H열)·비고(N열) 직접 입력(2026-08-11)
+  구분표시?: string;
+  규격?: string;
+  비고?: string;
 };
 
-export type 저장된규칙 = { 순서: number; 최종청구품명: string; 조건: 규칙조건; 조?: string };
+export type 저장된규칙 = {
+  순서: number;
+  최종청구품명: string;
+  조건: 규칙조건;
+  조?: string;
+  구분표시?: string;
+  규격?: string;
+  비고?: string;
+};
 
 // 통합조건식 불일치 정보(2026-08-08 다중업무명 규칙조회 재설계) — 선택된 업무명 집합이 기존
 // 통합조건식과 정확히 일치하지 않을 때(부족: 등록된 업무명 중 일부가 지금 선택에서 빠짐, 초과:
@@ -46,8 +58,29 @@ export type 미리보기결과 = {
   // 별도 왕복 없이 한 번의 응답으로 끝내도록 단순화)
 };
 
-export type 확정품목 = { 코드: string | null; 품목: string; 수량: number; 단가: number | null; 금액: number; 조?: string };
-export type 확정규칙 = { 순서: number; 최종청구품명: string; 조건: 규칙조건; 조?: string };
+export type 확정품목 = {
+  코드: string | null;
+  품목: string;
+  수량: number;
+  단가: number | null;
+  금액: number;
+  조?: string;
+  구분표시?: string;
+  규격?: string;
+  비고?: string;
+  // 조건식(규칙) 없이 "새 행 추가"로 직접 타이핑한 행이면 true(2026-08-12) — 서버가 이 값이 true인
+  // 품명만 거래명세서품명이력에 저장한다(규칙 품명은 이미 청구품목규칙으로 따로 재사용되므로 중복 방지).
+  수동입력?: boolean;
+};
+export type 확정규칙 = {
+  순서: number;
+  최종청구품명: string;
+  조건: 규칙조건;
+  조?: string;
+  구분표시?: string;
+  규격?: string;
+  비고?: string;
+};
 // 부족/초과 배너에서 사용자가 "제외/추가하고 확정"을 선택했을 때만 채워짐 — 신규업무명조합은
 // 서버가 요청.업무명_목록으로부터 재계산하므로 여기선 기존업무명조합만 넘긴다(2026-08-08).
 export type 통합조건식_해결 = { 기존업무명조합: string };
@@ -61,6 +94,10 @@ type 편집행 = {
   금액: number;
   조건: 규칙조건 | null; // null이면 수동으로 추가/복사한 행(규칙 아님)
   조?: string; // 조별 분할발급(2026-07-29) — 없으면 거래명세서 1건(하위호환)
+  // 거래명세서 Excel 구분(B열)·규격(H열)·비고(N열) 직접 입력(2026-08-11) — 없으면 미지정
+  구분표시?: string;
+  규격?: string;
+  비고?: string;
 };
 
 type Props = {
@@ -71,10 +108,11 @@ type Props = {
   onClose: () => void;
 };
 
-const th = "px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-300";
-const thRight = "px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300";
-const td = "px-3 py-1.5 text-gray-900 dark:text-gray-100";
-const tdRight = "px-3 py-1.5 text-right tabular-nums text-gray-900 dark:text-gray-100";
+// 좌우 표 컬럼 간 여백(2026-08-12 사용자 요청 — 필드가 다닥다닥 붙어 읽기 불편함) — px-3에서 넓힘.
+const th = "px-4 py-2 text-left font-medium text-gray-600 dark:text-gray-300";
+const thRight = "px-4 py-2 text-right font-medium text-gray-600 dark:text-gray-300";
+const td = "px-4 py-1.5 text-gray-900 dark:text-gray-100";
+const tdRight = "px-4 py-1.5 text-right tabular-nums text-gray-900 dark:text-gray-100";
 // 수량·금액 칸 — 천단위 콤마 표시(2026-08-09) 적용 시 값이 더 길어져서(예: "3,585,816") 기존
 // w-24보다 조금 더 넓힘.
 const numInput =
@@ -133,6 +171,9 @@ function 초기_rightRows(data: 미리보기결과 | null): 편집행[] {
     금액: r.금액,
     조건: 규칙목록[i]?.조건 ?? null,
     조: 규칙목록[i]?.조,
+    구분표시: 규칙목록[i]?.구분표시,
+    규격: 규칙목록[i]?.규격,
+    비고: 규칙목록[i]?.비고,
   }));
 }
 
@@ -148,13 +189,59 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
   // 사용자 요청) — 겹치는 항목이 없으면 이 상태를 거치지 않고 바로 저장된다. 규칙별로 몇 건씩
   // 겹치는지도 함께 보여줘야 사용자가 어느 규칙과 부딪히는지 바로 알 수 있다(2026-08-08 추가 요청).
   const [overlapConfirm, setOverlapConfirm] = useState<{
-    result: { 최종청구품명: string; 조건: 규칙조건; 조?: string };
+    result: { 최종청구품명: string; 조건: 규칙조건; 조?: string; 구분표시?: string; 규격?: string; 비고?: string };
     규칙별건수: [string, number][];
   } | null>(null);
   // 복사 직후 자동으로 연 편집창의 대상 행 인덱스(2026-08-08) — 이 상태에서 편집을 취소하면
   // "복사 자체가 없었던 일"이 되도록 방금 끼워넣은 복사본을 되돌린다. 저장하면(겹침 확인을
   // 거치더라도) null로 되돌아가 더 이상 취소 대상이 아니게 된다.
   const [복사대기중, set복사대기중] = useState<number | null>(null);
+  // 이 거래처가 가장 최근에 확정했을 때 "새 행 추가"(조건식 없는 수동 입력 행)로 넣었던 품명 목록
+  // (2026-08-12, 서버가 이미 "가장 최근 확정분" 기준으로 걸러서 내려줌 — 취소된 확정도 포함).
+  // 선택 UI 없이, 이 값이 도착하면 곧바로
+  // 오른쪽 표에 행으로 자동 추가한다(사용자 확정 — 체크박스로 고르던 이전 방식을 대체).
+  // data가 바뀌면(새 미리보기) 부모가 key로 이 컴포넌트를 통째로 재마운트하므로,
+  // InvoiceHistoryDialog.tsx와 동일하게 "처음 한 번"만 도는 effect로 충분 — setState·행 추가는
+  // fetch 콜백 안에서만 호출해 set-state-in-effect 린트를 피한다.
+  const [품명이력후보, set품명이력후보] = useState<string[]>([]);
+
+  // 지난달 이 거래처의 "새 행 추가" 확정 품명을 미리보기 오픈 시 자동으로 행으로 반영(2026-08-12
+  // 사용자 확정 — 체크박스로 고르던 방식을 대체). addManualRow()와 동일한 형태(수량·단가 0, 조건
+  // 없음)로 추가 — 수량·단가·금액은 매번 다를 수 있어 함께 저장/재사용하지 않고 그때그때 채우도록
+  // 둔다(사용자 확인). 원치 않는 행은 표의 "삭제" 버튼으로 지우면 된다. 아래 effect보다 먼저
+  // 선언해야 한다 — 린트(react-hooks)가 "사용 전 선언" 순서를 요구함.
+  function addRowsFromHistory(품명목록: string[]) {
+    setRightRows((prev) => [
+      ...prev,
+      ...품명목록.map((품명) => ({
+        key: `history-${신규행_카운터++}`,
+        최종청구품명: 품명,
+        코드: null,
+        수량: 0,
+        단가: 0,
+        금액: 0,
+        조건: null,
+        조: undefined,
+      })),
+    ]);
+  }
+
+  useEffect(() => {
+    const 거래처명 = data?.거래처명;
+    if (!거래처명) return;
+    let 취소됨 = false;
+    fetch(`/api/invoice-item-names?거래처명=${encodeURIComponent(거래처명)}`)
+      .then((res) => (res.ok ? res.json() : []))
+      .then((json) => {
+        if (취소됨 || !Array.isArray(json) || json.length === 0) return;
+        set품명이력후보(json);
+        addRowsFromHistory(json);
+      })
+      .catch(() => {});
+    return () => {
+      취소됨 = true;
+    };
+  }, [data?.거래처명]);
 
   useEffect(() => {
     if (!open) return;
@@ -196,7 +283,13 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
   // 조건 편집 패널의 값 입력칸에서 오타 없이 원본 값을 골라 쓸 수 있도록, 지금 원본(왼쪽) 표에
   // 실제로 등장하는 코드·품목·작업명 목록을 추출(2026-07-22, 사용자 피드백: "직접 키인은 오타 위험").
   const 코드옵션 = useMemo(() => Array.from(new Set(data?.품목.map((r) => r.코드) ?? [])).sort(), [data]);
-  const 품목옵션 = useMemo(() => Array.from(new Set(data?.품목.map((r) => r.품목) ?? [])).sort(), [data]);
+  // 지금 미리보기의 원본 품목명 + 이 거래처로 과거에 실제 청구했던 최종 품명(품명이력후보)을
+  // 합쳐서 하나의 후보 풀로 — 조건식 편집창의 "최종 청구 품명" 자동완성도 같은 풀을 공유한다
+  // (2026-08-12).
+  const 품목옵션 = useMemo(
+    () => Array.from(new Set([...(data?.품목.map((r) => r.품목) ?? []), ...품명이력후보])).sort(),
+    [data, 품명이력후보]
+  );
   const 작업명옵션 = useMemo(
     () => Array.from(new Set((data?.품목.map((r) => r.작업명).filter(Boolean) as string[]) ?? [])).sort(),
     [data]
@@ -260,7 +353,14 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
     setModalOpen(false);
     setModalTarget(null);
   }
-  function applyModalSave(result: { 최종청구품명: string; 조건: 규칙조건; 조?: string }) {
+  function applyModalSave(result: {
+    최종청구품명: string;
+    조건: 규칙조건;
+    조?: string;
+    구분표시?: string;
+    규격?: string;
+    비고?: string;
+  }) {
     set복사대기중(null);
     setRightRows((prev) => {
       let next: 편집행[];
@@ -276,11 +376,24 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
             금액: 0,
             조건: result.조건,
             조: result.조,
+            구분표시: result.구분표시,
+            규격: result.규격,
+            비고: result.비고,
           },
         ];
       } else {
         next = prev.map((r, i) =>
-          i === modalTarget ? { ...r, 최종청구품명: result.최종청구품명, 조건: result.조건, 조: result.조 } : r
+          i === modalTarget
+            ? {
+                ...r,
+                최종청구품명: result.최종청구품명,
+                조건: result.조건,
+                조: result.조,
+                구분표시: result.구분표시,
+                규격: result.규격,
+                비고: result.비고,
+              }
+            : r
         );
       }
       return 원본행_recompute(next, data!.품목);
@@ -293,7 +406,14 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
   // (2026-08-08 사용자 요청). 순서가 빠른 규칙이 우선 적용되는 구조(적용_규칙())라, 겹치는 항목은
   // 이 조건식이 실제로는 가져가지 못한다 — 사용자가 모르고 저장하면 "왜 이 항목이 안 잡히지"
   // 하고 헷갈릴 수 있어 저장 전에 알려주고 계속할지 확인받는다.
-  function handleModalSave(result: { 최종청구품명: string; 조건: 규칙조건; 조?: string }) {
+  function handleModalSave(result: {
+    최종청구품명: string;
+    조건: 규칙조건;
+    조?: string;
+    구분표시?: string;
+    규격?: string;
+    비고?: string;
+  }) {
     // 조건 그룹이 하나도 없으면("전체 합산" 규칙, ConditionRuleModal.tsx 안내 문구 참고) 정의상
     // 모든 항목과 매칭되는 게 정상 동작이라 겹침 확인 대상이 아니다(2026-08-09) — 순서상 나중에
     // 두면 "이미 다른 규칙이 가져간 나머지"만 실제로 가져가는 용도로 쓰이므로, 겹친다는 경고 자체가
@@ -436,6 +556,7 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
           ) : (
             <input
               type="text"
+              list="품명이력옵션"
               value={row.최종청구품명}
               onChange={(e) => updateField(i, { 최종청구품명: e.target.value })}
               className={`w-full rounded border border-gray-300 bg-white px-1.5 py-0.5 text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100`}
@@ -533,10 +654,22 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
       단가: r.단가,
       금액: r.금액,
       조: r.조,
+      구분표시: r.구분표시,
+      규격: r.규격,
+      비고: r.비고,
+      수동입력: r.조건 === null,
     }));
     const 규칙: 확정규칙[] = rightRows
       .filter((r) => r.조건 !== null)
-      .map((r, i) => ({ 순서: i + 1, 최종청구품명: r.최종청구품명, 조건: r.조건 as 규칙조건, 조: r.조 }));
+      .map((r, i) => ({
+        순서: i + 1,
+        최종청구품명: r.최종청구품명,
+        조건: r.조건 as 규칙조건,
+        조: r.조,
+        구분표시: r.구분표시,
+        규격: r.규격,
+        비고: r.비고,
+      }));
     onConfirm({ 품목_최종, 규칙, 통합조건식_해결: resolution });
   }
 
@@ -606,7 +739,9 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
           </div>
         )}
 
-        <div className="mt-3 grid flex-1 grid-cols-2 gap-4 overflow-hidden">
+        {/* 왼쪽(읽기 전용, 컬럼 적음)은 좁게, 오른쪽(입력칸·액션 버튼 많음)은 넓게(2026-08-12
+            사용자 요청) — 고정 50:50 대신 실제 필요한 폭 비율로 배분. */}
+        <div className="mt-3 grid flex-1 grid-cols-[2fr_3fr] gap-4 overflow-hidden">
           {/* 왼쪽: 원본(읽기 전용) */}
           <div className="flex flex-col overflow-hidden">
             <h3 className="mb-1 flex items-baseline gap-2 text-xs font-semibold text-gray-500 dark:text-gray-400">
@@ -702,6 +837,11 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
             )}
             <datalist id="조옵션-표">
               {조옵션.map((v) => (
+                <option key={v} value={v} />
+              ))}
+            </datalist>
+            <datalist id="품명이력옵션">
+              {품명이력후보.map((v) => (
                 <option key={v} value={v} />
               ))}
             </datalist>
@@ -821,6 +961,9 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
                     최종청구품명: rightRows[modalTarget]?.최종청구품명 ?? "",
                     조건: rightRows[modalTarget]?.조건 ?? { or: [] },
                     조: rightRows[modalTarget]?.조,
+                    구분표시: rightRows[modalTarget]?.구분표시,
+                    규격: rightRows[modalTarget]?.규격,
+                    비고: rightRows[modalTarget]?.비고,
                   }
                 : null
             }

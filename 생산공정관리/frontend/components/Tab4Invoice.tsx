@@ -49,9 +49,24 @@ export default function Tab4Invoice({
   // 안 보여줌). "선택 해제"·거래명세서 요청 성공 시 null로 되돌려 다음 선택 사이클에 이전
   // 기준점이 남아있지 않게 한다.
   const [유지기준선택, set유지기준선택] = useState<Set<string> | null>(null);
+  // "선택 유지"로 이미 한 번 확인받은 항목들(2026-08-10 사용자 요청) — 업무명 필터를 바꿔 한 번
+  // 물어본 뒤, 이어서 기간 등 다른 필터를 조정할 때 같은 항목을 또 물어보는 게 번거롭다는 피드백.
+  // 여기 담긴 id는 "화면에 안 보여도 계속 선택 상태로 둬도 된다"고 이미 승인된 것이므로, 이후
+  // 필터가 몇 번을 더 바뀌어도 다시 묻지 않는다 — 선택 사이클이 끝나면(전체 해제·요청 완료)
+  // 함께 비운다.
+  const [숨김확인됨, set숨김확인됨] = useState<Set<string>>(new Set());
   const filterKey = JSON.stringify([filters.사업부, filters.시작일, filters.종료일, filters.담당자, filters.거래처, filters.업무명]);
   useResetOnFilterChange(filterKey, () => {
-    if (selected.size > 0) setConfirmFilterChange(true);
+    if (selected.size === 0) return;
+    // useResetOnFilterChange는 같은 렌더 안에서 filters.base5가 이미 새 필터 기준으로
+    // 재계산된 뒤 호출되므로, 지금 선택된 항목이 새 필터에서도 전부 보이는지 바로 확인 가능
+    // (2026-08-10 사용자 요청 — 날짜 범위를 조금씩 조정할 때마다 매번 물어보는 게 불편함).
+    // 화면에서 사라지는 항목이 없거나, 이미 이전에 "선택 유지"로 확인받은 항목뿐이면
+    // 물어볼 필요 없이 조용히 선택 유지.
+    const 새필터에보이는ID = new Set(filters.base5.map((r) => r.의뢰서번호));
+    const 확인필요 = Array.from(selected).some((id) => !새필터에보이는ID.has(id) && !숨김확인됨.has(id));
+    if (!확인필요) return;
+    setConfirmFilterChange(true);
   });
   const [banner, setBanner] = useState<배너 | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -84,6 +99,12 @@ export default function Tab4Invoice({
       const next = new Set(prev);
       if (next.has(의뢰서번호)) next.delete(의뢰서번호);
       else next.add(의뢰서번호);
+      // 체크 해제로 선택이 완전히 0건이 되면 "선택 유지" 기준점·확인기록도 함께 지운다 — 안 그러면
+      // 전체 해제 후 다시 선택했을 때 예전 기준점과 비교한 "새로 선택" 표가 엉뚱하게 남는다(2026-08-10 버그).
+      if (next.size === 0) {
+        set유지기준선택(null);
+        set숨김확인됨(new Set());
+      }
       return next;
     });
   }, []);
@@ -95,6 +116,10 @@ export default function Tab4Invoice({
         for (const r of filters.base5) {
           if (checked) next.add(r.의뢰서번호);
           else next.delete(r.의뢰서번호);
+        }
+        if (next.size === 0) {
+          set유지기준선택(null);
+          set숨김확인됨(new Set());
         }
         return next;
       });
@@ -225,6 +250,7 @@ export default function Tab4Invoice({
       );
       setSelected(new Set());
       set유지기준선택(null);
+      set숨김확인됨(new Set());
       setPreviewOpen(false);
       setPreviewData(null);
       setBanner({ type: "success", text: `거래명세서 요청이 완료되었습니다. (거래명세서번호: ${data.거래명세서번호})` });
@@ -313,12 +339,15 @@ export default function Tab4Invoice({
         onConfirm={() => {
           setSelected(new Set());
           set유지기준선택(null);
+          set숨김확인됨(new Set());
           setConfirmFilterChange(false);
         }}
         onClose={() => {
           // "선택 유지" — 지금 선택 상태를 기준점으로 저장해, 이 이후 새로 체크하는 항목만
-          // 별도 통계표로 구분해서 보여준다(2026-08-09 사용자 요청).
+          // 별도 통계표로 구분해서 보여준다(2026-08-09 사용자 요청). 지금 선택된 항목 전부를
+          // "확인됨"으로 등록해, 이후 필터가 몇 번을 더 바뀌어도 같은 항목은 다시 안 묻는다(2026-08-10).
           set유지기준선택(new Set(selected));
+          set숨김확인됨((prev) => new Set([...prev, ...selected]));
           setConfirmFilterChange(false);
         }}
       />

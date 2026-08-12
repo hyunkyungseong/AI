@@ -3,7 +3,8 @@
 import { useEffect, useState } from "react";
 
 type 이력행 = { 코드: string | null; 품목: string; 작업명: string | null; 수량: number; 단가: number | null; 금액: number };
-type 이력응답 = { 편집여부: boolean; 원본: 이력행[]; 최종: 이력행[] };
+// 세액은 거래명세서(그룹) 단위로 확정 시점에 저장된 값 — 원본·최종 양쪽 표에 동일하게 적용된다(2026-08-12).
+type 이력응답 = { 편집여부: boolean; 세액: number; 원본: 이력행[]; 최종: 이력행[] };
 
 type Props = {
   거래명세서번호: string;
@@ -19,7 +20,8 @@ function 합계(rows: 이력행[]) {
   return rows.reduce((s, r) => s + (Number.isFinite(r.금액) ? r.금액 : 0), 0);
 }
 
-function 표(제목: string, rows: 이력행[]) {
+function 표(제목: string, rows: 이력행[], 세액: number) {
+  const 공급가액 = 합계(rows);
   return (
     <div className="flex flex-col overflow-hidden">
       <h3 className="mb-1 text-xs font-semibold text-gray-500 dark:text-gray-400">
@@ -58,11 +60,23 @@ function 표(제목: string, rows: 이력행[]) {
             )}
           </tbody>
           <tfoot>
+            <tr className="border-t border-gray-200 dark:border-gray-700">
+              <td className={td} colSpan={4}>
+                공급가액
+              </td>
+              <td className={tdRight}>{Math.round(공급가액).toLocaleString()}원</td>
+            </tr>
+            <tr className="dark:border-gray-700">
+              <td className={td} colSpan={4}>
+                부가세
+              </td>
+              <td className={tdRight}>{Math.round(세액).toLocaleString()}원</td>
+            </tr>
             <tr className="border-t border-gray-200 font-semibold dark:border-gray-700">
               <td className={td} colSpan={4}>
                 합계
               </td>
-              <td className={tdRight}>{Math.round(합계(rows)).toLocaleString()}원</td>
+              <td className={tdRight}>{Math.round(공급가액 + 세액).toLocaleString()}원</td>
             </tr>
           </tfoot>
         </table>
@@ -134,8 +148,8 @@ export default function InvoiceHistoryDialog({ 거래명세서번호, onClose }:
               </p>
             ) : (
               <div className="mt-3 grid flex-1 grid-cols-2 gap-4 overflow-hidden">
-                {표("원본(자동계산)", data.원본)}
-                {표("최종(확정된 내용)", data.최종)}
+                {표("원본(자동계산)", data.원본, data.세액)}
+                {표("최종(확정된 내용)", data.최종, data.세액)}
               </div>
             )}
           </>

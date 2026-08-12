@@ -23,10 +23,19 @@ FastAPI 백엔드 서버
                               편집·규칙 적용된 거래명세서는 거래명세서_품목(구분='최종')을 그대로 읽어 재사용,
                               편집 이력이 없는 예전 건은 지금처럼 운영통계자료에서 실시간 재계산(2026-07-22)
   GET  /거래명세서품목이력/{no} — 편집된 거래명세서의 원본(자동계산)·최종(확정) 품목 스냅샷을 비교용으로 반환 (2026-07-22 신규)
+  GET  /거래명세서품명이력     — 거래처명으로 "가장 최근 확정"에 쓰인 "새 행 추가" 품명 반환(중복 제거) —
+                              미리보기 오픈 시 프론트가 곧바로 표에 행으로 자동 반영 (2026-08-12 신규)
   POST /거래명세서미리보기  — 채번 전 의뢰서번호_목록으로 원본 품목(왼쪽)·저장된 규칙 적용 결과(오른쪽 초안)·
                               미분류 항목을 JSON으로 미리보기 (2026-07-20 신규, 2026-07-22 규칙엔진 확장, Next.js 탭4 전용)
   GET  /청구품목규칙        — 거래처명+업무명으로 저장된 재사용 청구 규칙 목록 조회 (2026-07-22 신규)
   PUT  /청구품목규칙        — 거래처명+업무명의 규칙 전체를 통째로 교체 저장 (2026-07-22 신규)
+  GET  /담당자              — 담당자 목록 + 각자 담당하는 거래처+업무명 매핑 반환 (2026-08-11 신규,
+                              거래명세서 하단 담당자 연락처 자동 표기용, "담당자 우선" 구조)
+  POST   /담당자             — 담당자 1건 신규 등록
+  PUT    /담당자/{id}        — 담당자 1건 수정(이름·전화번호·이메일)
+  DELETE /담당자             — id 목록으로 삭제(담당 거래처 매핑도 함께 삭제)
+  POST   /담당자/{id}/거래처 — 그 담당자에게 거래처+업무명(비우면 거래처 전체 기본) 매핑 추가
+  DELETE /담당자/거래처      — 매핑 id 목록으로 삭제
   POST /운영통계자료수신     — 당사 생산공정관리시스템 Push 수신 (업무의뢰서 단위, 실시간)
 
   POST   /거래처마스터       — 거래처 1건 신규 등록 (2026-07-19 전체교체→단건생성으로 변경, Next.js [4-D])
@@ -234,9 +243,11 @@ def _자재map_조회(cur, 의뢰서목록=None):
 def _규칙_조회(cur, 거래처명, 업무명):
     """거래처명+업무명으로 저장된 청구품목규칙을 순서대로 조회. 조건 컬럼은 MariaDB JSON 타입인데
     pymysql이 자동으로 dict로 파싱해주지 않는 경우가 있어(드라이버 버전에 따라 str로 올 수 있음)
-    str이면 직접 json.loads()로 변환한다. 조(시트명, 2026-07-29 조별 분할발급) 컬럼도 함께 반환."""
+    str이면 직접 json.loads()로 변환한다. 조(시트명, 2026-07-29 조별 분할발급)·구분표시·규격·비고
+    (Excel B/H/N열 직접 입력, 2026-08-11) 컬럼도 함께 반환."""
     cur.execute(
-        "SELECT 순서, 최종청구품명, 조건, 조 FROM 청구품목규칙 WHERE 거래처명=%s AND 업무명=%s ORDER BY 순서",
+        "SELECT 순서, 최종청구품명, 조건, 조, 구분표시, 규격, 비고 FROM 청구품목규칙 "
+        "WHERE 거래처명=%s AND 업무명=%s ORDER BY 순서",
         (거래처명, 업무명),
     )
     행목록 = cur.fetchall()
@@ -248,14 +259,17 @@ def _규칙_조회(cur, 거래처명, 업무명):
 
 def _규칙_저장(cur, 거래처명, 업무명, 규칙목록):
     """그 거래처+업무명의 규칙 전체를 통째로 교체(DELETE 후 INSERT) — 단가마스터 등 다른 마스터
-    데이터 갱신과 동일한 관례. 규칙목록 각 원소는 {"순서","최종청구품명","조건","조"(선택)} dict."""
+    데이터 갱신과 동일한 관례. 규칙목록 각 원소는
+    {"순서","최종청구품명","조건","조"(선택),"구분표시"(선택),"규격"(선택),"비고"(선택)} dict."""
     cur.execute("DELETE FROM 청구품목규칙 WHERE 거래처명=%s AND 업무명=%s", (거래처명, 업무명))
     if 규칙목록:
         cur.executemany(
-            "INSERT INTO 청구품목규칙 (거래처명, 업무명, 순서, 최종청구품명, 조건, 조) VALUES (%s,%s,%s,%s,%s,%s)",
+            "INSERT INTO 청구품목규칙 (거래처명, 업무명, 순서, 최종청구품명, 조건, 조, 구분표시, 규격, 비고) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             [
                 (거래처명, 업무명, r["순서"], r["최종청구품명"],
-                 json.dumps(r["조건"], ensure_ascii=False), r.get("조"))
+                 json.dumps(r["조건"], ensure_ascii=False), r.get("조"),
+                 r.get("구분표시"), r.get("규격"), r.get("비고"))
                 for r in 규칙목록
             ],
         )
@@ -273,7 +287,8 @@ def _규칙_저장(cur, 거래처명, 업무명, 규칙목록):
 def _통합규칙_조회(cur, 거래처명, 업무명조합):
     """_규칙_조회()와 동일 패턴, 청구품목통합규칙 대상."""
     cur.execute(
-        "SELECT 순서, 최종청구품명, 조건, 조 FROM 청구품목통합규칙 WHERE 거래처명=%s AND 업무명조합=%s ORDER BY 순서",
+        "SELECT 순서, 최종청구품명, 조건, 조, 구분표시, 규격, 비고 FROM 청구품목통합규칙 "
+        "WHERE 거래처명=%s AND 업무명조합=%s ORDER BY 순서",
         (거래처명, 업무명조합),
     )
     행목록 = cur.fetchall()
@@ -288,10 +303,12 @@ def _통합규칙_저장(cur, 거래처명, 업무명조합, 규칙목록):
     cur.execute("DELETE FROM 청구품목통합규칙 WHERE 거래처명=%s AND 업무명조합=%s", (거래처명, 업무명조합))
     if 규칙목록:
         cur.executemany(
-            "INSERT INTO 청구품목통합규칙 (거래처명, 업무명조합, 순서, 최종청구품명, 조건, 조) VALUES (%s,%s,%s,%s,%s,%s)",
+            "INSERT INTO 청구품목통합규칙 (거래처명, 업무명조합, 순서, 최종청구품명, 조건, 조, 구분표시, 규격, 비고) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             [
                 (거래처명, 업무명조합, r["순서"], r["최종청구품명"],
-                 json.dumps(r["조건"], ensure_ascii=False), r.get("조"))
+                 json.dumps(r["조건"], ensure_ascii=False), r.get("조"),
+                 r.get("구분표시"), r.get("규격"), r.get("비고"))
                 for r in 규칙목록
             ],
         )
@@ -363,6 +380,29 @@ def _통합조건식_판정(cur, 거래처명, S):
         return "불일치", None, {"상황": 상황, "기존업무명조합": 조합, "차이_업무명": 차이}, _통합규칙_조회(cur, 거래처명, 조합)
 
     return "개별", None, None, _개별규칙_병합조회(cur, 거래처명, S)
+
+
+def _담당자_조회(cur, 거래처명, 업무명):
+    """거래명세서 하단 담당자 연락처(Excel B31) 자동 표기용 조회(2026-08-11).
+    (거래처명, 업무명) 정확일치 → 없으면 (거래처명, 업무명 NULL="그 거래처 전체 기본") 순서로
+    폴백(단가마스터의 거래처 기본단가 폴백과 동일 관례). 등록된 담당자가 없으면 None을 반환하고,
+    호출부(write_거래명세서_excel())가 템플릿에 원래 있던 고정 텍스트를 그대로 둔다."""
+    cur.execute(
+        """SELECT d.이름, d.전화번호, d.이메일
+           FROM 담당자_담당거래처 m JOIN 담당자 d ON d.id = m.담당자_id
+           WHERE m.거래처명=%s AND m.업무명=%s""",
+        (거래처명, 업무명),
+    )
+    row = cur.fetchone()
+    if row:
+        return row
+    cur.execute(
+        """SELECT d.이름, d.전화번호, d.이메일
+           FROM 담당자_담당거래처 m JOIN 담당자 d ON d.id = m.담당자_id
+           WHERE m.거래처명=%s AND m.업무명 IS NULL""",
+        (거래처명,),
+    )
+    return cur.fetchone()
 
 
 @app.get("/예상공급가액", dependencies=인증필요)
@@ -621,9 +661,10 @@ def _거래명세서_엑셀_바이트(cur, 거래명세서번호):
     )
     업무명행 = cur.fetchall()
     업무명 = 업무명행[0]["업무명"] if 업무명행 else None
+    담당자 = _담당자_조회(cur, 거래명세서["거래처명"], 업무명)
 
     cur.execute(
-        "SELECT 코드, 품목, 수량, 단가, 금액 FROM 거래명세서_품목 "
+        "SELECT 코드, 품목, 수량, 단가, 금액, 구분표시, 규격, 비고 FROM 거래명세서_품목 "
         "WHERE 거래명세서번호=%s AND 구분='최종' ORDER BY 순서",
         (거래명세서번호,),
     )
@@ -640,6 +681,9 @@ def _거래명세서_엑셀_바이트(cur, 거래명세서번호):
                 "수량": float(r["수량"]),
                 "단가": float(r["단가"]) if r["단가"] is not None else None,
                 "금액": float(r["금액"]),
+                "구분표시": r["구분표시"],
+                "규격": r["규격"],
+                "비고": r["비고"],
             }
             for r in 저장된_최종
         ]
@@ -648,7 +692,7 @@ def _거래명세서_엑셀_바이트(cur, 거래명세서번호):
         # 확정한 금액을 그대로 유지하는 원칙과 동일, 2026-07-28 부가세 표기 기능 추가 시 누락됐던
         # 호출부를 2026-07-29 실사용 중 다운로드 오류로 발견해 수정).
         세액 = float(거래명세서["세액"] or 0)
-        return billing.write_거래명세서_excel(품목행목록, 총합계, 세액, 거래명세서["거래처명"], 업무명, 발행일)
+        return billing.write_거래명세서_excel(품목행목록, 총합계, 세액, 거래명세서["거래처명"], 업무명, 발행일, 담당자)
 
     cur.execute(
         f"SELECT 업무의뢰서번호, 작업명, 거래처명, 업무명, 확정청구페이지, 건수, 장수 "
@@ -671,7 +715,7 @@ def _거래명세서_엑셀_바이트(cur, 거래명세서번호):
     자재map = billing.build_자재map(자재df)
     의뢰서번호셋 = {int(float(x)) for x in 의뢰서목록}
     try:
-        return billing.generate_거래명세서_excel(df_all, 단가맵, 자재map, 의뢰서번호셋, 발행일)
+        return billing.generate_거래명세서_excel(df_all, 단가맵, 자재map, 의뢰서번호셋, 발행일, 담당자)
     except ValueError as e:
         raise HTTPException(status_code=500, detail=f"부가세 처리 방식 불일치로 다운로드할 수 없습니다: {e}")
 
@@ -700,12 +744,13 @@ def _거래명세서_엑셀_시트목록(cur, 거래명세서번호):
     )
     업무명행 = cur.fetchall()
     업무명 = 업무명행[0]["업무명"] if 업무명행 else None
+    담당자 = _담당자_조회(cur, 거래명세서["거래처명"], 업무명)
 
     from datetime import date
     발행일 = 거래명세서["발행일자"] or date.today()
 
     cur.execute(
-        "SELECT 조, 코드, 품목, 수량, 단가, 금액 FROM 거래명세서_품목 "
+        "SELECT 조, 코드, 품목, 수량, 단가, 금액, 구분표시, 규격, 비고 FROM 거래명세서_품목 "
         "WHERE 거래명세서번호=%s AND 구분='최종' ORDER BY 순서",
         (거래명세서번호,),
     )
@@ -730,7 +775,7 @@ def _거래명세서_엑셀_시트목록(cur, 거래명세서번호):
         자재map = billing.build_자재map(자재df)
         의뢰서번호셋 = {int(float(x)) for x in 의뢰서목록}
         try:
-            바이트 = billing.generate_거래명세서_excel(df_all, 단가맵, 자재map, 의뢰서번호셋, 발행일)
+            바이트 = billing.generate_거래명세서_excel(df_all, 단가맵, 자재map, 의뢰서번호셋, 발행일, 담당자)
         except ValueError as e:
             raise HTTPException(status_code=500, detail=f"부가세 처리 방식 불일치로 다운로드할 수 없습니다: {e}")
         return [(바이트, None)]
@@ -781,13 +826,16 @@ def _거래명세서_엑셀_시트목록(cur, 거래명세서번호):
                 "수량": float(r["수량"]),
                 "단가": float(r["단가"]) if r["단가"] is not None else None,
                 "금액": float(r["금액"]),
+                "구분표시": r["구분표시"],
+                "규격": r["규격"],
+                "비고": r["비고"],
             }
             for r in 그룹맵[조]
         ]
         그룹공급가액 = sum(x["금액"] for x in 품목행목록)
         그룹세액, _ = billing.부가세_계산(부가세구분, 그룹공급가액)
         바이트 = billing.write_거래명세서_excel(
-            품목행목록, 그룹공급가액, 그룹세액, 거래명세서["거래처명"], 업무명, 발행일
+            품목행목록, 그룹공급가액, 그룹세액, 거래명세서["거래처명"], 업무명, 발행일, 담당자
         )
         시트_목록.append((바이트, 조))
 
@@ -858,7 +906,7 @@ def 거래명세서품목이력(no: str):
     """
     with get_db() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT 편집여부 FROM 거래명세서 WHERE 거래명세서번호=%s", (no,))
+            cur.execute("SELECT 편집여부, 세액 FROM 거래명세서 WHERE 거래명세서번호=%s", (no,))
             거래명세서 = cur.fetchone()
             if not 거래명세서:
                 raise HTTPException(status_code=404, detail="거래명세서번호를 찾을 수 없습니다")
@@ -875,7 +923,47 @@ def 거래명세서품목이력(no: str):
     for r in 원본 + 최종:
         del r["구분"]
 
-    return {"편집여부": bool(거래명세서["편집여부"]), "원본": 원본, "최종": 최종}
+    # 세액은 거래명세서(그룹) 단위로 확정 시점에 이미 계산·저장된 값 그대로 재사용 — 원본·최종
+    # 모두 같은 인보이스에 속하므로 부가세 취급(포함/별도)은 항상 동일하다(2026-08-12, 사용자 요청:
+    # "발행요청목록·발행완료 미리보기에서도 부가세가 표기되면 좋겠어").
+    return {
+        "편집여부": bool(거래명세서["편집여부"]),
+        "세액": float(거래명세서["세액"] or 0),
+        "원본": 원본,
+        "최종": 최종,
+    }
+
+
+@app.get("/거래명세서품명이력", dependencies=인증필요)
+def 거래명세서품명이력(거래처명: str = Query(...)):
+    """이 거래처가 **가장 최근에 확정**했을 때 "새 행 추가"(조건식 없는 수동 입력 행)로 넣었던
+    품명을 중복 없이 반환 — 미리보기 화면을 열면 프론트가 곧바로 오른쪽 표에 행으로 자동 반영한다
+    (2026-08-12, 사용자 요청 — 처음엔 전체 이력을 체크박스로 골라 추가하는 방식 → "선택 없이 전월
+    기준 자동 반영" → 취소 사례를 계기로 "전월(달력 기준)"이 아니라 "가장 최근 저장분" 기준으로
+    최종 확정. 조건식(청구품목규칙) 결과는 이 엔드포인트와 무관하게 이미 항상 자동 재적용되고
+    있으므로 그대로 두고, 새 행(수동 입력)만 대상으로 함).
+
+    "가장 최근"은 이 거래처의 거래명세서품명이력 중 가장 최신 등록일(=가장 최근 확정 시점, 취소
+    여부와 무관)과 **정확히 같은 등록일**을 가진 품명들로 판정한다 — 확정할 때마다 그 확정에 쓰인
+    품명들의 등록일을 함께 NOW()로 갱신하므로(POST /거래명세서요청), 같은 확정에 쓰인 품명들은
+    항상 같은 등록일을 공유하고, 그보다 오래된(=최신 확정에 다시 안 쓰인) 품명은 자연히 제외된다.
+
+    별도 영속 테이블 `거래명세서품명이력`에서 조회한다 — 처음엔 거래명세서_품목(구분='최종')을
+    직접 JOIN했으나, 거래명세서를 취소하면 거래명세서_품목이 FK CASCADE로 함께 삭제돼 품명 이력도
+    같이 사라지는 버그가 실사용 중 발견됨(거래명세서의 감사 기록 생명주기와 "품명 자동완성용
+    이력"의 생명주기는 서로 다른데 같은 테이블에 얹혀 있었던 게 원인). 이 테이블은
+    POST /거래명세서요청 확정 시(수동입력=true인 행만)에만 채워지고, 취소 API는 전혀 건드리지
+    않아 취소해도 남는다. 업무명별로는 세분화하지 않고 거래처 전체 이력을 반환한다(세분화하려면
+    거래명세서_의뢰서→운영통계자료까지 JOIN해야 해서 복잡도 대비 실익이 낮다고 판단, 사용자 확인)."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 품명 FROM 거래명세서품명이력 WHERE 거래처명=%s "
+                "AND 등록일 = (SELECT MAX(등록일) FROM 거래명세서품명이력 WHERE 거래처명=%s) "
+                "ORDER BY 품명",
+                (거래처명, 거래처명),
+            )
+            return [r["품명"] for r in cur.fetchall()]
 
 
 class 거래명세서미리보기_요청(BaseModel):
@@ -987,7 +1075,8 @@ def 거래명세서미리보기(요청: 거래명세서미리보기_요청):
         ],
         "규칙적용결과": [
             {"최종청구품명": row["표시품명"], "코드": row["코드"] or None,
-             "수량": row["수량"], "단가": row["단가"], "금액": row["금액"], "조": row.get("조")}
+             "수량": row["수량"], "단가": row["단가"], "금액": row["금액"], "조": row.get("조"),
+             "구분표시": row.get("구분표시"), "규격": row.get("규격"), "비고": row.get("비고")}
             for row in 규칙적용결과
         ],
         "미분류": [
@@ -999,7 +1088,8 @@ def 거래명세서미리보기(요청: 거래명세서미리보기_요청):
         # 이 응답을 그대로 써서 규칙적용결과와 인덱스 1:1 대응을 유지한다(2026-08-01, 별도
         # 왕복 없이 한 번의 응답으로 끝내도록 단순화).
         "규칙목록": [
-            {"순서": r["순서"], "최종청구품명": r["최종청구품명"], "조건": r["조건"], "조": r.get("조")}
+            {"순서": r["순서"], "최종청구품명": r["최종청구품명"], "조건": r["조건"], "조": r.get("조"),
+             "구분표시": r.get("구분표시"), "규격": r.get("규격"), "비고": r.get("비고")}
             for r in 규칙목록
         ],
         "총합계": round(총합계),
@@ -1013,6 +1103,10 @@ class 청구품목규칙_행(BaseModel):
     최종청구품명: str
     조건: dict  # {"or": [{"and": [{"field","op","value"}, ...]}, ...]} — {"or": []}이면 전체 매칭
     조: Optional[str] = None  # 조별 분할발급 시트명(2026-07-29) — 없으면 미지정(하위호환)
+    # Excel B열(구분)·H열(규격)·N열(비고) 직접 입력(2026-08-11) — 없으면 미지정(하위호환)
+    구분표시: Optional[str] = None
+    규격: Optional[str] = None
+    비고: Optional[str] = None
 
 
 @app.get("/청구품목규칙", dependencies=인증필요)
@@ -1043,6 +1137,131 @@ def 청구품목규칙_저장(요청: 청구품목규칙_저장요청):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"규칙 저장 실패: {e}")
     return {"status": "ok", "저장건수": len(요청.규칙목록)}
+
+
+# ── 담당자(당사 담당자 연락처) 관리 API (2026-08-11) ──────────────
+# 거래명세서 하단 담당자 연락처(Excel B31) 자동 표기용. "담당자 우선" 구조(사용자 확정) —
+# 담당자 1명 밑에 여러 거래처+업무명을 등록해두고, 담당자 정보(이름·전화·이메일) 수정은
+# 이 화면 한 곳에서만 하면 연결된 모든 거래처에 자동 반영된다(_담당자_조회() 참고).
+
+@app.get("/담당자", dependencies=인증필요)
+def 담당자_목록():
+    """담당자 목록 + 각자 담당하는 거래처+업무명 매핑을 중첩 구조로 함께 반환 — 프론트가
+    담당자 하나를 선택하면 곧바로 그 담당 거래처 목록을 보여줄 수 있게 한다."""
+    from collections import defaultdict
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM 담당자 ORDER BY 이름")
+            담당자행 = cur.fetchall()
+            cur.execute("SELECT id, 담당자_id, 거래처명, 업무명 FROM 담당자_담당거래처 ORDER BY 거래처명, 업무명")
+            매핑행 = cur.fetchall()
+    매핑맵 = defaultdict(list)
+    for m in 매핑행:
+        매핑맵[m["담당자_id"]].append({"id": m["id"], "거래처명": m["거래처명"], "업무명": m["업무명"]})
+    for d in 담당자행:
+        d["담당거래처"] = 매핑맵.get(d["id"], [])
+    return 담당자행
+
+
+class 담당자행(BaseModel):
+    model_config = ConfigDict(title="StaffCreateRequest")  # Swagger 표시용 영문 별명 — 필드명은 한글 그대로
+
+    이름: str
+    전화번호: Optional[str] = None
+    이메일: Optional[str] = None
+
+
+@app.post("/담당자", dependencies=인증필요)
+def 담당자_추가(담당자: 담당자행):
+    이름 = (담당자.이름 or "").strip()
+    if not 이름:
+        raise HTTPException(status_code=400, detail="이름은 필수입니다")
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO 담당자 (이름, 전화번호, 이메일) VALUES (%s,%s,%s)",
+                    (이름, 담당자.전화번호, 담당자.이메일),
+                )
+                새_id = cur.lastrowid
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"저장 실패: {e}")
+    return {"status": "ok", "id": 새_id}
+
+
+@app.put("/담당자/{id}", dependencies=인증필요)
+def 담당자_수정_요청(id: int, 담당자: 담당자행):
+    이름 = (담당자.이름 or "").strip()
+    if not 이름:
+        raise HTTPException(status_code=400, detail="이름은 필수입니다")
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE 담당자 SET 이름=%s, 전화번호=%s, 이메일=%s WHERE id=%s",
+                (이름, 담당자.전화번호, 담당자.이메일, id),
+            )
+            if cur.rowcount == 0:
+                raise HTTPException(status_code=404, detail="해당 id의 담당자가 없습니다")
+    return {"status": "ok"}
+
+
+@app.delete("/담당자", dependencies=인증필요)
+def 담당자_삭제(id: List[int] = Query(...)):
+    """담당자 삭제 — 담당 거래처+업무명 매핑도 함께 삭제됨(담당자_담당거래처 FK ON DELETE CASCADE)."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.executemany("DELETE FROM 담당자 WHERE id=%s", [(i,) for i in id])
+    return {"status": "ok", "삭제요청건수": len(id)}
+
+
+class 담당거래처행(BaseModel):
+    model_config = ConfigDict(title="StaffClientMappingRequest")  # Swagger 표시용 영문 별명 — 필드명은 한글 그대로
+
+    거래처명: str
+    업무명: Optional[str] = None  # 비우면 그 거래처 전체 기본 담당자
+
+
+@app.post("/담당자/{id}/거래처", dependencies=인증필요)
+def 담당자_거래처_추가(id: int, 매핑: 담당거래처행):
+    거래처명 = (매핑.거래처명 or "").strip()
+    if not 거래처명:
+        raise HTTPException(status_code=400, detail="거래처명은 필수입니다")
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM 담당자 WHERE id=%s", (id,))
+                if not cur.fetchone():
+                    raise HTTPException(status_code=404, detail="해당 id의 담당자가 없습니다")
+                if 매핑.업무명 is None:
+                    # 단가마스터 기본단가와 동일한 이유로(NULL끼리는 UNIQUE 제약이 중복을 못 막음)
+                    # 거래처 전체 기본 담당자는 API 레벨에서 직접 중복 체크(2026-08-11).
+                    cur.execute(
+                        "SELECT 1 FROM 담당자_담당거래처 WHERE 거래처명=%s AND 업무명 IS NULL",
+                        (거래처명,),
+                    )
+                    if cur.fetchone():
+                        raise HTTPException(status_code=409, detail="이미 이 거래처의 기본 담당자가 등록되어 있습니다")
+                cur.execute(
+                    "INSERT INTO 담당자_담당거래처 (담당자_id, 거래처명, 업무명) VALUES (%s,%s,%s)",
+                    (id, 거래처명, 매핑.업무명),
+                )
+                새_id = cur.lastrowid
+    except HTTPException:
+        raise
+    except pymysql.err.IntegrityError:
+        raise HTTPException(status_code=409, detail="이미 등록된 거래처+업무명입니다")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"저장 실패: {e}")
+    return {"status": "ok", "id": 새_id}
+
+
+@app.delete("/담당자/거래처", dependencies=인증필요)
+def 담당자_거래처_삭제(id: List[int] = Query(...)):
+    """담당자_담당거래처 매핑 id 목록으로 삭제(담당자 본인은 그대로 유지)."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.executemany("DELETE FROM 담당자_담당거래처 WHERE id=%s", [(i,) for i in id])
+    return {"status": "ok", "삭제요청건수": len(id)}
 
 
 # ── 거래처마스터 쓰기 API ──────────────────────────────────────
@@ -1244,6 +1463,13 @@ class 품목행_입력(BaseModel):
     단가: Optional[float] = None  # 병합된 항목의 단가가 갈리면 None("—")
     금액: float
     조: Optional[str] = None  # 조별 분할발급(2026-07-29) — 없으면 거래명세서 1건(하위호환)
+    # Excel B열(구분)·H열(규격)·N열(비고) 직접 입력(2026-08-11) — 없으면 미지정(하위호환)
+    구분표시: Optional[str] = None
+    규격: Optional[str] = None
+    비고: Optional[str] = None
+    # 조건식(규칙) 없이 "새 행 추가"로 직접 타이핑한 행이면 true(2026-08-12) — 거래명세서품명이력에
+    # 저장할 대상을 이 값으로 걸러낸다(규칙 품명은 청구품목규칙으로 이미 따로 재사용되므로 제외).
+    수동입력: Optional[bool] = None
 
 
 class 통합조건식_해결_입력(BaseModel):
@@ -1359,7 +1585,9 @@ def 거래명세서요청(요청: 거래명세서요청_요청):
 
     최종목록 = [
         {"코드": r.코드 or "", "표시품명": r.품목, "수량": r.수량, "단가": r.단가,
-         "금액": round(r.금액, 2), "조": r.조 or None}
+         "금액": round(r.금액, 2), "조": r.조 or None,
+         "구분표시": r.구분표시 or None, "규격": r.규격 or None, "비고": r.비고 or None,
+         "수동입력": bool(r.수동입력)}
         for r in (요청.품목_최종 or [])
     ]
 
@@ -1377,8 +1605,8 @@ def 거래명세서요청(요청: 거래명세서요청_요청):
 
     품목_삽입_sql = """
         INSERT INTO 거래명세서_품목
-            (거래명세서번호, 구분, 순서, 코드, 품목, 작업명, 조, 수량, 단가, 금액)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            (거래명세서번호, 구분, 순서, 코드, 품목, 작업명, 조, 구분표시, 규격, 비고, 수량, 단가, 금액)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     """
 
     try:
@@ -1399,13 +1627,28 @@ def 거래명세서요청(요청: 거래명세서요청_요청):
 
                 if 요청.품목_최종 is not None:
                     cur.executemany(품목_삽입_sql, [
-                        (거래명세서번호, "원본", i, r["코드"], r.get("품목"), r.get("작업명"), None, r["수량"], r["단가"], r["금액"])
+                        (거래명세서번호, "원본", i, r["코드"], r.get("품목"), r.get("작업명"), None,
+                         None, None, None, r["수량"], r["단가"], r["금액"])
                         for i, r in enumerate(원본목록)
                     ])
                     cur.executemany(품목_삽입_sql, [
-                        (거래명세서번호, "최종", i, r["코드"] or None, r["표시품명"], None, r["조"], r["수량"], r["단가"], r["금액"])
+                        (거래명세서번호, "최종", i, r["코드"] or None, r["표시품명"], None, r["조"],
+                         r["구분표시"], r["규격"], r["비고"], r["수량"], r["단가"], r["금액"])
                         for i, r in enumerate(최종목록)
                     ])
+
+                    # 품명 이력 upsert(2026-08-12) — 거래명세서_품목과 달리 취소(전체취소 시
+                    # DELETE FROM 거래명세서 CASCADE)해도 지워지지 않는 별도 테이블. 미리보기
+                    # "새 행 추가" 자동완성·"과거 품명 추가"(체크박스 일괄추가) 후보용.
+                    # 조건식(규칙) 품명은 청구품목규칙으로 이미 재사용되므로 제외 — 수동입력=true인
+                    # 행만("새 행 추가"로 직접 타이핑한 것만) 저장한다(사용자 요청, 2026-08-12).
+                    최종품명목록 = sorted({r["표시품명"] for r in 최종목록 if r.get("표시품명") and r.get("수동입력")})
+                    if 최종품명목록:
+                        cur.executemany(
+                            "INSERT INTO 거래명세서품명이력 (거래처명, 품명) VALUES (%s,%s) "
+                            "ON DUPLICATE KEY UPDATE 등록일=NOW()",
+                            [(요청.거래처명, 품명) for 품명 in 최종품명목록],
+                        )
 
                 if 요청.규칙 is not None:
                     # 2026-08-08 다중업무명 규칙조회 재설계: 선택된 업무명이 1개면 개별조건식,

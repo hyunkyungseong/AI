@@ -1,7 +1,7 @@
 """
 MariaDB(dashboard DB) 초기화 스크립트 — 이 프로젝트 전용 신규 인스턴스
 실행: python scripts/init_db_mariadb.py
-결과: db_config.py에 지정된 DB(기본값 dashboard)에 11개 테이블 생성
+결과: db_config.py에 지정된 DB(기본값 dashboard)에 14개 테이블 생성
 
 테이블 목록:
   1. 운영통계자료      — preprocess.py 산출물(processed.pkl) 대체용 원본+파생 데이터
@@ -17,6 +17,10 @@ MariaDB(dashboard DB) 초기화 스크립트 — 이 프로젝트 전용 신규 
   10. 거래명세서_품목   — 거래명세서별 원본/최종 품목 스냅샷(편집 이력용) (2026-07-22 추가)
   11. 청구품목통합규칙  — 거래처+업무명조합(2개 이상)별로 저장되는 재사용 청구 규칙, 개별조건식(9번)보다
                        우선 적용됨 (2026-08-08 재설계로 정식 복원 — 아래 이력 참고)
+  12. 담당자            — 거래명세서 하단 담당자 연락처(이름·전화·이메일) (2026-08-11 추가)
+  13. 담당자_담당거래처  — 담당자 1명이 담당하는 거래처+업무명 매핑("담당자 우선" 구조) (2026-08-11 추가)
+  14. 거래명세서품명이력  — 거래처별로 과거 확정 발행된 최종 품명 이력(거래명세서 취소·삭제와 무관하게
+                       영속 — 미리보기 "새 행 추가"/"과거 품명 추가" 자동완성·일괄추가용) (2026-08-12 추가)
 
 (2026-07-31~2026-08-01에 이 "청구품목통합규칙" 테이블을 "통합조건식" 기능으로 처음 시도했다가
  부작용(매칭 0건 규칙 노출, 단일 업무명 요청 차단)으로 같은 날 코드를 원복함 — 그때는 이 스크립트에서
@@ -197,6 +201,9 @@ def get_db():
             업무명          VARCHAR(200) NOT NULL,
             순서            INT NOT NULL,
             최종청구품명    VARCHAR(200) NOT NULL,
+            구분표시        VARCHAR(50),
+            규격            VARCHAR(50),
+            비고            VARCHAR(200),
             조건            JSON NOT NULL,
             등록일          DATETIME DEFAULT CURRENT_TIMESTAMP,
             수정일          DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -214,6 +221,9 @@ def get_db():
             품목            VARCHAR(100),
             작업명          VARCHAR(200),
             조              VARCHAR(50),
+            구분표시        VARCHAR(50),
+            규격            VARCHAR(50),
+            비고            VARCHAR(200),
             수량            DECIMAL(12,2),
             단가            DECIMAL(12,2),
             금액            DECIMAL(14,2),
@@ -231,9 +241,45 @@ def get_db():
             최종청구품명    VARCHAR(200) NOT NULL,
             조건            JSON NOT NULL,
             조              VARCHAR(50),
+            구분표시        VARCHAR(50),
+            규격            VARCHAR(50),
+            비고            VARCHAR(200),
             등록일          DATETIME DEFAULT CURRENT_TIMESTAMP,
             수정일          DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             UNIQUE KEY uk_통합규칙 (거래처명, 업무명조합, 순서)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """,
+
+    "담당자": """
+        CREATE TABLE IF NOT EXISTS 담당자 (
+            id          INT AUTO_INCREMENT PRIMARY KEY,
+            이름        VARCHAR(50) NOT NULL,
+            전화번호    VARCHAR(30),
+            이메일      VARCHAR(100),
+            등록일      DATETIME DEFAULT CURRENT_TIMESTAMP,
+            수정일      DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """,
+
+    "담당자_담당거래처": """
+        CREATE TABLE IF NOT EXISTS 담당자_담당거래처 (
+            id          INT AUTO_INCREMENT PRIMARY KEY,
+            담당자_id   INT NOT NULL,
+            거래처명    VARCHAR(100) NOT NULL,
+            업무명      VARCHAR(200),
+            등록일      DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (담당자_id) REFERENCES 담당자(id) ON DELETE CASCADE,
+            UNIQUE KEY uk_거래처업무 (거래처명, 업무명)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """,
+
+    "거래명세서품명이력": """
+        CREATE TABLE IF NOT EXISTS 거래명세서품명이력 (
+            id          INT AUTO_INCREMENT PRIMARY KEY,
+            거래처명    VARCHAR(100) NOT NULL,
+            품명        VARCHAR(200) NOT NULL,
+            등록일      DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_거래처품명 (거래처명, 품명)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """,
 }
@@ -326,6 +372,31 @@ def migrate():
                 print("  마이그레이션: 거래명세서_품목.조 컬럼 추가 완료")
             else:
                 print("  마이그레이션: 거래명세서_품목.조 컬럼 이미 존재 (건너뜀)")
+
+            # 2026-08-11 — 거래명세서 구분표시(Excel B열)·규격(H열)·비고(N열) 조건식 입력 지원.
+            # "구분"이라는 이름은 거래명세서_품목.구분(ENUM 원본/최종)과 충돌해서 쓸 수 없어
+            # "구분표시"로 명명(청구품목규칙.md, docs 참고).
+            for 테이블, 이후컬럼 in [
+                ("청구품목규칙", "최종청구품명"),
+                ("청구품목통합규칙", "조"),
+            ]:
+                for 컬럼, 정의 in [("구분표시", "VARCHAR(50)"), ("규격", "VARCHAR(50)"), ("비고", "VARCHAR(200)")]:
+                    if not _컬럼_존재(cur, 테이블, 컬럼):
+                        cur.execute(f"ALTER TABLE {테이블} ADD COLUMN {컬럼} {정의} NULL AFTER {이후컬럼}")
+                        print(f"  마이그레이션: {테이블}.{컬럼} 컬럼 추가 완료")
+                        이후컬럼 = 컬럼
+                    else:
+                        print(f"  마이그레이션: {테이블}.{컬럼} 컬럼 이미 존재 (건너뜀)")
+                        이후컬럼 = 컬럼
+
+            이후컬럼 = "조"
+            for 컬럼, 정의 in [("구분표시", "VARCHAR(50)"), ("규격", "VARCHAR(50)"), ("비고", "VARCHAR(200)")]:
+                if not _컬럼_존재(cur, "거래명세서_품목", 컬럼):
+                    cur.execute(f"ALTER TABLE 거래명세서_품목 ADD COLUMN {컬럼} {정의} NULL AFTER {이후컬럼}")
+                    print(f"  마이그레이션: 거래명세서_품목.{컬럼} 컬럼 추가 완료")
+                else:
+                    print(f"  마이그레이션: 거래명세서_품목.{컬럼} 컬럼 이미 존재 (건너뜀)")
+                이후컬럼 = 컬럼
 
 
 def main():

@@ -32,13 +32,22 @@ const inputCls =
   "rounded-md border border-gray-300 bg-white px-2 py-1 text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100";
 
 type Props = {
-  initial: { 최종청구품명: string; 조건: 규칙조건; 조?: string } | null; // null = 새 규칙(빈 값으로 시작)
+  initial:
+    | { 최종청구품명: string; 조건: 규칙조건; 조?: string; 구분표시?: string; 규격?: string; 비고?: string }
+    | null; // null = 새 규칙(빈 값으로 시작)
   코드옵션?: string[]; // 지금 원본(왼쪽) 표에 실제 등장하는 값 — 오타 방지용 datalist 후보
   품목옵션?: string[];
   작업명옵션?: string[];
   단가옵션?: string[];
   조옵션?: string[]; // 이미 쓰인 조 이름 + 원본 표의 작업명 목록(조별 분할발급, 2026-07-29)
-  onSave: (결과: { 최종청구품명: string; 조건: 규칙조건; 조?: string }) => void;
+  onSave: (결과: {
+    최종청구품명: string;
+    조건: 규칙조건;
+    조?: string;
+    구분표시?: string;
+    규격?: string;
+    비고?: string;
+  }) => void;
   onCancel: () => void;
 };
 
@@ -91,6 +100,11 @@ export default function ConditionRuleModal({
     () => initial?.조건.or.map((g) => ({ and: g.and.map((c) => ({ ...c })) })) ?? []
   );
   const [조, set조] = useState(initial?.조 ?? "");
+  // 거래명세서 Excel 구분(B열)·규격(H열)·비고(N열) 직접 입력(2026-08-11) — 규칙 단위로 저장,
+  // 비워두면 구분은 지금처럼 발행일 자동값(첫 행만), 규격·비고는 빈 칸 그대로 나간다.
+  const [구분표시, set구분표시] = useState(initial?.구분표시 ?? "");
+  const [규격, set규격] = useState(initial?.규격 ?? "");
+  const [비고, set비고] = useState(initial?.비고 ?? "");
   // 사용자가 조 입력칸을 직접 건드리기 전까지는(첫 렌더에 이미 값이 있던 경우 포함) "작업명==X"
   // 단일 조건의 X를 실시간으로 자동 채워 보여준다 — 한 번이라도 직접 입력하면 그 뒤로는 사용자
   // 값을 그대로 존중(자동채움을 덮어씀, 2026-07-29 사용자 확정).
@@ -144,11 +158,14 @@ export default function ConditionRuleModal({
       최종청구품명: 최종청구품명.trim(),
       조건: { or: groups.filter((g) => g.and.length > 0) },
       조: 조_최종 || undefined,
+      구분표시: 구분표시.trim() || undefined,
+      규격: 규격.trim() || undefined,
+      비고: 비고.trim() || undefined,
     });
   }
 
   return (
-    <div className="absolute inset-y-0 right-0 z-20 flex w-full max-w-md flex-col overflow-auto border-l border-gray-300 bg-white p-5 shadow-2xl dark:border-gray-700 dark:bg-gray-900">
+    <div className="absolute inset-y-0 right-0 z-20 flex w-full max-w-xl flex-col overflow-auto border-l border-gray-300 bg-white p-5 shadow-2xl dark:border-gray-700 dark:bg-gray-900">
       <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">청구 조건식 편집</h2>
       <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
         왼쪽에 열려 있는 원본 표를 참고하면서 조건을 만드세요.
@@ -195,6 +212,39 @@ export default function ConditionRuleModal({
           </span>
         )}
       </label>
+
+      <div className="mt-3 grid grid-cols-3 gap-2">
+        <label className="block text-sm text-gray-700 dark:text-gray-300">
+          구분 <span className="text-gray-400">— 비우면 발행일 자동</span>
+          <input
+            type="text"
+            value={구분표시}
+            onChange={(e) => set구분표시(e.target.value)}
+            placeholder="예: 05월29일"
+            className={`mt-1 w-full ${inputCls}`}
+          />
+        </label>
+        <label className="block text-sm text-gray-700 dark:text-gray-300">
+          규격
+          <input
+            type="text"
+            value={규격}
+            onChange={(e) => set규격(e.target.value)}
+            placeholder="예: A4"
+            className={`mt-1 w-full ${inputCls}`}
+          />
+        </label>
+        <label className="block text-sm text-gray-700 dark:text-gray-300">
+          비고
+          <input
+            type="text"
+            value={비고}
+            onChange={(e) => set비고(e.target.value)}
+            placeholder="예: 추가내역서 봉입"
+            className={`mt-1 w-full ${inputCls}`}
+          />
+        </label>
+      </div>
 
         <div className="mt-4 space-y-3">
           {groups.length === 0 && (

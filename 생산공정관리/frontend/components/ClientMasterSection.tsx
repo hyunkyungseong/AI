@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import ClientMaster from "./ClientMaster";
 import PricingMaster from "./PricingMaster";
+import StaffMaster from "./StaffMaster";
 import type { 거래처행, 단가행, 운영통계행 } from "./Dashboard";
 // prop 이름은 부모(Dashboard.tsx)가 넘겨주는 초기값이라 계속 clientRows로 받되, 아래에서
 // useState로 감싸 이 컴포넌트가 "진짜 소유자"가 되도록 한다(2026-08-09) — "거래처관리"
@@ -16,6 +17,7 @@ import type { 거래처행, 단가행, 운영통계행 } from "./Dashboard";
 const SUB_TABS = [
   { id: "clients", label: "거래처관리" },
   { id: "pricing", label: "단가관리" },
+  { id: "staff", label: "담당자관리" },
 ] as const;
 
 type SubTabId = (typeof SUB_TABS)[number]["id"];
@@ -89,6 +91,9 @@ export default function ClientMasterSection({
         </div>
         <div className={subTab === "pricing" ? "flex flex-1" : "hidden"}>
           <PricingMaster key={pricingKey} rows={pricingRows} clientRows={clientRows} taskRows={taskRows} />
+        </div>
+        <div className={subTab === "staff" ? "flex flex-1" : "hidden"}>
+          <StaffMaster clientRows={clientRows} taskRows={taskRows} />
         </div>
       </div>
     </div>
