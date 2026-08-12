@@ -81,6 +81,7 @@ export default async function Home() {
       거래명세서번호: String(r.거래명세서번호 ?? ""),
       발송여부: Number(r.발송여부 ?? 0) === 1 ? 1 : 0,
       편집여부: Number(r.편집여부 ?? 0) === 1 ? 1 : 0,
+      발행가능: Number(r.발행가능 ?? 1) === 0 ? 0 : 1,
       담당자: String(r.담당자 ?? ""),
       사업부: String(r.사업부 ?? ""),
       거래처명: String(r.거래처명 ?? ""),

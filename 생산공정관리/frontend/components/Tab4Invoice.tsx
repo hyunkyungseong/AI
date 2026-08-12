@@ -185,7 +185,13 @@ export default function Tab4Invoice({
 
   // 미리보기 팝업의 "확정" 클릭 시에만 실행 — 편집된 최종 품목·규칙을 받아 payload를 구성해 POST한다.
   // 공급가액은 편집 후 오른쪽 표의 실제 금액 합계 기준(편집 전 예상치가 아님).
-  async function handleConfirmSubmit(edited: { 품목_최종: 확정품목[]; 규칙: 확정규칙[]; 통합조건식_해결?: 통합조건식_해결 | null }) {
+  async function handleConfirmSubmit(edited: {
+    품목_최종: 확정품목[];
+    규칙: 확정규칙[];
+    통합조건식_해결?: 통합조건식_해결 | null;
+    통합시트명?: string;
+    상단업무명?: string;
+  }) {
     // 미리보기 다이얼로그가 이미 부가세오류가 있으면 "확정" 버튼을 막아두지만, 이중 안전장치로
     // 여기서도 한 번 더 막는다(작업명별 부가세 처리 방식이 섞여 판정 불가, 2026-08-04).
     if (previewData?.부가세오류) {
@@ -216,6 +222,10 @@ export default function Tab4Invoice({
       통합조건식_해결: edited.통합조건식_해결 ?? null,
       품목_최종: edited.품목_최종,
       규칙: edited.규칙,
+      // 작업구분(조)이 2개 이상일 때만 InvoicePreviewDialog가 채워 보냄(2026-08-12) — 서버가
+      // 최종목록의 조 종류 수로 다시 판정해 조건이 안 맞으면 무시한다.
+      통합시트명: edited.통합시트명,
+      상단업무명: edited.상단업무명,
     };
 
     setSubmitting(true);
@@ -245,6 +255,7 @@ export default function Tab4Invoice({
             거래명세서번호: 번호,
             발송여부: 0,
             편집여부: data.편집여부 ?? 0,
+            발행가능: 1, // 신규 발행은 항상 발행가능=1로 시작(DB DEFAULT와 동일, 2026-08-12)
           }))
         )
       );

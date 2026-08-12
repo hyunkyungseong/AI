@@ -10,6 +10,10 @@ type Props = {
   onToggleAll: (checked: boolean) => void;
   onShowHistory: (no: string) => void;
   showDownload?: boolean;
+  // 거래처 승인 대기 게이트(2026-08-12) — 발행요청목록 전용, 발행완료 탭엔 안 보임(이미 발행돼
+  // 의미가 없어짐). 꺼두면 경영지원부가 "거래명세서 발행" 처리 시 그 건만 자동 제외된다.
+  showPublishGate?: boolean;
+  onTogglePublishGate?: (no: string, value: boolean) => void;
 };
 
 type RowProps = {
@@ -19,11 +23,35 @@ type RowProps = {
   onToggle: (key: string) => void;
   onShowHistory: (no: string) => void;
   showDownload?: boolean;
+  showPublishGate?: boolean;
+  onTogglePublishGate?: (no: string, value: boolean) => void;
 };
+
+// 다운로드 열 아이콘(2026-08-12, 사용자 요청 — 한글 텍스트 대신 직관적인 아이콘). 별도 아이콘
+// 패키지 없이 인라인 SVG로 그려 의존성을 늘리지 않는다(이 파일에서 헤더·행 셀 두 곳에서만 쓰임).
+function DownloadIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}
+         strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
+      <path d="M12 3v12" />
+      <path d="M7 10l5 5 5-5" />
+      <path d="M4 19h16" />
+    </svg>
+  );
+}
 
 // InvoiceSelectionTable.tsx의 React.memo Row 패턴 재사용 — 체크박스 하나 토글할 때 전체 행이
 // 다시 그려지는 성능 문제를 막기 위해 각 행에 checked(boolean) 스칼라만 전달한다([4-B]에서 실측 검증됨).
-const Row = memo(function Row({ group: g, index, checked, onToggle, onShowHistory, showDownload }: RowProps) {
+const Row = memo(function Row({
+  group: g,
+  index,
+  checked,
+  onToggle,
+  onShowHistory,
+  showDownload,
+  showPublishGate,
+  onTogglePublishGate,
+}: RowProps) {
   return (
     <tr className="border-t border-gray-100 dark:border-gray-800">
       <td className="px-3 py-1.5">
@@ -34,6 +62,34 @@ const Row = memo(function Row({ group: g, index, checked, onToggle, onShowHistor
           aria-label={`${g.거래명세서번호} ${g.업무명} 선택`}
         />
       </td>
+      {showPublishGate && (
+        <td className="px-3 py-1.5">
+          <label className="inline-flex items-center gap-1 whitespace-nowrap text-xs">
+            <input
+              type="checkbox"
+              checked={g.발행가능 === 1}
+              onChange={(e) => onTogglePublishGate?.(g.거래명세서번호, e.target.checked)}
+              aria-label={`${g.거래명세서번호} 발행가능`}
+            />
+            {g.발행가능 === 0 && (
+              <span className="text-amber-600 dark:text-amber-400">승인대기</span>
+            )}
+          </label>
+        </td>
+      )}
+      {showDownload && (
+        <td className="px-3 py-1.5 text-center">
+          <a
+            href={`/api/invoice-excel/${encodeURIComponent(g.거래명세서번호)}`}
+            download
+            title="다운로드"
+            aria-label={`${g.거래명세서번호} 다운로드`}
+            className="inline-flex text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300"
+          >
+            <DownloadIcon className="h-4 w-4" />
+          </a>
+        </td>
+      )}
       <td className="px-3 py-1.5 text-gray-500 dark:text-gray-400">{index + 1}</td>
       <td className="px-3 py-1.5 text-gray-900 dark:text-gray-100">
         {g.거래명세서번호}
@@ -80,23 +136,14 @@ const Row = memo(function Row({ group: g, index, checked, onToggle, onShowHistor
           `${g.예상공급가액.toLocaleString()}원`
         )}
       </td>
-      {showDownload && (
-        <td className="px-3 py-1.5">
-          <a
-            href={`/api/invoice-excel/${encodeURIComponent(g.거래명세서번호)}`}
-            download
-            className="text-blue-600 hover:underline dark:text-blue-400"
-          >
-            다운로드
-          </a>
-        </td>
-      )}
     </tr>
   );
 });
 
-// showDownload=true(발행완료 탭 전용, Streamlit 시절과 동일한 배치 — CHANGELOG 2026-07-17 "다운로드
-// 버튼... 발행완료 탭 전용으로 이동" 참고)면 마지막 열에 거래명세서번호 단위 다운로드 링크를 추가한다.
+// showDownload=true면 체크박스 옆에 거래명세서번호 단위 다운로드 아이콘을 추가한다. 원래(CHANGELOG
+// 2026-07-17)는 발행완료 탭 전용이었으나, GET /거래명세서엑셀/{no}가 발송여부와 무관하게 항상
+// 동작하는 구조라는 걸 확인하고 2026-08-12부터 발행요청목록(대기) 탭에도 켰다 — 거래처 승인을
+// 받으려면 발행 전에도 실제 서식 그대로의 파일을 보여줄 수 있어야 한다는 사용자 요청.
 // 체크박스 선택과 무관하게 행마다 바로 내려받을 수 있어, 그룹(거래명세서번호+업무명) 여러 개를 선택했을 때
 // "어느 파일을 받는 건지" 모호해지는 문제 없이 항상 명확하다.
 export default function InvoiceIssuedLevel1Table({
@@ -106,8 +153,11 @@ export default function InvoiceIssuedLevel1Table({
   onToggleAll,
   onShowHistory,
   showDownload = false,
+  showPublishGate = false,
+  onTogglePublishGate,
 }: Props) {
   const 전체선택됨 = groups.length > 0 && groups.every((g) => selected.has(g.key));
+  const colSpan = 15 + (showDownload ? 1 : 0) + (showPublishGate ? 1 : 0);
 
   return (
     <div className="max-h-[60vh] overflow-auto rounded-lg border border-gray-200 dark:border-gray-800">
@@ -122,6 +172,20 @@ export default function InvoiceIssuedLevel1Table({
                 aria-label="전체 선택"
               />
             </th>
+            {showPublishGate && (
+              <th
+                className="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-300"
+                title="꺼두면 거래처 승인 대기 중으로 표시되고, 경영지원부가 발행할 수 없습니다"
+              >
+                발행가능
+              </th>
+            )}
+            {showDownload && (
+              <th className="px-3 py-2 text-center font-medium text-gray-600 dark:text-gray-300" title="다운로드">
+                <DownloadIcon className="mx-auto h-4 w-4" />
+                <span className="sr-only">다운로드</span>
+              </th>
+            )}
             <th className="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-300">No</th>
             <th className="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-300">거래명세서번호</th>
             <th className="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-300">사업부</th>
@@ -136,9 +200,6 @@ export default function InvoiceIssuedLevel1Table({
             <th className="px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300">봉투수량</th>
             <th className="px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300">삽지수량</th>
             <th className="px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300">예상공급가액</th>
-            {showDownload && (
-              <th className="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-300">다운로드</th>
-            )}
           </tr>
         </thead>
         <tbody>
@@ -151,11 +212,13 @@ export default function InvoiceIssuedLevel1Table({
               onToggle={onToggleRow}
               onShowHistory={onShowHistory}
               showDownload={showDownload}
+              showPublishGate={showPublishGate}
+              onTogglePublishGate={onTogglePublishGate}
             />
           ))}
           {groups.length === 0 && (
             <tr>
-              <td colSpan={showDownload ? 16 : 15} className="px-3 py-6 text-center text-xs text-gray-400">
+              <td colSpan={colSpan} className="px-3 py-6 text-center text-xs text-gray-400">
                 조건에 맞는 항목이 없습니다.
               </td>
             </tr>

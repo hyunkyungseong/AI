@@ -68,6 +68,10 @@ export default function Tab4({
   const handleIssued = useCallback(
     (신규: 발행행[]) => {
       setIssued((prev) => 작업일자내림차순([...prev, ...신규]));
+      // 거래명세서 요청 확정 직후 발행요청목록 탭으로 자동 이동(2026-08-12 사용자 요청) — 방금
+      // 만든 건을 그 탭의 다운로드 아이콘으로 바로 받아볼 수 있어서, 성공 배너에 별도 다운로드
+      // 버튼을 두는 것보다 낫다는 판단.
+      setSubTab("pending");
     },
     [작업일자내림차순]
   );

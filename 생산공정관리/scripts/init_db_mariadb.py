@@ -158,6 +158,7 @@ def get_db():
             세액            DECIMAL(12,2),
             합계            DECIMAL(12,2),
             발송여부        TINYINT DEFAULT 0,
+            발행가능        TINYINT DEFAULT 1,
             발송일          DATE,
             파일경로        VARCHAR(500),
             등록일          DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -278,8 +279,22 @@ def get_db():
             id          INT AUTO_INCREMENT PRIMARY KEY,
             거래처명    VARCHAR(100) NOT NULL,
             품명        VARCHAR(200) NOT NULL,
+            조          VARCHAR(50),
             등록일      DATETIME DEFAULT CURRENT_TIMESTAMP,
             UNIQUE KEY uk_거래처품명 (거래처명, 품명)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """,
+
+    "통합시트설정": """
+        CREATE TABLE IF NOT EXISTS 통합시트설정 (
+            id              INT AUTO_INCREMENT PRIMARY KEY,
+            거래처명        VARCHAR(100) NOT NULL,
+            업무명조합      VARCHAR(500) NOT NULL,
+            통합시트명      VARCHAR(50),
+            통합상단업무명  VARCHAR(200),
+            등록일          DATETIME DEFAULT CURRENT_TIMESTAMP,
+            수정일          DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_통합시트 (거래처명, 업무명조합)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """,
 }
@@ -397,6 +412,37 @@ def migrate():
                 else:
                     print(f"  마이그레이션: 거래명세서_품목.{컬럼} 컬럼 이미 존재 (건너뜀)")
                 이후컬럼 = 컬럼
+
+            # 2026-08-12 — 작업구분(조) 2개 이상일 때 맨 앞에 붙는 "통합 명세서" 시트의 시트명·
+            # 상단 업무명(B12). 확정 시점에 사용자가 입력한 값을 이 거래명세서에 고정 저장해
+            # 재다운로드해도 값이 안 바뀌게 한다(마지막 입력값 재사용은 별도 통합시트설정 테이블).
+            이후컬럼 = "시트명"
+            for 컬럼, 정의 in [("통합시트명", "VARCHAR(50)"), ("통합상단업무명", "VARCHAR(200)")]:
+                if not _컬럼_존재(cur, "거래명세서", 컬럼):
+                    cur.execute(f"ALTER TABLE 거래명세서 ADD COLUMN {컬럼} {정의} NULL AFTER {이후컬럼}")
+                    print(f"  마이그레이션: 거래명세서.{컬럼} 컬럼 추가 완료")
+                else:
+                    print(f"  마이그레이션: 거래명세서.{컬럼} 컬럼 이미 존재 (건너뜀)")
+                이후컬럼 = 컬럼
+
+            # 2026-08-12 — 발행대기 상태에서 경영지원부가 발행해도 되는지 표시하는 게이트.
+            # 거래처 승인이 필요한 건은 마케팅 담당자가 이 값을 꺼서(0) "거래처 승인 대기 중"으로
+            # 표시하고, 경영지원부는 꺼진 건을 발행할 수 없다(POST /거래명세서발행에서 차단).
+            # 기존 행은 DEFAULT 1이 자동으로 채워져 지금까지 발행 가능하던 건들의 동작이 그대로
+            # 유지된다.
+            if not _컬럼_존재(cur, "거래명세서", "발행가능"):
+                cur.execute("ALTER TABLE 거래명세서 ADD COLUMN 발행가능 TINYINT DEFAULT 1 AFTER 발송여부")
+                print("  마이그레이션: 거래명세서.발행가능 컬럼 추가 완료(기존 행 전부 1로 채워짐)")
+            else:
+                print("  마이그레이션: 거래명세서.발행가능 컬럼 이미 존재 (건너뜀)")
+
+            # 2026-08-12 — "새 행 추가" 자동 반영 시 품명뿐 아니라 작업구분(조)도 가장 최근 확정
+            # 값으로 함께 복원(수량·단가 등 나머지는 여전히 매번 새로 입력, 사용자 요청).
+            if not _컬럼_존재(cur, "거래명세서품명이력", "조"):
+                cur.execute("ALTER TABLE 거래명세서품명이력 ADD COLUMN 조 VARCHAR(50) NULL AFTER 품명")
+                print("  마이그레이션: 거래명세서품명이력.조 컬럼 추가 완료")
+            else:
+                print("  마이그레이션: 거래명세서품명이력.조 컬럼 이미 존재 (건너뜀)")
 
 
 def main():

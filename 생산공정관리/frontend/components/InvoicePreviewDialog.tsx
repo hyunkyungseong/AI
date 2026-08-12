@@ -104,7 +104,13 @@ type Props = {
   open: boolean;
   data: 미리보기결과 | null;
   submitting: boolean;
-  onConfirm: (edited: { 품목_최종: 확정품목[]; 규칙: 확정규칙[]; 통합조건식_해결?: 통합조건식_해결 | null }) => void;
+  onConfirm: (edited: {
+    품목_최종: 확정품목[];
+    규칙: 확정규칙[];
+    통합조건식_해결?: 통합조건식_해결 | null;
+    통합시트명?: string;
+    상단업무명?: string;
+  }) => void;
   onClose: () => void;
 };
 
@@ -204,16 +210,21 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
   // InvoiceHistoryDialog.tsx와 동일하게 "처음 한 번"만 도는 effect로 충분 — setState·행 추가는
   // fetch 콜백 안에서만 호출해 set-state-in-effect 린트를 피한다.
   const [품명이력후보, set품명이력후보] = useState<string[]>([]);
+  // 작업구분(조)이 2개 이상일 때 맨 앞에 붙는 "통합 명세서" 시트의 시트명·상단 업무명(B12) —
+  // 사용자가 자유롭게 고쳐 쓸 수 있는 입력값(2026-08-12). 아래 effect가 이 거래처+업무명조합의
+  // 마지막 저장값을 불러와 기본 제안하고, 없으면 "통합명세서"/업무명_목록 조인 문구를 기본으로 둔다.
+  const [통합시트명, set통합시트명] = useState("");
+  const [상단업무명, set상단업무명] = useState("");
 
   // 지난달 이 거래처의 "새 행 추가" 확정 품명을 미리보기 오픈 시 자동으로 행으로 반영(2026-08-12
   // 사용자 확정 — 체크박스로 고르던 방식을 대체). addManualRow()와 동일한 형태(수량·단가 0, 조건
   // 없음)로 추가 — 수량·단가·금액은 매번 다를 수 있어 함께 저장/재사용하지 않고 그때그때 채우도록
   // 둔다(사용자 확인). 원치 않는 행은 표의 "삭제" 버튼으로 지우면 된다. 아래 effect보다 먼저
   // 선언해야 한다 — 린트(react-hooks)가 "사용 전 선언" 순서를 요구함.
-  function addRowsFromHistory(품명목록: string[]) {
+  function addRowsFromHistory(품명목록: { 품명: string; 조?: string | null }[]) {
     setRightRows((prev) => [
       ...prev,
-      ...품명목록.map((품명) => ({
+      ...품명목록.map(({ 품명, 조 }) => ({
         key: `history-${신규행_카운터++}`,
         최종청구품명: 품명,
         코드: null,
@@ -221,7 +232,7 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
         단가: 0,
         금액: 0,
         조건: null,
-        조: undefined,
+        조: 조 ?? undefined,
       })),
     ]);
   }
@@ -232,9 +243,9 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
     let 취소됨 = false;
     fetch(`/api/invoice-item-names?거래처명=${encodeURIComponent(거래처명)}`)
       .then((res) => (res.ok ? res.json() : []))
-      .then((json) => {
+      .then((json: { 품명: string; 조?: string | null }[]) => {
         if (취소됨 || !Array.isArray(json) || json.length === 0) return;
-        set품명이력후보(json);
+        set품명이력후보(json.map((r) => r.품명));
         addRowsFromHistory(json);
       })
       .catch(() => {});
@@ -242,6 +253,25 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
       취소됨 = true;
     };
   }, [data?.거래처명]);
+
+  useEffect(() => {
+    const 거래처명 = data?.거래처명;
+    if (!거래처명) return;
+    let 취소됨 = false;
+    const qs = new URLSearchParams({ 거래처명 });
+    (data?.업무명_목록 ?? []).forEach((u) => qs.append("업무명_목록", u));
+    fetch(`/api/integrated-sheet-defaults?${qs.toString()}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((json) => {
+        if (취소됨) return;
+        set통합시트명(json?.통합시트명 || "통합명세서");
+        set상단업무명(json?.상단업무명 || (data?.업무명_목록 ?? []).join(", "));
+      })
+      .catch(() => {});
+    return () => {
+      취소됨 = true;
+    };
+  }, [data?.거래처명, data?.업무명_목록]);
 
   useEffect(() => {
     if (!open) return;
@@ -279,6 +309,19 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
   // 표시만 하고, 아래 부가세오류 배너 + "확정" 버튼 비활성화로 실제 발급 자체를 막는다.
   const 세액_왼쪽 = data?.부가세구분 === "별도" ? Math.round((data?.총합계 ?? 0) * 0.1) : 0;
   const 세액_오른쪽 = data?.부가세구분 === "별도" ? Math.round(오른쪽합계 * 0.1) : 0;
+  // "공급가액"·"부가세" 두 행에 실제로 표시할 값(2026-08-12 사용자 요청, billing.부가세_표시분리()와
+  // 동일한 규칙) — "합계" 행(아래, 위 세액_왼쪽/세액_오른쪽 기준)은 그대로 원래 총액이지만, 이 두 값은
+  // "포함"이어도 단가에 이미 녹아있는 부가세를 역산해 공급가액·부가세로 나눠 보여준다(총액÷11).
+  // 예전엔 "포함"이면 부가세 칸을 0으로, 공급가액 칸엔 총액을 그대로 찍어 얼마가 포함돼 있는지
+  // 안 보였음. "별도"는 원래부터 공급가액=총액(순수 공급가) 그대로였으므로 값이 안 바뀐다.
+  const 표시_세액_왼쪽 =
+    data?.부가세구분 === "포함" ? Math.round((data?.총합계 ?? 0) / 11) : 세액_왼쪽;
+  const 표시_공급가액_왼쪽 =
+    (data?.총합계 ?? 0) - (data?.부가세구분 === "포함" ? 표시_세액_왼쪽 : 0);
+  const 표시_세액_오른쪽 =
+    data?.부가세구분 === "포함" ? Math.round(오른쪽합계 / 11) : 세액_오른쪽;
+  const 표시_공급가액_오른쪽 =
+    오른쪽합계 - (data?.부가세구분 === "포함" ? 표시_세액_오른쪽 : 0);
 
   // 조건 편집 패널의 값 입력칸에서 오타 없이 원본 값을 골라 쓸 수 있도록, 지금 원본(왼쪽) 표에
   // 실제로 등장하는 코드·품목·작업명 목록을 추출(2026-07-22, 사용자 피드백: "직접 키인은 오타 위험").
@@ -670,7 +713,12 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
         규격: r.규격,
         비고: r.비고,
       }));
-    onConfirm({ 품목_최종, 규칙, 통합조건식_해결: resolution });
+    onConfirm({
+      품목_최종,
+      규칙,
+      통합조건식_해결: resolution,
+      ...(분할표시 ? { 통합시트명, 상단업무명 } : {}),
+    });
   }
 
   return (
@@ -789,7 +837,7 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
                     <td className={td} colSpan={5}>
                       공급가액
                     </td>
-                    <td className={tdRight}>{data.총합계.toLocaleString()}원</td>
+                    <td className={tdRight}>{Math.round(표시_공급가액_왼쪽).toLocaleString()}원</td>
                   </tr>
                   <tr className="dark:border-gray-700">
                     <td className={td} colSpan={5}>
@@ -797,7 +845,7 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
                       {data.부가세구분 === "포함" && <span className="text-gray-400">(단가 포함)</span>}
                       {data.부가세구분 === null && <span className="text-red-600 dark:text-red-400">(판정 불가)</span>}
                     </td>
-                    <td className={tdRight}>{세액_왼쪽.toLocaleString()}원</td>
+                    <td className={tdRight}>{표시_세액_왼쪽.toLocaleString()}원</td>
                   </tr>
                   <tr className="border-t border-gray-200 font-semibold dark:border-gray-700">
                     <td className={td} colSpan={5}>
@@ -830,10 +878,29 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
             </div>
 
             {분할표시 && (
-              <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">
-                작업구분이 {조_그룹목록.length}개 등장했습니다 — 확정하면 거래명세서 1건이 발급되고,
-                다운로드하면 시트 {조_그룹목록.length}개짜리 통합 엑셀을 받습니다.
-              </p>
+              <div className="mb-1 space-y-1">
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  작업구분이 {조_그룹목록.length}개 등장했습니다 — 확정하면 거래명세서 1건이 발급되고,
+                  다운로드하면 맨 앞에 전체를 합친 통합 명세서 시트 1개 + 작업구분별 시트{" "}
+                  {조_그룹목록.length}개, 총 {조_그룹목록.length + 1}개짜리 통합 엑셀을 받습니다.
+                </p>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={통합시트명}
+                    onChange={(e) => set통합시트명(e.target.value)}
+                    placeholder="통합 시트명 (예: 통합명세서)"
+                    className="w-40 rounded border border-gray-300 px-2 py-1 text-xs dark:border-gray-600 dark:bg-gray-800"
+                  />
+                  <input
+                    type="text"
+                    value={상단업무명}
+                    onChange={(e) => set상단업무명(e.target.value)}
+                    placeholder="통합 시트 상단 업무명"
+                    className="flex-1 rounded border border-gray-300 px-2 py-1 text-xs dark:border-gray-600 dark:bg-gray-800"
+                  />
+                </div>
+              </div>
             )}
             <datalist id="조옵션-표">
               {조옵션.map((v) => (
@@ -906,7 +973,7 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
                     <td className={td} colSpan={4}>
                       공급가액
                     </td>
-                    <td className={tdRight}>{Math.round(오른쪽합계).toLocaleString()}원</td>
+                    <td className={tdRight}>{Math.round(표시_공급가액_오른쪽).toLocaleString()}원</td>
                     <td className={td}></td>
                   </tr>
                   <tr className="dark:border-gray-700">
@@ -915,7 +982,7 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
                       {data.부가세구분 === "포함" && <span className="text-gray-400">(단가 포함)</span>}
                       {data.부가세구분 === null && <span className="text-red-600 dark:text-red-400">(판정 불가)</span>}
                     </td>
-                    <td className={tdRight}>{세액_오른쪽.toLocaleString()}원</td>
+                    <td className={tdRight}>{표시_세액_오른쪽.toLocaleString()}원</td>
                     <td className={td}></td>
                   </tr>
                   <tr className="border-t border-gray-200 font-semibold dark:border-gray-700">

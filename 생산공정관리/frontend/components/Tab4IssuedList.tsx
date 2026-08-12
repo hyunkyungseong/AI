@@ -102,6 +102,14 @@ export default function Tab4IssuedList({
     [groups]
   );
 
+  // 선택(레벨1)에 발행가능=0(거래처 승인 대기 중)인 건이 하나라도 섞여 있으면 "거래명세서 발행"
+  // 버튼을 비활성화한다(2026-08-12) — 체크·취소는 그대로 가능하게 두고, 실제 발행만 막는다.
+  // (체크박스 자체를 막으면 "취소"도 함께 막혀버려서 이 방식으로 변경.)
+  const 선택에_승인대기_포함 = useMemo(
+    () => groups.some((g) => selected1.has(g.key) && g.발행가능 === 0),
+    [groups, selected1]
+  );
+
   // 레벨1에서 체크된 그룹(거래명세서번호 단위, 2026-08-01)에 속하는 의뢰서(운영통계자료 원본
   // 라인이 아니라 발행행 단위) 목록. 반드시 filters.base5(레벨1 집계와 동일한 필터 적용된 소스)에서
   // 걸러야 한다 — scoped(필터 미적용 전체)에서 걸렀더니, 레벨1 합계는 필터링된 일부만 더하는데
@@ -234,6 +242,28 @@ export default function Tab4IssuedList({
     }
   }
 
+  // 발행요청목록의 "발행가능"(거래처 승인 대기) 토글(2026-08-12) — 낙관적 업데이트 먼저 반영하고
+  // 실패하면 되돌린다. 거래명세서번호 단위 값이라 그 번호에 속한 발행행 전체(의뢰서 라인 여러 개일
+  // 수 있음)를 한꺼번에 갱신한다(편집여부·발송여부와 동일한 갱신 패턴).
+  async function handleTogglePublishGate(no: string, value: boolean) {
+    setRows((prev) => prev.map((r) => (r.거래명세서번호 === no ? { ...r, 발행가능: value ? 1 : 0 } : r)));
+    try {
+      const res = await fetch("/api/invoice-publish-gate", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 거래명세서번호: no, 값: value }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setRows((prev) => prev.map((r) => (r.거래명세서번호 === no ? { ...r, 발행가능: value ? 0 : 1 } : r)));
+        setBanner({ type: "error", text: data.detail ?? "발행가능 변경 중 오류가 발생했습니다." });
+      }
+    } catch {
+      setRows((prev) => prev.map((r) => (r.거래명세서번호 === no ? { ...r, 발행가능: value ? 0 : 1 } : r)));
+      setBanner({ type: "error", text: "서버에 연결할 수 없습니다." });
+    }
+  }
+
   async function executeCancel(targetRows: 발행행[]) {
     const byNumber = new Map<string, 발행행[]>();
     for (const r of targetRows) {
@@ -348,7 +378,8 @@ export default function Tab4IssuedList({
               <button
                 type="button"
                 onClick={() => handleStatusChangeClick("publish")}
-                disabled={submitting}
+                disabled={submitting || 선택에_승인대기_포함}
+                title={선택에_승인대기_포함 ? "선택 항목 중 거래처 승인 대기 중인 건이 있습니다" : undefined}
                 className="rounded-md bg-gray-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-gray-700 disabled:opacity-50 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-gray-300"
               >
                 거래명세서 발행
@@ -384,7 +415,9 @@ export default function Tab4IssuedList({
             onToggleRow={toggleGroup}
             onToggleAll={toggleAllGroups}
             onShowHistory={setHistoryTarget}
-            showDownload={mode === "완료"}
+            showDownload
+            showPublishGate={mode === "대기"}
+            onTogglePublishGate={handleTogglePublishGate}
           />
 
           {selected1.size > 0 && (
