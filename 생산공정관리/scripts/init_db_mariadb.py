@@ -157,6 +157,8 @@ def get_db():
             공급가액        DECIMAL(12,2),
             세액            DECIMAL(12,2),
             합계            DECIMAL(12,2),
+            공급가액_직접입력 DECIMAL(12,2),
+            세액_직접입력   DECIMAL(12,2),
             발송여부        TINYINT DEFAULT 0,
             발행가능        TINYINT DEFAULT 1,
             발송일          DATE,
@@ -295,6 +297,22 @@ def get_db():
             등록일          DATETIME DEFAULT CURRENT_TIMESTAMP,
             수정일          DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             UNIQUE KEY uk_통합시트 (거래처명, 업무명조합)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """,
+
+    "거래명세서_수정이력": """
+        CREATE TABLE IF NOT EXISTS 거래명세서_수정이력 (
+            id              INT AUTO_INCREMENT PRIMARY KEY,
+            거래명세서번호  VARCHAR(30) NOT NULL,
+            거래처명        VARCHAR(100),
+            업무명          VARCHAR(300),
+            필드명          VARCHAR(20) NOT NULL,
+            이전값          DECIMAL(12,2),
+            이후값          DECIMAL(12,2),
+            비고            VARCHAR(200),
+            수정자          VARCHAR(50) NOT NULL,
+            수정일시        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_거래명세서번호 (거래명세서번호)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """,
 }
@@ -443,6 +461,56 @@ def migrate():
                 print("  마이그레이션: 거래명세서품명이력.조 컬럼 추가 완료")
             else:
                 print("  마이그레이션: 거래명세서품명이력.조 컬럼 이미 존재 (건너뜀)")
+
+            # 2026-08-13 — 공급가액·부가세 직접 입력(override, 마케팅팀 요청: 원단위 절사·반올림
+            # 차이 보정). NULL이면 지금처럼 자동계산, 값이 있으면 다운로드 시 그 값을 우선 사용한다
+            # (_거래명세서_엑셀_시트목록() 참고). 기존 행은 전부 NULL로 채워져 회귀 없음.
+            이후컬럼 = "합계"
+            for 컬럼 in ("공급가액_직접입력", "세액_직접입력"):
+                if not _컬럼_존재(cur, "거래명세서", 컬럼):
+                    cur.execute(f"ALTER TABLE 거래명세서 ADD COLUMN {컬럼} DECIMAL(12,2) NULL AFTER {이후컬럼}")
+                    print(f"  마이그레이션: 거래명세서.{컬럼} 컬럼 추가 완료")
+                else:
+                    print(f"  마이그레이션: 거래명세서.{컬럼} 컬럼 이미 존재 (건너뜀)")
+                이후컬럼 = 컬럼
+
+            # 2026-08-14 — 수정이력 3건 보완. ①거래명세서_수정이력의 ON DELETE CASCADE FK를
+            # 제거해(거래명세서품명이력과 동일하게) 원본 거래명세서가 취소·삭제돼도 감사이력은
+            # 남도록 변경. 제약 이름은 환경마다 다를 수 있어 information_schema로 조회 후 제거.
+            cur.execute(
+                """SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS
+                   WHERE TABLE_SCHEMA = %s AND TABLE_NAME = '거래명세서_수정이력'
+                     AND CONSTRAINT_TYPE = 'FOREIGN KEY'""",
+                (cfg.DB_NAME,),
+            )
+            for row in cur.fetchall():
+                fk명 = row["CONSTRAINT_NAME"]
+                cur.execute(f"ALTER TABLE 거래명세서_수정이력 DROP FOREIGN KEY {fk명}")
+                print(f"  마이그레이션: 거래명세서_수정이력 FK({fk명}) 제거 완료")
+
+            # ②거래처명·업무명을 등록 시점 값 그대로 비정규화 저장(거래명세서가 나중에 지워져도
+            # 로그 자체에 "어느 거래처·업무였는지"가 남도록).
+            이후컬럼 = "거래명세서번호"
+            for 컬럼, 정의 in (("거래처명", "VARCHAR(100)"), ("업무명", "VARCHAR(300)")):
+                if not _컬럼_존재(cur, "거래명세서_수정이력", 컬럼):
+                    cur.execute(f"ALTER TABLE 거래명세서_수정이력 ADD COLUMN {컬럼} {정의} NULL AFTER {이후컬럼}")
+                    print(f"  마이그레이션: 거래명세서_수정이력.{컬럼} 컬럼 추가 완료")
+                else:
+                    print(f"  마이그레이션: 거래명세서_수정이력.{컬럼} 컬럼 이미 존재 (건너뜀)")
+                이후컬럼 = 컬럼
+
+            # ③FK 제거로 자동 생성 인덱스도 함께 사라지므로 조회 성능 유지용으로 명시 추가.
+            cur.execute(
+                """SELECT COUNT(*) AS cnt FROM information_schema.STATISTICS
+                   WHERE TABLE_SCHEMA = %s AND TABLE_NAME = '거래명세서_수정이력'
+                     AND INDEX_NAME = 'idx_거래명세서번호'""",
+                (cfg.DB_NAME,),
+            )
+            if cur.fetchone()["cnt"] == 0:
+                cur.execute("ALTER TABLE 거래명세서_수정이력 ADD INDEX idx_거래명세서번호 (거래명세서번호)")
+                print("  마이그레이션: 거래명세서_수정이력.idx_거래명세서번호 인덱스 추가 완료")
+            else:
+                print("  마이그레이션: 거래명세서_수정이력.idx_거래명세서번호 인덱스 이미 존재 (건너뜀)")
 
 
 def main():

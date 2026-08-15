@@ -93,12 +93,22 @@ const Row = memo(function Row({
       <td className="px-3 py-1.5 text-gray-500 dark:text-gray-400">{index + 1}</td>
       <td className="px-3 py-1.5 text-gray-900 dark:text-gray-100">
         {g.거래명세서번호}
-        {g.편집여부 === 1 && (
+        {g.수정이력있음 && (
           <button
             type="button"
             onClick={() => onShowHistory(g.거래명세서번호)}
-            className="ml-1.5 rounded border border-amber-300 px-1 text-xs text-amber-700 hover:bg-amber-50 dark:border-amber-700 dark:text-amber-400 dark:hover:bg-amber-950"
-            title="원본과 최종 확정 내용 비교"
+            className={`ml-1.5 rounded border px-1 text-xs ${
+              g.합계증감 > 0
+                ? "border-red-300 text-red-700 hover:bg-red-50 dark:border-red-700 dark:text-red-400 dark:hover:bg-red-950"
+                : g.합계증감 < 0
+                ? "border-blue-300 text-blue-700 hover:bg-blue-50 dark:border-blue-700 dark:text-blue-400 dark:hover:bg-blue-950"
+                : "border-amber-300 text-amber-700 hover:bg-amber-50 dark:border-amber-700 dark:text-amber-400 dark:hover:bg-amber-950"
+            }`}
+            title={
+              g.합계증감 !== 0
+                ? `원본과 최종 확정 내용 비교 (합계 ${g.합계증감 > 0 ? "+" : ""}${Math.round(g.합계증감).toLocaleString()}원)`
+                : "원본과 최종 확정 내용 비교"
+            }
           >
             편집됨
           </button>
@@ -106,7 +116,9 @@ const Row = memo(function Row({
       </td>
       <td className="px-3 py-1.5 text-gray-700 dark:text-gray-300">{g.사업부}</td>
       <td className="px-3 py-1.5 text-gray-900 dark:text-gray-100">{g.거래처명}</td>
-      <td className="px-3 py-1.5 text-gray-700 dark:text-gray-300">{g.업무명}</td>
+      <td className="max-w-[220px] truncate px-3 py-1.5 text-gray-700 dark:text-gray-300" title={g.업무명}>
+        {g.업무명}
+      </td>
       <td className="px-3 py-1.5 text-gray-700 dark:text-gray-300">{g.담당자}</td>
       <td className="px-3 py-1.5 text-right tabular-nums text-gray-700 dark:text-gray-300">
         {g.의뢰서건수.toLocaleString()}
@@ -136,6 +148,21 @@ const Row = memo(function Row({
           `${g.예상공급가액.toLocaleString()}원`
         )}
       </td>
+      <td className="px-3 py-1.5 text-right tabular-nums text-gray-700 dark:text-gray-300">
+        {g.확정공급가액.toLocaleString()}원
+        {g.예상공급가액 !== null && g.확정공급가액 - g.예상공급가액 !== 0 && (
+          <span
+            className={`ml-1 ${
+              g.확정공급가액 - g.예상공급가액 > 0
+                ? "text-red-600 dark:text-red-400"
+                : "text-blue-600 dark:text-blue-400"
+            }`}
+          >
+            ({g.확정공급가액 - g.예상공급가액 > 0 ? "+" : ""}
+            {(g.확정공급가액 - g.예상공급가액).toLocaleString()})
+          </span>
+        )}
+      </td>
     </tr>
   );
 });
@@ -157,7 +184,7 @@ export default function InvoiceIssuedLevel1Table({
   onTogglePublishGate,
 }: Props) {
   const 전체선택됨 = groups.length > 0 && groups.every((g) => selected.has(g.key));
-  const colSpan = 15 + (showDownload ? 1 : 0) + (showPublishGate ? 1 : 0);
+  const colSpan = 16 + (showDownload ? 1 : 0) + (showPublishGate ? 1 : 0);
 
   return (
     <div className="max-h-[60vh] overflow-auto rounded-lg border border-gray-200 dark:border-gray-800">
@@ -200,6 +227,12 @@ export default function InvoiceIssuedLevel1Table({
             <th className="px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300">봉투수량</th>
             <th className="px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300">삽지수량</th>
             <th className="px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300">예상공급가액</th>
+            <th
+              className="px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300"
+              title="실제 확정 저장된 공급가액(괄호는 예상공급가액과의 차이)"
+            >
+              청구공급가액
+            </th>
           </tr>
         </thead>
         <tbody>

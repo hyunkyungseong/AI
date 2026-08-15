@@ -77,6 +77,8 @@ export default function Tab4IssuedList({
   const [banner, setBanner] = useState<배너 | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [dialog, setDialog] = useState<DialogState>(다이얼로그_초기값);
+  // 취소·발행취소(되돌리기) 사유 입력(2026-08-14) — 다이얼로그를 열 때마다 초기화, 발행취소는 필수.
+  const [reason, setReason] = useState("");
   // "편집됨" 배지 클릭 시 원본/최종 비교 팝업(2026-07-22 신규) — null이면 닫힘, 값이 있으면
   // InvoiceHistoryDialog를 그 거래명세서번호로 마운트한다(ConditionRuleModal.tsx와 동일하게
   // 부모의 조건부 렌더링으로 열림/닫힘을 제어 — set-state-in-effect 린트 회피 패턴).
@@ -159,6 +161,7 @@ export default function Tab4IssuedList({
         items.push(`${no}: 전체 ${전체}건 중 ${선택}건 선택 — 나머지도 함께 처리됩니다`);
       }
     }
+    setReason("");
     setDialog({
       open: true,
       title: kind === "publish" ? "거래명세서 발행" : "발행 취소(되돌리기)",
@@ -195,6 +198,7 @@ export default function Tab4IssuedList({
         items.push(`${no}: ${lines.length}건 취소, ${전체 - lines.length}건 유지 (번호는 그대로 유지됩니다)`);
       }
     }
+    setReason("");
     setDialog({
       open: true,
       title: "취소 확인",
@@ -205,7 +209,7 @@ export default function Tab4IssuedList({
     });
   }
 
-  async function publishOrUnpublish(targetNumbers: string[], kind: "publish" | "unpublish") {
+  async function publishOrUnpublish(targetNumbers: string[], kind: "publish" | "unpublish", reason: string) {
     const path = kind === "publish" ? "/api/invoice-publish" : "/api/invoice-unpublish";
     const 실패: string[] = [];
     const 성공번호 = new Set<string>();
@@ -214,7 +218,9 @@ export default function Tab4IssuedList({
         const res = await fetch(path, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ 거래명세서번호: no }),
+          body: JSON.stringify(
+            kind === "unpublish" ? { 거래명세서번호: no, 취소사유: reason } : { 거래명세서번호: no }
+          ),
         });
         if (res.ok) 성공번호.add(no);
         else {
@@ -264,7 +270,7 @@ export default function Tab4IssuedList({
     }
   }
 
-  async function executeCancel(targetRows: 발행행[]) {
+  async function executeCancel(targetRows: 발행행[], reason: string) {
     const byNumber = new Map<string, 발행행[]>();
     for (const r of targetRows) {
       const arr = byNumber.get(r.거래명세서번호);
@@ -278,7 +284,11 @@ export default function Tab4IssuedList({
         const res = await fetch("/api/invoice-cancel", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ 거래명세서번호: no, 의뢰서번호_목록: lines.map((l) => l.의뢰서번호) }),
+          body: JSON.stringify({
+            거래명세서번호: no,
+            의뢰서번호_목록: lines.map((l) => l.의뢰서번호),
+            취소사유: reason || undefined,
+          }),
         });
         if (res.ok) 성공행.push(...lines);
         else {
@@ -340,13 +350,14 @@ export default function Tab4IssuedList({
 
   async function handleConfirm() {
     const action = dialog.action;
+    const 사유입력값 = reason;
     closeDialog();
     if (!action) return;
     setSubmitting(true);
     setBanner(null);
     try {
-      if (action.kind === "cancel") await executeCancel(action.targetRows);
-      else await publishOrUnpublish(action.targetNumbers, action.kind);
+      if (action.kind === "cancel") await executeCancel(action.targetRows, 사유입력값);
+      else await publishOrUnpublish(action.targetNumbers, action.kind, 사유입력값);
     } finally {
       setSubmitting(false);
     }
@@ -462,6 +473,9 @@ export default function Tab4IssuedList({
         message={dialog.message}
         items={dialog.items}
         danger={dialog.danger}
+        reasonRequired={dialog.action?.kind === "unpublish"}
+        reason={reason}
+        onReasonChange={dialog.action?.kind === "publish" ? undefined : setReason}
         onConfirm={handleConfirm}
         onClose={closeDialog}
       />

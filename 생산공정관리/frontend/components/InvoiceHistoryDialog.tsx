@@ -1,10 +1,36 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { 필드표시, 차이표시, 차이색상 } from "@/lib/auditLog";
 
 type 이력행 = { 코드: string | null; 품목: string; 작업명: string | null; 수량: number; 단가: number | null; 금액: number };
-// 세액은 거래명세서(그룹) 단위로 확정 시점에 저장된 값 — 원본·최종 양쪽 표에 동일하게 적용된다(2026-08-12).
-type 이력응답 = { 편집여부: boolean; 세액: number; 원본: 이력행[]; 최종: 이력행[] };
+// 감사이력 한 줄(2026-08-13, 마케팅팀 요청 — 누가/언제 공급가액·부가세·품목을 바꿨는지).
+// 품목 필드(수량/단가/금액/품목추가/품목삭제)는 비고에 그 품목명이, 총계 필드(공급가액/세액)는
+// 비고 없이 필드명만 채워진다(2026-08-13, `_품목_변경_이력()` 참고) — 화면 표시는 `필드표시()` 참고.
+type 수정이력행 = {
+  필드명: string;
+  이전값: number | null;
+  이후값: number | null;
+  비고: string | null;
+  수정자: string;
+  수정일시: string;
+};
+// 공급가액·세액을 원본(자동계산)·최종(실제 확정) 두 값으로 따로 받는다(2026-08-14 버그 수정 —
+// 총계 override(2026-08-13) 도입 후 최종 쪽이 원본과 달라질 수 있는데, 예전엔 세액 하나만 양쪽에
+// 그대로 재사용해 "최종" 표가 실제 저장된 값이 아니라 원본과 똑같은 숫자를 보여주고 있었음).
+// 존재함=false면 그 거래명세서번호가 취소·삭제된 뒤라 원본/최종 스냅샷은 이미 사라졌지만(FK CASCADE로
+// 함께 삭제됨), 감사이력(수정이력)만은 독립 테이블이라 남아있는 경우(2026-08-14).
+type 이력응답 = {
+  존재함: boolean;
+  편집여부: boolean;
+  원본세액: number;
+  최종세액: number;
+  원본공급가액: number;
+  최종공급가액: number;
+  원본: 이력행[];
+  최종: 이력행[];
+  수정이력: 수정이력행[];
+};
 
 type Props = {
   거래명세서번호: string;
@@ -16,12 +42,7 @@ const thRight = "px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-3
 const td = "px-3 py-1.5 text-gray-900 dark:text-gray-100";
 const tdRight = "px-3 py-1.5 text-right tabular-nums text-gray-900 dark:text-gray-100";
 
-function 합계(rows: 이력행[]) {
-  return rows.reduce((s, r) => s + (Number.isFinite(r.금액) ? r.금액 : 0), 0);
-}
-
-function 표(제목: string, rows: 이력행[], 세액: number) {
-  const 공급가액 = 합계(rows);
+function 표(제목: string, rows: 이력행[], 공급가액: number, 세액: number) {
   return (
     <div className="flex flex-col overflow-hidden">
       <h3 className="mb-1 text-xs font-semibold text-gray-500 dark:text-gray-400">
@@ -140,16 +161,52 @@ export default function InvoiceHistoryDialog({ 거래명세서번호, onClose }:
         {loading && <p className="mt-6 text-sm text-gray-500 dark:text-gray-400">불러오는 중...</p>}
         {error && <p className="mt-6 text-sm text-red-600 dark:text-red-400">{error}</p>}
 
+        {data && !loading && !error && data.수정이력.length > 0 && (
+          <div className="mt-3 overflow-auto rounded-md border border-gray-200 dark:border-gray-800">
+            <table className="w-full whitespace-nowrap text-sm">
+              <thead className="bg-gray-50 dark:bg-gray-900">
+                <tr>
+                  <th className={th}>필드</th>
+                  <th className={thRight}>이전값</th>
+                  <th className={thRight}>이후값</th>
+                  <th className={th}>수정자</th>
+                  <th className={th}>수정일시</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.수정이력.map((h, i) => (
+                  <tr key={i} className="border-t border-gray-100 dark:border-gray-800">
+                    <td className={td}>{필드표시(h.필드명, h.비고)}</td>
+                    <td className={tdRight}>{h.이전값 === null ? "—" : Math.round(h.이전값).toLocaleString()}</td>
+                    <td className={tdRight}>
+                      {h.이후값 === null ? "—" : Math.round(h.이후값).toLocaleString()}
+                      <span className={`ml-1 ${차이색상(h.필드명, h.이전값, h.이후값)}`}>
+                        {차이표시(h.필드명, h.이전값, h.이후값)}
+                      </span>
+                    </td>
+                    <td className={td}>{h.수정자}</td>
+                    <td className={td}>{h.수정일시}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
         {data && !loading && !error && (
           <>
-            {data.원본.length === 0 && data.최종.length === 0 ? (
+            {!data.존재함 ? (
+              <p className="mt-6 text-sm text-gray-500 dark:text-gray-400">
+                이 거래명세서는 취소되어 품목 비교는 볼 수 없지만, 수정 이력은 위에 남아있습니다.
+              </p>
+            ) : data.원본.length === 0 && data.최종.length === 0 ? (
               <p className="mt-6 text-sm text-gray-500 dark:text-gray-400">
                 이 거래명세서는 저장된 편집 이력이 없습니다(이 기능 이전에 발행됐거나 원본 그대로 발행된 건일 수 있습니다).
               </p>
             ) : (
               <div className="mt-3 grid flex-1 grid-cols-2 gap-4 overflow-hidden">
-                {표("원본(자동계산)", data.원본, data.세액)}
-                {표("최종(확정된 내용)", data.최종, data.세액)}
+                {표("원본(자동계산)", data.원본, data.원본공급가액, data.원본세액)}
+                {표("최종(확정된 내용)", data.최종, data.최종공급가액, data.최종세액)}
               </div>
             )}
           </>

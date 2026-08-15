@@ -191,6 +191,8 @@ export default function Tab4Invoice({
     통합조건식_해결?: 통합조건식_해결 | null;
     통합시트명?: string;
     상단업무명?: string;
+    공급가액_직접입력?: number;
+    세액_직접입력?: number;
   }) {
     // 미리보기 다이얼로그가 이미 부가세오류가 있으면 "확정" 버튼을 막아두지만, 이중 안전장치로
     // 여기서도 한 번 더 막는다(작업명별 부가세 처리 방식이 섞여 판정 불가, 2026-08-04).
@@ -198,11 +200,25 @@ export default function Tab4Invoice({
       setBanner({ type: "error", text: previewData.부가세오류 });
       return;
     }
-    const 공급가액 = Math.round(edited.품목_최종.reduce((s, r) => s + r.금액, 0));
-    // 거래처가 "포함"(단가에 부가세가 이미 포함된 계약)이면 세액을 추가로 더하지 않는다 —
-    // previewData.부가세구분은 백엔드가 실제로 청구된 작업명들 기준으로 판정해 내려준 값
-    // (2026-07-28 신규, 2026-08-04 판정 기준을 거래처 기본단가 행 → 작업명 기준으로 변경).
-    const 세액 = previewData?.부가세구분 === "별도" ? Math.round(공급가액 * 0.1) : 0;
+    const 원본공급가액 = edited.품목_최종.reduce((s, r) => s + r.금액, 0);
+    let 공급가액: number;
+    let 세액: number;
+    if (edited.공급가액_직접입력 != null && edited.세액_직접입력 != null) {
+      // 공급가액·부가세 직접 입력(override, 2026-08-13, 마케팅팀 요청 — 원단위 절사·반올림 차이 보정).
+      공급가액 = edited.공급가액_직접입력;
+      세액 = edited.세액_직접입력;
+    } else if (previewData?.부가세구분 === "포함") {
+      // 단가에 부가세가 이미 포함된 계약은 총액을 역산해 분리한다 — billing.부가세_표시분리()와
+      // 동일 규칙(2026-08-12). 예전엔 여기서 세액=0·공급가액=원시합계로 저장해 화면(미리보기)에
+      // 보이는 분리 표시값과 실제 저장값이 어긋나 있었음(2026-08-13 발견·수정).
+      세액 = Math.round(원본공급가액 / 11);
+      공급가액 = 원본공급가액 - 세액;
+    } else {
+      공급가액 = Math.round(원본공급가액);
+      // previewData.부가세구분은 백엔드가 실제로 청구된 작업명들 기준으로 판정해 내려준 값
+      // (2026-07-28 신규, 2026-08-04 판정 기준을 거래처 기본단가 행 → 작업명 기준으로 변경).
+      세액 = previewData?.부가세구분 === "별도" ? Math.round(공급가액 * 0.1) : 0;
+    }
     const payload = {
       거래처명: selectedRows[0].거래처명,
       사업부: selectedRows[0].사업부,
@@ -226,6 +242,10 @@ export default function Tab4Invoice({
       // 최종목록의 조 종류 수로 다시 판정해 조건이 안 맞으면 무시한다.
       통합시트명: edited.통합시트명,
       상단업무명: edited.상단업무명,
+      // 공급가액·부가세 직접 입력(override, 2026-08-13) — InvoicePreviewDialog가 조정칸에 값이
+      // 있을 때만 채워 보낸다. 서버가 다시 한번 유효성(조 개수·통합시트명)을 검증한다.
+      공급가액_직접입력: edited.공급가액_직접입력,
+      세액_직접입력: edited.세액_직접입력,
     };
 
     setSubmitting(true);
@@ -256,6 +276,9 @@ export default function Tab4Invoice({
             발송여부: 0,
             편집여부: data.편집여부 ?? 0,
             발행가능: 1, // 신규 발행은 항상 발행가능=1로 시작(DB DEFAULT와 동일, 2026-08-12)
+            수정이력있음: Boolean(data.수정이력있음),
+            합계증감: Number(data.합계증감 ?? 0),
+            확정공급가액: Number(data.확정공급가액 ?? 0),
           }))
         )
       );

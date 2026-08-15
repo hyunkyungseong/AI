@@ -3,33 +3,34 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Tab4Invoice from "./Tab4Invoice";
 import Tab4IssuedList from "./Tab4IssuedList";
+import Tab4EditHistory from "./Tab4EditHistory";
 import type { 운영통계행, 미발행행, 발행행 } from "./Dashboard";
 
-const SUB_TABS = [
-  { id: "unissued", label: "미발행 목록" },
-  { id: "pending", label: "발행요청목록" },
-  { id: "issued", label: "발행완료" },
-] as const;
-
-type SubTabId = (typeof SUB_TABS)[number]["id"];
+export type Tab4SubTabId = "unissued" | "pending" | "issued" | "history";
 
 // 탭4 "거래명세서 관리" 오케스트레이터 — 서브탭 3개(미발행목록/발행요청목록/발행완료)를
 // Dashboard.tsx 최상위 탭과 동일한 상시마운트+hidden 패턴으로 관리한다.
 // invoice(미발행행[])·issued(발행행[]) state를 여기서 소유(controlled) — 자식들은 전부 이 배열을
 // props로만 받아서, "미발행 목록에서 요청" → "발행요청목록에 즉시 반영" 같은 화면 간 정합성을
 // 새로고침 없이 유지한다(router.refresh()는 자식의 useState(initialProp) 패턴과 충돌해 채택 안 함).
+//
+// 하위탭(subTab) 자체는 2026-08-12(같은 날) GNB 개편으로 Dashboard.tsx 상단 2번째 줄로
+// 끌어올려져 controlled prop으로 바뀌었다(예전엔 이 컴포넌트가 자체 useState+<nav>로 소유).
 export default function Tab4({
   rows,
   invoiceRows,
   issuedRows,
   active,
+  subTab,
+  setSubTab,
 }: {
   rows: 운영통계행[];
   invoiceRows: 미발행행[];
   issuedRows: 발행행[];
   active: boolean; // "거래명세서 관리" 최상위 탭이 지금 보이는 중인지(Dashboard.tsx)
+  subTab: Tab4SubTabId;
+  setSubTab: (id: Tab4SubTabId) => void;
 }) {
-  const [subTab, setSubTab] = useState<SubTabId>("unissued");
   const [invoice, setInvoice] = useState(invoiceRows);
   const [issued, setIssued] = useState(issuedRows);
 
@@ -73,7 +74,7 @@ export default function Tab4({
       // 버튼을 두는 것보다 낫다는 판단.
       setSubTab("pending");
     },
-    [작업일자내림차순]
+    [작업일자내림차순, setSubTab]
   );
 
   const handleReturnToUnissued = useCallback(
@@ -85,24 +86,6 @@ export default function Tab4({
 
   return (
     <div className="flex flex-1 flex-col">
-      <nav className="flex gap-1 border-b border-gray-200 px-4 py-2 dark:border-gray-800">
-        {SUB_TABS.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            onClick={() => setSubTab(t.id)}
-            className={
-              "rounded-md px-3 py-1 text-sm font-medium " +
-              (subTab === t.id
-                ? "bg-gray-200 text-gray-900 dark:bg-gray-800 dark:text-gray-100"
-                : "text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800")
-            }
-          >
-            {t.label}
-          </button>
-        ))}
-      </nav>
-
       <div className="flex flex-1">
         <div className={subTab === "unissued" ? "flex flex-1" : "hidden"}>
           <Tab4Invoice rows={invoice} setRows={setInvoice} detailRows={rows} onIssued={handleIssued} />
@@ -124,6 +107,9 @@ export default function Tab4({
             detailRows={rows}
             onReturnToUnissued={handleReturnToUnissued}
           />
+        </div>
+        <div className={subTab === "history" ? "flex flex-1" : "hidden"}>
+          <Tab4EditHistory active={subTab === "history"} />
         </div>
       </div>
     </div>

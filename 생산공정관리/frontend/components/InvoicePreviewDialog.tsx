@@ -110,6 +110,9 @@ type Props = {
     통합조건식_해결?: 통합조건식_해결 | null;
     통합시트명?: string;
     상단업무명?: string;
+    // 공급가액·부가세 직접 입력(override, 2026-08-13, 마케팅팀 요청 — 원단위 절사·반올림 차이 보정).
+    공급가액_직접입력?: number;
+    세액_직접입력?: number;
   }) => void;
   onClose: () => void;
 };
@@ -215,6 +218,16 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
   // 마지막 저장값을 불러와 기본 제안하고, 없으면 "통합명세서"/업무명_목록 조인 문구를 기본으로 둔다.
   const [통합시트명, set통합시트명] = useState("");
   const [상단업무명, set상단업무명] = useState("");
+  // 공급가액·부가세 직접 입력(override, 2026-08-13) — 손대기 전엔 입력칸이 지금 자동계산값을
+  // 그대로 보여주며(값을 다시 처음부터 입력하지 않고 그 자리에서 바로 고칠 수 있도록, 2026-08-13
+  // 사용자 피드백) 품목 수정에 따라 계속 갱신되고, 한 번이라도 고치면(수동=true) 그 값에 고정된다
+  // — "자동값 사용" 버튼으로 다시 자동추적 상태로 되돌릴 수 있다. 수량·단가·금액 입력칸과 동일하게
+  // type="text"+콤마표시/콤마숫자파싱 왕복 변환을 쓴다(2026-08-09 SKILL 패턴) — type="number"는
+  // 빈 값 상태에서 위/아래 화살표를 누르면 -1로 튀는 문제가 있어 피한다.
+  const [공급가액조정_수동, set공급가액조정_수동] = useState(false);
+  const [공급가액조정값, set공급가액조정값] = useState(0);
+  const [세액조정_수동, set세액조정_수동] = useState(false);
+  const [세액조정값, set세액조정값] = useState(0);
 
   // 지난달 이 거래처의 "새 행 추가" 확정 품명을 미리보기 오픈 시 자동으로 행으로 반영(2026-08-12
   // 사용자 확정 — 체크박스로 고르던 방식을 대체). addManualRow()와 동일한 형태(수량·단가 0, 조건
@@ -689,6 +702,16 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
     );
   }
 
+  // 조정 입력칸이 비활성화돼야 하는지(조가 여러 개인데 통합시트명을 아직 안 정한 경우) —
+  // 백엔드(POST /거래명세서요청)도 동일 조건으로 override를 무효화하므로 프론트도 같은 기준으로
+  // disabled 처리해 혼란을 주지 않는다.
+  const 조정입력가능 = !분할표시 || 통합시트명.trim() !== "";
+  // 입력칸에 항상 지금 보이는 값 그대로(손 안 댔으면 자동계산값, 손댔으면 그 값) — 확정 시에도
+  // 이 값을 그대로 보낸다("보이는 대로 저장"). 서버가 자동계산값과 같으면 override로 취급하지
+  // 않으므로(편집여부·감사이력 판정), 손 안 댄 값을 그대로 보내도 안전하다.
+  const 공급가액_표시값 = 공급가액조정_수동 ? 공급가액조정값 : Math.round(표시_공급가액_오른쪽);
+  const 세액_표시값 = 세액조정_수동 ? 세액조정값 : 표시_세액_오른쪽;
+
   function handleConfirmClick() {
     const 품목_최종: 확정품목[] = rightRows.map((r) => ({
       코드: r.코드,
@@ -718,6 +741,7 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
       규칙,
       통합조건식_해결: resolution,
       ...(분할표시 ? { 통합시트명, 상단업무명 } : {}),
+      ...(조정입력가능 ? { 공급가액_직접입력: 공급가액_표시값, 세액_직접입력: 세액_표시값 } : {}),
     });
   }
 
@@ -973,8 +997,33 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
                     <td className={td} colSpan={4}>
                       공급가액
                     </td>
-                    <td className={tdRight}>{Math.round(표시_공급가액_오른쪽).toLocaleString()}원</td>
-                    <td className={td}></td>
+                    <td className={tdRight}>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={콤마표시(공급가액_표시값)}
+                        onChange={(e) => {
+                          set공급가액조정_수동(true);
+                          set공급가액조정값(콤마숫자파싱(e.target.value));
+                        }}
+                        disabled={!조정입력가능}
+                        className={numInput + " disabled:cursor-not-allowed disabled:opacity-50"}
+                      />
+                    </td>
+                    <td className={td}>
+                      {공급가액조정_수동 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            set공급가액조정_수동(false);
+                            set세액조정_수동(false);
+                          }}
+                          className="text-xs text-blue-600 hover:underline dark:text-blue-400"
+                        >
+                          자동값 사용
+                        </button>
+                      )}
+                    </td>
                   </tr>
                   <tr className="dark:border-gray-700">
                     <td className={td} colSpan={4}>
@@ -982,14 +1031,38 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
                       {data.부가세구분 === "포함" && <span className="text-gray-400">(단가 포함)</span>}
                       {data.부가세구분 === null && <span className="text-red-600 dark:text-red-400">(판정 불가)</span>}
                     </td>
-                    <td className={tdRight}>{표시_세액_오른쪽.toLocaleString()}원</td>
+                    <td className={tdRight}>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={콤마표시(세액_표시값)}
+                        onChange={(e) => {
+                          set세액조정_수동(true);
+                          set세액조정값(콤마숫자파싱(e.target.value));
+                        }}
+                        disabled={!조정입력가능}
+                        className={numInput + " disabled:cursor-not-allowed disabled:opacity-50"}
+                      />
+                    </td>
                     <td className={td}></td>
                   </tr>
+                  {!조정입력가능 && (
+                    <tr>
+                      <td colSpan={6} className="px-4 py-1 text-xs text-amber-600 dark:text-amber-400">
+                        통합시트명을 먼저 입력해야 공급가액·부가세를 조정할 수 있습니다(조가 여러 개일 때는
+                        통합시트에만 조정이 반영됩니다).
+                      </td>
+                    </tr>
+                  )}
                   <tr className="border-t border-gray-200 font-semibold dark:border-gray-700">
                     <td className={td} colSpan={4}>
                       합계
                     </td>
-                    <td className={tdRight}>{Math.round(오른쪽합계 + 세액_오른쪽).toLocaleString()}원</td>
+                    <td className={tdRight}>
+                      {/* 항상 바로 위 두 줄(공급가액·부가세) 표시값의 합 — 화면에 보이는 세 줄이 서로 어긋나지 않도록. */}
+                      {(공급가액_표시값 + 세액_표시값).toLocaleString()}
+                      원
+                    </td>
                     <td className={td}></td>
                   </tr>
                 </tfoot>

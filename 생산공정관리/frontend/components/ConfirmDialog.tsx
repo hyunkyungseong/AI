@@ -11,6 +11,9 @@ type Props = {
   cancelLabel?: string;
   danger?: boolean;
   dangerText?: string;
+  reasonRequired?: boolean;
+  reason?: string;
+  onReasonChange?: (value: string) => void;
   onConfirm: () => void;
   onClose: () => void;
 };
@@ -28,6 +31,9 @@ export default function ConfirmDialog({
   cancelLabel = "닫기",
   danger = false,
   dangerText = "취소 후 복구할 수 없습니다.",
+  reasonRequired = false,
+  reason,
+  onReasonChange,
   onConfirm,
   onClose,
 }: Props) {
@@ -41,6 +47,8 @@ export default function ConfirmDialog({
   }, [open, onClose]);
 
   if (!open) return null;
+
+  const 확인비활성 = reasonRequired && !(reason ?? "").trim();
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
@@ -60,6 +68,21 @@ export default function ConfirmDialog({
           <p className="mt-3 text-xs font-medium text-red-600 dark:text-red-400">{dangerText}</p>
         )}
 
+        {onReasonChange && (
+          <div className="mt-3">
+            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400">
+              사유{reasonRequired ? " (필수)" : " (선택)"}
+            </label>
+            <textarea
+              value={reason ?? ""}
+              onChange={(e) => onReasonChange(e.target.value)}
+              rows={2}
+              className="mt-1 w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm text-gray-900 focus:border-gray-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+              placeholder={reasonRequired ? "취소 사유를 입력해 주세요" : "필요하면 사유를 입력하세요"}
+            />
+          </div>
+        )}
+
         <div className="mt-5 flex justify-end gap-2">
           <button
             type="button"
@@ -71,8 +94,13 @@ export default function ConfirmDialog({
           <button
             type="button"
             onClick={onConfirm}
+            disabled={확인비활성}
             className={`rounded-md px-3 py-1.5 text-sm font-medium text-white ${
-              danger ? "bg-red-600 hover:bg-red-700" : "bg-gray-900 hover:bg-gray-700 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-gray-300"
+              확인비활성
+                ? "cursor-not-allowed bg-gray-300 dark:bg-gray-700"
+                : danger
+                ? "bg-red-600 hover:bg-red-700"
+                : "bg-gray-900 hover:bg-gray-700 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-gray-300"
             }`}
           >
             {confirmLabel}

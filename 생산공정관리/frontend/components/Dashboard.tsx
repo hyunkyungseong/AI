@@ -5,8 +5,8 @@ import LogoutButton from "./LogoutButton";
 import Tab1Summary from "./Tab1Summary";
 import Tab2Clients from "./Tab2Clients";
 import Tab3Staff from "./Tab3Staff";
-import Tab4 from "./Tab4";
-import ClientMasterSection from "./ClientMasterSection";
+import Tab4, { type Tab4SubTabId } from "./Tab4";
+import ClientMasterSection, { type ClientMasterSubTabId } from "./ClientMasterSection";
 
 export type 운영통계행 = {
   연월: string;
@@ -61,6 +61,15 @@ export type 발행행 = 미발행행 & {
   // 거래처 승인 대기 게이트(2026-08-12) — 꺼지면(0) 발행요청목록에서 "거래처 승인 대기 중"으로
   // 표시되고 경영지원부가 발행할 수 없다(POST /거래명세서발행이 409로 거부).
   발행가능: 0 | 1;
+  // "편집됨" 배지 표시 전용(2026-08-13) — 편집여부(부분취소 게이트, 조건식만 적용돼도 항상 1이 될
+  // 수 있어 보수적으로 원본 기준 유지)와 분리: 실제 거래명세서_수정이력이 1건이라도 있어야 true.
+  수정이력있음: boolean;
+  // 편집으로 합계가 얼마나 바뀌었는지(2026-08-14) — 배지 색상(증가=빨강/감소=파랑) 결정용,
+  // 거래명세서번호 단위 값. 변동 없으면(또는 로그 없으면) 0.
+  합계증감: number;
+  // "청구공급가액" 열 전용(2026-08-14) — 실제 확정 저장된 공급가액(override 우선), 거래명세서번호
+  // 단위 값이라 그룹 내 모든 라인이 항상 동일.
+  확정공급가액: number;
 };
 
 // 탭5 "거래처 마스터" 전용 — GET /거래처마스터 응답 매핑. 거래처명이 PK라 생성 후 변경 불가
@@ -98,15 +107,45 @@ export type 단가행 = {
   수정일: string;
 };
 
-const TABS = [
-  { id: "summary", label: "작업 현황 요약" },
-  { id: "clients", label: "거래처별 현황" },
-  { id: "staff", label: "담당자별 현황" },
-  { id: "invoice", label: "거래명세서 관리" },
-  { id: "clients-master", label: "거래처 마스터" },
-] as const;
+// 2026-08-12(같은 날) GNB 개편 — 최상위 탭 5개를 대분류 3개(통계 분석/거래명세서 관리/거래처
+// 마스터)로 묶고, 대분류 클릭 시 상단 2번째 줄에 하위탭이 나타나는 2단 구조로 변경. 거래명세서
+// 관리·거래처 마스터는 원래도 화면 안쪽에 자체 하위탭 줄이 있었는데(Tab4.tsx·ClientMasterSection.tsx),
+// 이번에 그 하위탭도 여기 상단 2번째 줄로 끌어올려 통계 분석과 동일한 모양으로 통일했다.
+type StatsSubId = "summary" | "clients" | "staff";
+type InvoiceSubId = Tab4SubTabId;
+type MasterSubId = ClientMasterSubTabId;
+type GroupId = "stats" | "invoice" | "clients-master";
 
-type TabId = (typeof TABS)[number]["id"];
+const GROUPS: { id: GroupId; label: string; subTabs: { id: string; label: string }[] }[] = [
+  {
+    id: "stats",
+    label: "통계 분석",
+    subTabs: [
+      { id: "summary", label: "작업 현황 요약" },
+      { id: "clients", label: "거래처별 현황" },
+      { id: "staff", label: "담당자별 현황" },
+    ],
+  },
+  {
+    id: "invoice",
+    label: "거래명세서 관리",
+    subTabs: [
+      { id: "unissued", label: "미발행 목록" },
+      { id: "pending", label: "발행요청목록" },
+      { id: "issued", label: "발행완료" },
+      { id: "history", label: "수정이력" },
+    ],
+  },
+  {
+    id: "clients-master",
+    label: "거래처 마스터",
+    subTabs: [
+      { id: "clients", label: "거래처관리" },
+      { id: "pricing", label: "단가관리" },
+      { id: "staff", label: "담당자관리" },
+    ],
+  },
+];
 
 // 로딩 중 표시 — 각 탭의 <Suspense> fallback으로 공용 사용.
 function TabLoading() {
@@ -129,24 +168,39 @@ function InvoiceTab({
   invoicePromise,
   issuedPromise,
   active,
+  subTab,
+  setSubTab,
 }: {
   summaryPromise: Promise<운영통계행[]>;
   invoicePromise: Promise<미발행행[]>;
   issuedPromise: Promise<발행행[]>;
   active: boolean;
+  subTab: InvoiceSubId;
+  setSubTab: (id: InvoiceSubId) => void;
 }) {
-  return <Tab4 rows={use(summaryPromise)} invoiceRows={use(invoicePromise)} issuedRows={use(issuedPromise)} active={active} />;
+  return (
+    <Tab4
+      rows={use(summaryPromise)}
+      invoiceRows={use(invoicePromise)}
+      issuedRows={use(issuedPromise)}
+      active={active}
+      subTab={subTab}
+      setSubTab={setSubTab}
+    />
+  );
 }
 function ClientsMasterTab({
   clientRows,
   pricingPromise,
   summaryPromise,
   active,
+  subTab,
 }: {
   clientRows: 거래처행[];
   pricingPromise: Promise<단가행[]>;
   summaryPromise: Promise<운영통계행[]>;
   active: boolean;
+  subTab: MasterSubId;
 }) {
   return (
     <ClientMasterSection
@@ -154,6 +208,7 @@ function ClientsMasterTab({
       pricingRows={use(pricingPromise)}
       taskRows={use(summaryPromise)}
       active={active}
+      subTab={subTab}
     />
   );
 }
@@ -175,64 +230,98 @@ export default function Dashboard({
   issuedPromise: Promise<발행행[]>;
   pricingPromise: Promise<단가행[]>;
 }) {
-  const [tab, setTab] = useState<TabId>("summary");
+  const [group, setGroup] = useState<GroupId>("stats");
+  // 그룹마다 마지막으로 보던 하위탭을 독립적으로 기억(그룹 전환 시 서로 영향 없음).
+  const [statsSub, setStatsSub] = useState<StatsSubId>("summary");
+  const [invoiceSub, setInvoiceSub] = useState<InvoiceSubId>("unissued");
+  const [masterSub, setMasterSub] = useState<MasterSubId>("clients");
+
+  const activeGroupDef = GROUPS.find((g) => g.id === group)!;
+  const currentSubId = group === "stats" ? statsSub : group === "invoice" ? invoiceSub : masterSub;
+
+  function handleSubTabClick(id: string) {
+    if (group === "stats") setStatsSub(id as StatsSubId);
+    else if (group === "invoice") setInvoiceSub(id as InvoiceSubId);
+    else setMasterSub(id as MasterSubId);
+  }
 
   return (
     <div className="flex min-h-screen flex-col">
       <header className="flex items-center justify-between border-b border-gray-200 px-6 py-3 dark:border-gray-800">
         <nav className="flex gap-1">
-          {TABS.map((t) => (
+          {GROUPS.map((g) => (
             <button
-              key={t.id}
+              key={g.id}
               type="button"
-              onClick={() => setTab(t.id)}
+              onClick={() => setGroup(g.id)}
               className={
                 "rounded-md px-3 py-1.5 text-sm font-medium " +
-                (tab === t.id
+                (group === g.id
                   ? "bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900"
                   : "text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800")
               }
             >
-              {t.label}
+              {g.label}
             </button>
           ))}
         </nav>
         <LogoutButton />
       </header>
 
+      <nav className="flex gap-1 border-b border-gray-200 px-4 py-2 dark:border-gray-800">
+        {activeGroupDef.subTabs.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => handleSubTabClick(t.id)}
+            className={
+              "rounded-md px-3 py-1 text-sm font-medium " +
+              (currentSubId === t.id
+                ? "bg-gray-200 text-gray-900 dark:bg-gray-800 dark:text-gray-100"
+                : "text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800")
+            }
+          >
+            {t.label}
+          </button>
+        ))}
+      </nav>
+
       <div className="flex flex-1">
-        <div className={tab === "summary" ? "flex flex-1" : "hidden"}>
+        <div className={group === "stats" && statsSub === "summary" ? "flex flex-1" : "hidden"}>
           <Suspense fallback={<TabLoading />}>
             <SummaryTab promise={summaryPromise} />
           </Suspense>
         </div>
-        <div className={tab === "clients" ? "flex flex-1" : "hidden"}>
+        <div className={group === "stats" && statsSub === "clients" ? "flex flex-1" : "hidden"}>
           <Suspense fallback={<TabLoading />}>
             <ClientsTab promise={summaryPromise} />
           </Suspense>
         </div>
-        <div className={tab === "staff" ? "flex flex-1" : "hidden"}>
+        <div className={group === "stats" && statsSub === "staff" ? "flex flex-1" : "hidden"}>
           <Suspense fallback={<TabLoading />}>
             <StaffTab promise={summaryPromise} />
           </Suspense>
         </div>
-        <div className={tab === "invoice" ? "flex flex-1" : "hidden"}>
+        <div className={group === "invoice" ? "flex flex-1" : "hidden"}>
           <Suspense fallback={<TabLoading />}>
             <InvoiceTab
               summaryPromise={summaryPromise}
               invoicePromise={invoicePromise}
               issuedPromise={issuedPromise}
-              active={tab === "invoice"}
+              active={group === "invoice"}
+              subTab={invoiceSub}
+              setSubTab={setInvoiceSub}
             />
           </Suspense>
         </div>
-        <div className={tab === "clients-master" ? "flex flex-1" : "hidden"}>
+        <div className={group === "clients-master" ? "flex flex-1" : "hidden"}>
           <Suspense fallback={<TabLoading />}>
             <ClientsMasterTab
               clientRows={clientRows}
               pricingPromise={pricingPromise}
               summaryPromise={summaryPromise}
-              active={tab === "clients-master"}
+              active={group === "clients-master"}
+              subTab={masterSub}
             />
           </Suspense>
         </div>
