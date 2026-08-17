@@ -38,6 +38,20 @@ export type 저장된규칙 = {
 // 아래 배너에서 선택을 해야 한다.
 export type 통합조건식_불일치 = { 상황: "부족" | "초과"; 기존업무명조합: string; 차이_업무명: string[] };
 
+// 출력비·봉입비가 장수·봉입건수 대신 자재사용량 기준으로 청구되므로(2026-08-17), 원본(장수/봉입건수)과
+// 실제 자재사용량이 다른 작업을 안내하는 용도(billing.자재수량_불일치_목록()) — 계산에는 영향 없음,
+// 화면 안내 전용.
+export type 수량불일치행 = {
+  작업명: string;
+  거래처명: string;
+  업무명: string;
+  장수: number;
+  용지사용량: number;
+  봉입건수: number;
+  봉투사용량: number;
+  사유: string;
+};
+
 export type 미리보기결과 = {
   거래처명: string;
   업무명_목록: string[];
@@ -54,6 +68,7 @@ export type 미리보기결과 = {
   // 작업명끼리 포함/별도가 섞여 있으면 null이 되고 부가세오류에 안내 문구가 담긴다(2026-08-04).
   부가세구분: "포함" | "별도" | null;
   부가세오류?: string | null;
+  수량불일치?: 수량불일치행[];
   규칙목록?: 저장된규칙[]; // POST /거래명세서미리보기 응답에 이미 포함되어 내려옴(2026-08-01,
   // 별도 왕복 없이 한 번의 응답으로 끝내도록 단순화)
 };
@@ -201,6 +216,10 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
     result: { 최종청구품명: string; 조건: 규칙조건; 조?: string; 구분표시?: string; 규격?: string; 비고?: string };
     규칙별건수: [string, number][];
   } | null>(null);
+  // 미분류(조건식 미매칭) 원본 항목이 있는 채로 확정하면 그 금액이 통째로 청구서에서 누락된다
+  // (2026-08-17 실사례 96,960원 누락). 확정 클릭 시 바로 제출하지 않고 이 state로 안내창을 띄워
+  // "그래도 확정" / "미리보기로 돌아가기"를 받는다 — overlapConfirm과 동일한 대기 패턴.
+  const [미분류확인대기, set미분류확인대기] = useState(false);
   // 복사 직후 자동으로 연 편집창의 대상 행 인덱스(2026-08-08) — 이 상태에서 편집을 취소하면
   // "복사 자체가 없었던 일"이 되도록 방금 끼워넣은 복사본을 되돌린다. 저장하면(겹침 확인을
   // 거치더라도) null로 되돌아가 더 이상 취소 대상이 아니게 된다.
@@ -313,6 +332,27 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
     return new Set(data.품목.filter((r) => !미분류Set.has(r)));
   }, [data, rightRows]);
 
+  const 미분류행 = useMemo(() => {
+    if (!data) return [];
+    return data.품목.filter((r) => !매칭Set.has(r));
+  }, [data, 매칭Set]);
+
+  const 미분류합계 = useMemo(() => 미분류행.reduce((s, r) => s + r.금액, 0), [미분류행]);
+
+  // 확정 시 안내창에 "무엇이 얼마나 빠지는지" 보여주기 위한 그룹핑 — 왼쪽 표 헤더 표기
+  // (품목(작업명) 자재명)와 동일한 라벨로 묶어 사용자가 왼쪽 표에서 바로 대조할 수 있게 한다.
+  const 미분류그룹 = useMemo(() => {
+    const map = new Map<string, { 건수: number; 금액: number }>();
+    for (const r of 미분류행) {
+      const key = `${r.품목}${r.작업명 ? `(${r.작업명})` : ""}${r.자재명 ? ` ${r.자재명}` : ""}`;
+      const cur = map.get(key) ?? { 건수: 0, 금액: 0 };
+      cur.건수 += 1;
+      cur.금액 += r.금액;
+      map.set(key, cur);
+    }
+    return Array.from(map.entries()).sort((a, b) => b[1].금액 - a[1].금액);
+  }, [미분류행]);
+
   const 오른쪽합계 = useMemo(() => rightRows.reduce((s, r) => s + (Number.isFinite(r.금액) ? r.금액 : 0), 0), [rightRows]);
 
   // 거래처가 "포함"(단가에 부가세가 이미 포함된 계약)이면 부가세를 추가로 더하지 않는다 —
@@ -354,6 +394,12 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
   // 파싱이 깨짐 — 그냥 문자열로만 변환(2026-07-28, 조건식 "단가" 필드 추가).
   const 단가옵션 = useMemo(
     () => Array.from(new Set(data?.품목.map((r) => r.단가) ?? [])).sort((a, b) => a - b).map(String),
+    [data]
+  );
+  // 자재명옵션(2026-08-15, 단가마스터 자재명 정규화) — 단가마스터_자재단가로 자재 단위 단가가 적용된
+  // 행만 자재명이 채워지므로, 등장한 값만 골라 후보로 제공.
+  const 자재명옵션 = useMemo(
+    () => Array.from(new Set((data?.품목.map((r) => r.자재명).filter(Boolean) as string[]) ?? [])).sort(),
     [data]
   );
   // 조 입력칸 datalist — 이 미리보기에서 이미 쓰인 조 이름 + 원본 표의 작업명(조 이름을 보통
@@ -713,6 +759,14 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
   const 세액_표시값 = 세액조정_수동 ? 세액조정값 : 표시_세액_오른쪽;
 
   function handleConfirmClick() {
+    if (미분류행.length > 0) {
+      set미분류확인대기(true);
+      return;
+    }
+    applyConfirm();
+  }
+
+  function applyConfirm() {
     const 품목_최종: 확정품목[] = rightRows.map((r) => ({
       코드: r.코드,
       품목: r.최종청구품명,
@@ -746,8 +800,10 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="relative flex h-[92vh] w-[96vw] max-w-[1600px] flex-col overflow-hidden rounded-lg border border-gray-200 bg-white p-5 shadow-lg dark:border-gray-700 dark:bg-gray-900">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-2">
+      {/* 화면을 최대한 넓게 써야 편집이 편하다는 사용자 요청(2026-08-16)으로 여백을 줄이고 상한을
+          늘림 — 이전 h-[92vh] w-[96vw] max-w-[1600px]에서 확대. */}
+      <div className="relative flex h-[98vh] w-[99vw] max-w-[2400px] flex-col overflow-hidden rounded-lg border border-gray-200 bg-white p-5 shadow-lg dark:border-gray-700 dark:bg-gray-900">
         <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">거래명세서 미리보기 · 편집</h2>
         <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
           {data.거래처명} · {data.업무명_목록.join(", ")}
@@ -760,6 +816,24 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
           <p className="mt-2 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
             {data.부가세오류}
           </p>
+        )}
+        {/* 출력비·봉입비가 장수·봉입건수 대신 자재사용량 기준으로 청구됨(2026-08-17) — 원본이
+            서로 다른 작업이 있으면(생산공정관리시스템 입력 단계 휴먼 에러로 확인됨) 안내만 하고
+            계산·확정은 그대로 진행(자재사용량 기준 금액이 이미 반영돼 있음). */}
+        {data.수량불일치 && data.수량불일치.length > 0 && (
+          <div className="mt-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+            <p className="font-medium">
+              ⚠ 장수·봉입건수와 실제 자재사용량이 다른 작업이 있습니다 — 자재사용량 기준으로
+              청구됩니다(생산공정관리시스템 입력 오류로 추정, 다음 작업 등록 시 확인해 주세요).
+            </p>
+            <ul className="mt-1 list-disc space-y-0.5 pl-4">
+              {data.수량불일치.map((x, i) => (
+                <li key={i}>
+                  {x.작업명}: {x.사유}
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
         {data.통합조건식_불일치 && (
           <div className="mt-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
@@ -811,9 +885,9 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
           </div>
         )}
 
-        {/* 왼쪽(읽기 전용, 컬럼 적음)은 좁게, 오른쪽(입력칸·액션 버튼 많음)은 넓게(2026-08-12
-            사용자 요청) — 고정 50:50 대신 실제 필요한 폭 비율로 배분. */}
-        <div className="mt-3 grid flex-1 grid-cols-[2fr_3fr] gap-4 overflow-hidden">
+        {/* 2026-08-12엔 왼쪽(읽기 전용)을 좁게(40:60)로 뒀었는데, 이후 왼쪽 표에 자재명이 추가되며
+            내용이 길어져 오히려 왼쪽이 좁고 오른쪽이 남는다는 피드백(2026-08-16)으로 50:50으로 조정. */}
+        <div className="mt-3 grid flex-1 grid-cols-[1fr_1fr] gap-4 overflow-hidden">
           {/* 왼쪽: 원본(읽기 전용) */}
           <div className="flex flex-col overflow-hidden">
             <h3 className="mb-1 flex items-baseline gap-2 text-xs font-semibold text-gray-500 dark:text-gray-400">
@@ -829,7 +903,7 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
                   <tr>
                     <th className={th} title="오른쪽 표에 반영된 항목">✓</th>
                     <th className={th}>코드</th>
-                    <th className={th}>품목</th>
+                    <th className={th}>품목(작업명) 자재명</th>
                     <th className={thRight}>수량</th>
                     <th className={thRight}>단가</th>
                     <th className={thRight}>금액</th>
@@ -849,6 +923,12 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
                       <td className={td}>
                         {row.품목}
                         {row.작업명 && <span className="text-gray-500 dark:text-gray-400">({row.작업명})</span>}
+                        {row.자재명 && (
+                          <span className="text-blue-600 dark:text-blue-400" title="자재단가로 분할된 항목">
+                            {" "}
+                            · {row.자재명}
+                          </span>
+                        )}
                       </td>
                       <td className={tdRight}>{row.수량.toLocaleString()}</td>
                       <td className={tdRight}>{row.단가.toLocaleString()}</td>
@@ -1111,6 +1191,7 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
             품목옵션={품목옵션}
             단가옵션={단가옵션}
             작업명옵션={작업명옵션}
+            자재명옵션={자재명옵션}
             조옵션={조옵션}
             onSave={handleModalSave}
             onCancel={handleModalCancel}
@@ -1129,6 +1210,25 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
             setOverlapConfirm(null);
           }}
           onClose={() => setOverlapConfirm(null)}
+        />
+
+        <ConfirmDialog
+          open={미분류확인대기}
+          title="미분류 항목이 있습니다"
+          message={`왼쪽 원본 중 ${미분류행.length.toLocaleString()}건(${미분류합계.toLocaleString()}원)이 아직 오른쪽 표에 반영되지 않았습니다. 이대로 확정하면 이 금액은 청구서에서 빠집니다. 그래도 진행하시겠습니까?`}
+          items={[
+            ...미분류그룹.slice(0, 15).map(([이름, v]) => `${이름} — ${v.건수.toLocaleString()}건, ${v.금액.toLocaleString()}원`),
+            ...(미분류그룹.length > 15 ? [`외 ${미분류그룹.length - 15}개 항목 더`] : []),
+          ]}
+          confirmLabel="그래도 확정"
+          cancelLabel="미리보기로 돌아가기"
+          danger
+          dangerText="누락된 금액은 이후 별도로 청구해야 합니다."
+          onConfirm={() => {
+            set미분류확인대기(false);
+            applyConfirm();
+          }}
+          onClose={() => set미분류확인대기(false)}
         />
       </div>
     </div>

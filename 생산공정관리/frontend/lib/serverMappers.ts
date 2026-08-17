@@ -1,6 +1,22 @@
-import type { 거래처행, 단가행, 미발행행 } from "@/components/Dashboard";
+import type { 거래처행, 단가행, 자재단가행, 미발행행 } from "@/components/Dashboard";
 
 type Rec = Record<string, unknown>;
+
+function mapMaterialPriceRow(r: Rec): 자재단가행 {
+  const 매칭 = Array.isArray(r.매칭자재) ? (r.매칭자재 as Rec[]) : [];
+  return {
+    id: Number(r.id ?? 0),
+    단가마스터_id: Number(r.단가마스터_id ?? 0),
+    코드: (r.코드 as 자재단가행["코드"]) ?? "출력자재비",
+    단가: Number(r.단가 ?? 0),
+    표시명: r.표시명 != null ? String(r.표시명) : null,
+    비고: r.비고 != null ? String(r.비고) : null,
+    매칭자재: 매칭.map((m) => ({
+      자재코드: m.자재코드 != null ? Number(m.자재코드) : null,
+      자재명: m.자재명 != null ? String(m.자재명) : null,
+    })),
+  };
+}
 
 // app/page.tsx(최초 로그인 직후 서버 컴포넌트 로딩)와 탭 재방문 시 재조회하는 여러 API Route
 // Handler(client-list·pricing-list·invoice-list 등, 2026-08-09 신규)가 FastAPI 원본 JSON을
@@ -35,9 +51,11 @@ export function mapPricingRow(r: Rec): 단가행 {
     각대대봉투단가: Number(r.각대대봉투단가 ?? 0),
     각대대봉투봉입단가: Number(r.각대대봉투봉입단가 ?? 0),
     부가세구분: r.부가세구분 === "포함" ? "포함" : "별도",
+    인쇄면: r.인쇄면 === "단면" ? "단면" : "양면",
     비고: r.비고 != null ? String(r.비고) : "",
     등록일: String(r.등록일 ?? ""),
     수정일: String(r.수정일 ?? ""),
+    자재단가목록: Array.isArray(r.자재단가목록) ? (r.자재단가목록 as Rec[]).map(mapMaterialPriceRow) : [],
   };
 }
 

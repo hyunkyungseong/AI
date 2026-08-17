@@ -2,11 +2,13 @@
 
 import { useEffect, useMemo, useState } from "react";
 import EditableCombo from "./EditableCombo";
-import type { 단가행, 운영통계행 } from "@/components/Dashboard";
+import PricingMaterialSection from "./PricingMaterialSection";
+import type { 단가행, 운영통계행, 자재단가행 } from "@/components/Dashboard";
 
 type Props = {
   open: boolean;
   mode: "create" | "edit";
+  justCreated?: boolean; // 방금 "새 단가 추가"를 저장하고 바로 이 수정모드로 넘어온 경우(2026-08-16)
   거래처명: string; // 부모(PricingMaster.tsx)가 넘겨주는 현재 선택된 거래처 — create/edit 둘 다 고정
   initial: 단가행 | null; // create 모드에선 null
   taskRows: 운영통계행[]; // 업무명·작업명 자동완성 후보 추출용(표시는 안 함)
@@ -26,10 +28,12 @@ type Props = {
       | "각대대봉투단가"
       | "각대대봉투봉입단가"
       | "부가세구분"
+      | "인쇄면"
       | "비고"
       | "수정일"
     >
   ) => void;
+  onMaterialPricesChanged: (id: number, 자재단가목록: 자재단가행[]) => void;
 };
 
 const label = "block text-sm text-gray-700 dark:text-gray-300";
@@ -62,6 +66,13 @@ const 가격필드목록: { key: 가격필드; label: string }[] = [
   { key: "각대대봉투단가", label: "각대대봉투단가(원)" },
 ];
 
+// 각대대봉투단가는 계산에서 더 이상 쓰이지 않는다(2026-08-17 — 큰 봉투도 그냥 "봉투제작단가" 밑에
+// 자재단가(PricingMaterialSection)로 등록하는 방식으로 통합, 상세:
+// `.claude/plans/plan_단가마스터_자재명정규화.md`). DB 컬럼·기존 값은 남겨두므로(이미 등록된
+// 값이 있는 거래처의 값을 0으로 지우지 않기 위해) 저장 payload는 여전히 가격필드목록(전체)을
+// 그대로 쓰고, 입력칸 렌더링에만 이 필터된 목록을 쓴다.
+const 표시_가격필드목록 = 가격필드목록.filter((f) => f.key !== "각대대봉투단가");
+
 // ClientFormDialog.tsx와 동일한 모달 뼈대(오버레이·Escape·formKey 리마운트로 초기화, 재동기화용
 // useEffect 없음). 차이점: 업무명·작업명은 <input list>+<datalist>로 자유 입력과 기존 값 추천을
 // 동시에 지원(별도 콤보박스 컴포넌트 불필요, 사용자 확정 — 실적 없는 신규 업무에도 미리 가격을
@@ -70,12 +81,14 @@ const 가격필드목록: { key: 가격필드; label: string }[] = [
 export default function PricingFormDialog({
   open,
   mode,
+  justCreated,
   거래처명,
   initial,
   taskRows,
   onClose,
   onCreated,
   onUpdated,
+  onMaterialPricesChanged,
 }: Props) {
   const [업무명, set업무명] = useState(initial?.업무명 ?? "");
   const [작업명, set작업명] = useState(initial?.작업명 ?? "");
@@ -94,6 +107,9 @@ export default function PricingFormDialog({
   // 해야 하는지("별도") — 거래처 기본단가(업무명·작업명 공란) 행 값이 실제 계산에 쓰인다
   // (billing.부가세_계산(), 2026-07-28). 기본값 "별도"는 DB 컬럼 기본값과 동일.
   const [부가세구분, set부가세구분] = useState<"포함" | "별도">(initial?.부가세구분 ?? "별도");
+  // 인쇄면(2026-08-17): 청구페이지 원본이 없는 업무의 출력비를 용지 자재사용량으로 대체 계산할 때
+  // 몇 배로 환산할지(단면=1배/양면=2배) — 실사용 데이터 절대다수가 양면이라 기본값 양면.
+  const [인쇄면, set인쇄면] = useState<"단면" | "양면">(initial?.인쇄면 ?? "양면");
   const [비고, set비고] = useState(initial?.비고 ?? "");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -137,6 +153,7 @@ export default function PricingFormDialog({
           작업명: 작업명.trim() || null,
           ...Object.fromEntries(가격필드목록.map(({ key }) => [key, 숫자값(key)])),
           부가세구분,
+          인쇄면,
           비고: 비고.trim() || null,
         };
         const res = await fetch("/api/pricing-create", {
@@ -165,15 +182,18 @@ export default function PricingFormDialog({
           삽지제작단가: 숫자값("삽지제작단가"),
           각대대봉투단가: 숫자값("각대대봉투단가"),
           부가세구분,
+          인쇄면,
           비고: 비고.trim(),
           등록일: 오늘,
           수정일: 오늘,
+          자재단가목록: [],
         });
       } else {
         const payload = {
           id: initial!.id,
           ...Object.fromEntries(가격필드목록.map(({ key }) => [key, 숫자값(key)])),
           부가세구분,
+          인쇄면,
           비고: 비고.trim() || null,
         };
         const res = await fetch("/api/pricing-update", {
@@ -198,6 +218,7 @@ export default function PricingFormDialog({
           삽지제작단가: 숫자값("삽지제작단가"),
           각대대봉투단가: 숫자값("각대대봉투단가"),
           부가세구분,
+          인쇄면,
           비고: 비고.trim(),
           수정일: 오늘,
         });
@@ -211,7 +232,9 @@ export default function PricingFormDialog({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="w-full max-w-lg rounded-lg border border-gray-200 bg-white p-5 shadow-lg dark:border-gray-700 dark:bg-gray-900">
+      {/* 자재별 단가 편집창이 펼쳐지면 내용이 화면 높이를 넘어설 수 있어(2026-08-16 실사용 제보 —
+          아래 저장/취소 버튼이 화면 밖으로 밀려남) 팝업 전체를 세로 스크롤 가능하게 높이 제한. */}
+      <div className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-lg border border-gray-200 bg-white p-5 shadow-lg dark:border-gray-700 dark:bg-gray-900">
         <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">
           {mode === "create" ? `새 단가 추가 — ${거래처명}` : `단가 수정 — ${거래처명}`}
         </h2>
@@ -263,7 +286,7 @@ export default function PricingFormDialog({
               SKILL-08 관례와 동일). onFocus만으론 이미 포커스된 입력을 다시 클릭했을 때
               재적용이 안 되므로(EditableCombo.tsx에서 실측으로 확인된 것과 동일한 이유)
               onClick에도 같이 건다. */}
-          {가격필드목록.map(({ key, label: 필드라벨 }) => (
+          {표시_가격필드목록.map(({ key, label: 필드라벨 }) => (
             <label key={key} className={label}>
               {필드라벨}
               <input
@@ -296,6 +319,22 @@ export default function PricingFormDialog({
           </label>
 
           <label className={`${label} col-span-2`}>
+            인쇄면
+            <select
+              value={인쇄면}
+              onChange={(e) => set인쇄면(e.target.value as "단면" | "양면")}
+              className={input}
+            >
+              <option value="양면">양면(한 장에 앞뒤 2쪽)</option>
+              <option value="단면">단면(한 장에 1쪽)</option>
+            </select>
+            <span className="mt-1 block text-xs font-normal text-gray-400">
+              청구페이지 원본이 없는 업무의 출력비를 용지 자재사용량으로 계산할 때 몇 배로 셀지
+              결정합니다(자재별 단가 등록에도 동일하게 적용).
+            </span>
+          </label>
+
+          <label className={`${label} col-span-2`}>
             비고
             <input
               value={비고}
@@ -305,6 +344,34 @@ export default function PricingFormDialog({
               className={input}
             />
           </label>
+
+          {/* 방금 "새 단가 추가"를 저장하고 바로 수정모드로 넘어온 경우, 자재별 단가 등록을
+              눈에 띄게 안내(2026-08-16 사용자 요청 — 창이 안 닫히고 바로 이어지는 흐름이라
+              "왜 이 화면이 또 떴지" 하지 않도록 이유를 알려줌). */}
+          {mode === "edit" && justCreated && (
+            <div className="col-span-2 rounded-md border border-blue-300 bg-blue-50 px-3 py-2 text-sm text-blue-800 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-300">
+              단가가 저장되었습니다. 용지·봉투 종류 등 자재별로 단가가 다르면 아래{" "}
+              <strong>&quot;자재별 단가&quot;</strong>에서 예외 단가를 등록해 주세요. 없으면 그냥
+              닫으셔도 됩니다.
+            </div>
+          )}
+
+          {/* 자재별 단가(2026-08-15) — 저장된 id가 있어야 하위 자재단가를 연결할 수 있어 수정
+              모드에서만 노출(등록은 별도 엔드포인트라 이 폼의 "저장" 버튼과 묶이지 않음). */}
+          {mode === "edit" && initial ? (
+            <PricingMaterialSection
+              단가마스터_id={initial.id}
+              거래처명={거래처명}
+              업무명={initial.업무명}
+              작업명={initial.작업명}
+              rows={initial.자재단가목록}
+              onChange={(rows) => onMaterialPricesChanged(initial.id, rows)}
+            />
+          ) : (
+            <p className="col-span-2 text-xs text-gray-400">
+              자재별로 다른 단가(용지·봉투 종류별 등)는 먼저 저장한 뒤 “수정”에서 추가할 수 있습니다.
+            </p>
+          )}
         </div>
 
         <div className="mt-5 flex justify-end gap-2">

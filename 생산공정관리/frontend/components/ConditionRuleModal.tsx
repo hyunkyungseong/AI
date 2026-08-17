@@ -2,7 +2,11 @@
 
 import { useEffect, useState } from "react";
 
-export type 규칙조건단일 = { field: "코드" | "품목" | "작업명" | "단가"; op: "==" | "contains"; value: string };
+export type 규칙조건단일 = {
+  field: "코드" | "품목" | "작업명" | "단가" | "자재명";
+  op: "==" | "contains";
+  value: string;
+};
 export type 규칙조건AND그룹 = { and: 규칙조건단일[] };
 export type 규칙조건 = { or: 규칙조건AND그룹[] };
 
@@ -11,6 +15,7 @@ const 필드옵션 = [
   { value: "품목" as const, label: "품목명" },
   { value: "작업명" as const, label: "작업명" },
   { value: "단가" as const, label: "단가" },
+  { value: "자재명" as const, label: "자재명" }, // 자재단가(2026-08-15)로 분할된 원본 행을 다시 묶을 때 사용
 ];
 
 function 연산자옵션(field: string) {
@@ -39,6 +44,7 @@ type Props = {
   품목옵션?: string[];
   작업명옵션?: string[];
   단가옵션?: string[];
+  자재명옵션?: string[]; // 원본 표에 등장하는 자재명(2026-08-15, 단가마스터 자재명 정규화)
   조옵션?: string[]; // 이미 쓰인 조 이름 + 원본 표의 작업명 목록(조별 분할발급, 2026-07-29)
   onSave: (결과: {
     최종청구품명: string;
@@ -64,11 +70,13 @@ function 값옵션(
   코드옵션: string[],
   품목옵션: string[],
   작업명옵션: string[],
-  단가옵션: string[]
+  단가옵션: string[],
+  자재명옵션: string[]
 ) {
   if (field === "코드") return 코드옵션;
   if (field === "품목") return 품목옵션;
   if (field === "단가") return 단가옵션;
+  if (field === "자재명") return 자재명옵션;
   return 작업명옵션;
 }
 
@@ -91,6 +99,7 @@ export default function ConditionRuleModal({
   품목옵션 = [],
   작업명옵션 = [],
   단가옵션 = [],
+  자재명옵션 = [],
   조옵션 = [],
   onSave,
   onCancel,
@@ -300,7 +309,7 @@ export default function ConditionRuleModal({
                       className={`w-28 ${inputCls}`}
                     />
                     <datalist id={`값옵션-${gi}-${ci}`}>
-                      {값옵션(cond.field, 코드옵션, 품목옵션, 작업명옵션, 단가옵션).map((v) => (
+                      {값옵션(cond.field, 코드옵션, 품목옵션, 작업명옵션, 단가옵션, 자재명옵션).map((v) => (
                         <option key={v} value={v} />
                       ))}
                     </datalist>

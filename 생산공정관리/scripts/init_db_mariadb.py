@@ -21,6 +21,11 @@ MariaDB(dashboard DB) 초기화 스크립트 — 이 프로젝트 전용 신규 
   13. 담당자_담당거래처  — 담당자 1명이 담당하는 거래처+업무명 매핑("담당자 우선" 구조) (2026-08-11 추가)
   14. 거래명세서품명이력  — 거래처별로 과거 확정 발행된 최종 품명 이력(거래명세서 취소·삭제와 무관하게
                        영속 — 미리보기 "새 행 추가"/"과거 품명 추가" 자동완성·일괄추가용) (2026-08-12 추가)
+  15. 단가마스터_자재단가       — 단가마스터의 코드(F/E/삽지비=M)별로 자재 단위 복수 단가를 등록하는
+                       정규화 테이블(2026-08-15 추가). 이 테이블에 행이 없으면 기존 단가마스터의
+                       단일 컬럼(용지제작단가 등)이 그대로 폴백으로 쓰임 — 기존 거래처는 영향 없음.
+  16. 단가마스터_자재단가_매칭  — 위 자재단가 행 하나에 여러 자재코드/자재명을 묶어 매칭하는 테이블
+                       (2026-08-15 추가). 자재코드 우선, 없으면 자재명으로 매칭.
 
 (2026-07-31~2026-08-01에 이 "청구품목통합규칙" 테이블을 "통합조건식" 기능으로 처음 시도했다가
  부작용(매칭 0건 규칙 노출, 단일 업무명 요청 차단)으로 같은 날 코드를 원복함 — 그때는 이 스크립트에서
@@ -144,6 +149,34 @@ def get_db():
             등록일              DATE DEFAULT (CURRENT_DATE),
             수정일              DATE DEFAULT (CURRENT_DATE),
             UNIQUE KEY uk_단가 (거래처명, 업무명, 작업명)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """,
+
+    "단가마스터_자재단가": """
+        CREATE TABLE IF NOT EXISTS 단가마스터_자재단가 (
+            id              INT AUTO_INCREMENT PRIMARY KEY,
+            단가마스터_id   INT NOT NULL,
+            코드            VARCHAR(10) NOT NULL,
+            단가            DECIMAL(10,2) NOT NULL DEFAULT 0,
+            표시명          VARCHAR(100),
+            비고            TEXT,
+            등록일          DATETIME DEFAULT CURRENT_TIMESTAMP,
+            수정일          DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            FOREIGN KEY (단가마스터_id) REFERENCES 단가마스터(id) ON DELETE CASCADE,
+            INDEX idx_단가마스터_코드 (단가마스터_id, 코드)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """,
+
+    "단가마스터_자재단가_매칭": """
+        CREATE TABLE IF NOT EXISTS 단가마스터_자재단가_매칭 (
+            id              INT AUTO_INCREMENT PRIMARY KEY,
+            자재단가_id     INT NOT NULL,
+            자재코드        INT NULL,
+            자재명          VARCHAR(200) NULL,
+            등록일          DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (자재단가_id) REFERENCES 단가마스터_자재단가(id) ON DELETE CASCADE,
+            UNIQUE KEY uk_자재코드매칭 (자재단가_id, 자재코드),
+            UNIQUE KEY uk_자재명매칭 (자재단가_id, 자재명)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """,
 
@@ -511,6 +544,41 @@ def migrate():
                 print("  마이그레이션: 거래명세서_수정이력.idx_거래명세서번호 인덱스 추가 완료")
             else:
                 print("  마이그레이션: 거래명세서_수정이력.idx_거래명세서번호 인덱스 이미 존재 (건너뜀)")
+
+            # 2026-08-15 — 단가마스터 자재명 단위 정규화(Phase 1). 자재사용현황에 자재코드
+            # (작업내역서자재)·자재명 컬럼을 추가해 지금까지 groupby 단계에서 뭉개지던 자재
+            # 식별 정보를 원본 그대로 보존한다(merge_자재() 변경은 Phase 2에서 진행). UNIQUE
+            # 제약(uk_자재)에 자재코드를 포함시켜야 같은 자재종류 안에서도 자재코드가 다른 여러
+            # 행(예: 95903 사례의 자재코드 2016·99)이 하나로 뭉개지지 않고 각각 저장된다 —
+            # 이 제약을 안 넓히면 Phase 2에서 groupby 키를 확장하는 순간 INSERT가 충돌한다.
+            if not _컬럼_존재(cur, "자재사용현황", "자재코드"):
+                cur.execute("ALTER TABLE 자재사용현황 DROP INDEX uk_자재")
+                cur.execute("ALTER TABLE 자재사용현황 ADD COLUMN 자재코드 INT NULL AFTER 자재형태")
+                cur.execute(
+                    "ALTER TABLE 자재사용현황 ADD UNIQUE KEY uk_자재 "
+                    "(업무의뢰서번호, 작업내역서번호, 작업명, 작업일자, 자재종류, 자재형태, 자재코드)"
+                )
+                print("  마이그레이션: 자재사용현황.자재코드 컬럼 추가 완료(UNIQUE 제약도 함께 확장)")
+            else:
+                print("  마이그레이션: 자재사용현황.자재코드 컬럼 이미 존재 (건너뜀)")
+
+            if not _컬럼_존재(cur, "자재사용현황", "자재명"):
+                cur.execute("ALTER TABLE 자재사용현황 ADD COLUMN 자재명 VARCHAR(200) NULL AFTER 자재코드")
+                print("  마이그레이션: 자재사용현황.자재명 컬럼 추가 완료")
+            else:
+                print("  마이그레이션: 자재사용현황.자재명 컬럼 이미 존재 (건너뜀)")
+
+            if not _컬럼_존재(cur, "단가마스터", "인쇄면"):
+                cur.execute(
+                    "ALTER TABLE 단가마스터 ADD COLUMN 인쇄면 ENUM('단면','양면') DEFAULT '양면' "
+                    "AFTER 부가세구분"
+                )
+                # 청구페이지 원본이 없어 출력비를 용지 자재사용량으로 대체 계산하는 케이스에서 몇
+                # 배로 환산할지 결정하는 값(2026-08-17). 실사용 데이터의 절대다수(장수 대비 확정
+                # 청구페이지 비율)가 양면(2배)이라 DEFAULT '양면'으로 기존 행을 전부 채운다.
+                print("  마이그레이션: 단가마스터.인쇄면 컬럼 추가 완료(기존 행 전부 '양면'으로 채워짐)")
+            else:
+                print("  마이그레이션: 단가마스터.인쇄면 컬럼 이미 존재 (건너뜀)")
 
 
 def main():

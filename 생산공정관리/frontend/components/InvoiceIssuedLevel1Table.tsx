@@ -93,26 +93,28 @@ const Row = memo(function Row({
       <td className="px-3 py-1.5 text-gray-500 dark:text-gray-400">{index + 1}</td>
       <td className="px-3 py-1.5 text-gray-900 dark:text-gray-100">
         {g.거래명세서번호}
-        {g.수정이력있음 && (
-          <button
-            type="button"
-            onClick={() => onShowHistory(g.거래명세서번호)}
-            className={`ml-1.5 rounded border px-1 text-xs ${
-              g.합계증감 > 0
-                ? "border-red-300 text-red-700 hover:bg-red-50 dark:border-red-700 dark:text-red-400 dark:hover:bg-red-950"
-                : g.합계증감 < 0
-                ? "border-blue-300 text-blue-700 hover:bg-blue-50 dark:border-blue-700 dark:text-blue-400 dark:hover:bg-blue-950"
-                : "border-amber-300 text-amber-700 hover:bg-amber-50 dark:border-amber-700 dark:text-amber-400 dark:hover:bg-amber-950"
-            }`}
-            title={
-              g.합계증감 !== 0
-                ? `원본과 최종 확정 내용 비교 (합계 ${g.합계증감 > 0 ? "+" : ""}${Math.round(g.합계증감).toLocaleString()}원)`
-                : "원본과 최종 확정 내용 비교"
-            }
-          >
-            편집됨
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={() => onShowHistory(g.거래명세서번호)}
+          className={`ml-1.5 rounded border px-1 text-xs ${
+            !g.수정이력있음
+              ? "border-gray-300 text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-400 dark:hover:bg-gray-800"
+              : g.합계증감 > 0
+              ? "border-red-300 text-red-700 hover:bg-red-50 dark:border-red-700 dark:text-red-400 dark:hover:bg-red-950"
+              : g.합계증감 < 0
+              ? "border-blue-300 text-blue-700 hover:bg-blue-50 dark:border-blue-700 dark:text-blue-400 dark:hover:bg-blue-950"
+              : "border-amber-300 text-amber-700 hover:bg-amber-50 dark:border-amber-700 dark:text-amber-400 dark:hover:bg-amber-950"
+          }`}
+          title={
+            !g.수정이력있음
+              ? "원본 그대로 발행됨 — 클릭하면 발행 내용을 볼 수 있습니다"
+              : g.합계증감 !== 0
+              ? `원본과 최종 확정 내용 비교 (합계 ${g.합계증감 > 0 ? "+" : ""}${Math.round(g.합계증감).toLocaleString()}원)`
+              : "원본과 최종 확정 내용 비교"
+          }
+        >
+          {g.수정이력있음 ? "편집됨" : "원본"}
+        </button>
       </td>
       <td className="px-3 py-1.5 text-gray-700 dark:text-gray-300">{g.사업부}</td>
       <td className="px-3 py-1.5 text-gray-900 dark:text-gray-100">{g.거래처명}</td>

@@ -4,7 +4,7 @@ import { useCallback, useMemo, useState } from "react";
 import PricingMasterTable from "./PricingMasterTable";
 import PricingFormDialog from "./PricingFormDialog";
 import ConfirmDialog from "./ConfirmDialog";
-import type { 거래처행, 단가행, 운영통계행 } from "@/components/Dashboard";
+import type { 거래처행, 단가행, 운영통계행, 자재단가행 } from "@/components/Dashboard";
 
 type 배너 = { type: "success" | "warning" | "error"; text: string };
 
@@ -43,6 +43,10 @@ export default function PricingMaster({
   const [formMode, setFormMode] = useState<"create" | "edit">("create");
   const [editing, setEditing] = useState<단가행 | null>(null);
   const [formKey, setFormKey] = useState(0);
+  // 방금 "새 단가 추가"를 저장하고 바로 수정모드로 넘어온 경우에만 true — 자재별 단가를 등록하라는
+  // 안내를 다이얼로그 안에 눈에 띄게 보여주기 위함(2026-08-16 사용자 요청). 다른 경로로 수정을
+  // 열면(목록에서 "수정" 클릭) false.
+  const [justCreated, setJustCreated] = useState(false);
 
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -78,6 +82,7 @@ export default function PricingMaster({
   function openCreate() {
     setFormMode("create");
     setEditing(null);
+    setJustCreated(false);
     setFormOpen(true);
     setFormKey((k) => k + 1);
   }
@@ -85,13 +90,22 @@ export default function PricingMaster({
   function openEdit(row: 단가행) {
     setFormMode("edit");
     setEditing(row);
+    setJustCreated(false);
     setFormOpen(true);
     setFormKey((k) => k + 1);
   }
 
   function handleCreated(row: 단가행) {
     setPrices((prev) => 정렬([...prev, row]));
-    setFormOpen(false);
+    // 창을 닫지 않고 그대로 수정모드로 전환 — 자재별 단가는 이 행의 id가 있어야 등록할 수 있어서
+    // (POST /단가마스터/{id}/자재단가), 저장 직후 바로 이어서 등록할 수 있게 함(2026-08-16 사용자
+    // 요청 — 예전엔 "저장 → 창 닫힘 → 목록에서 다시 수정 클릭"까지 해야 했음). formKey를 올려
+    // 다이얼로그를 리마운트해야 mode="edit"·initial=row로 내부 상태가 새로 초기화된다(openEdit()과
+    // 동일한 패턴).
+    setFormMode("edit");
+    setEditing(row);
+    setJustCreated(true);
+    setFormKey((k) => k + 1);
     setBanner({ type: "success", text: "단가가 등록되었습니다." });
   }
 
@@ -109,6 +123,7 @@ export default function PricingMaster({
       | "각대대봉투단가"
       | "각대대봉투봉입단가"
       | "부가세구분"
+      | "인쇄면"
       | "비고"
       | "수정일"
     >
@@ -116,6 +131,13 @@ export default function PricingMaster({
     setPrices((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
     setFormOpen(false);
     setBanner({ type: "success", text: "단가가 수정되었습니다." });
+  }
+
+  function handleMaterialPricesChanged(id: number, 자재단가목록: 자재단가행[]) {
+    setPrices((prev) => prev.map((p) => (p.id === id ? { ...p, 자재단가목록 } : p)));
+    // 폼을 열어둔 채로 목록만 갱신되므로(PricingMaterialSection이 자체적으로 서버 반영 후 호출),
+    // 다이얼로그에 다시 넘겨줄 editing도 함께 최신화해 재열람 시 최신 목록이 보이게 한다.
+    setEditing((prev) => (prev && prev.id === id ? { ...prev, 자재단가목록 } : prev));
   }
 
   function handleDeleteClick() {
@@ -222,12 +244,14 @@ export default function PricingMaster({
         key={formKey}
         open={formOpen}
         mode={formMode}
+        justCreated={justCreated}
         거래처명={selectedClient}
         initial={editing}
         taskRows={taskRows}
         onClose={() => setFormOpen(false)}
         onCreated={handleCreated}
         onUpdated={handleUpdated}
+        onMaterialPricesChanged={handleMaterialPricesChanged}
       />
 
       <ConfirmDialog

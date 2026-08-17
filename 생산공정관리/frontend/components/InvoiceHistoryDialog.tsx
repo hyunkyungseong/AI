@@ -118,6 +118,9 @@ export default function InvoiceHistoryDialog({ 거래명세서번호, onClose }:
   const [data, setData] = useState<이력응답 | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // 수정이력이 많으면 무제한으로 자라나 아래 원본/최종 비교 표를 화면 밖으로 밀어내던 문제
+  // (2026-08-17 사용자 제보) — 기본은 접어두고 사용자가 클릭해야 펼쳐지게 함.
+  const [수정이력펼침, set수정이력펼침] = useState(false);
 
   useEffect(() => {
     // loading·error 초기값이 이미 true/null이라 여기서 다시 setState할 필요가 없다 — 이 컴포넌트는
@@ -162,34 +165,46 @@ export default function InvoiceHistoryDialog({ 거래명세서번호, onClose }:
         {error && <p className="mt-6 text-sm text-red-600 dark:text-red-400">{error}</p>}
 
         {data && !loading && !error && data.수정이력.length > 0 && (
-          <div className="mt-3 overflow-auto rounded-md border border-gray-200 dark:border-gray-800">
-            <table className="w-full whitespace-nowrap text-sm">
-              <thead className="bg-gray-50 dark:bg-gray-900">
-                <tr>
-                  <th className={th}>필드</th>
-                  <th className={thRight}>이전값</th>
-                  <th className={thRight}>이후값</th>
-                  <th className={th}>수정자</th>
-                  <th className={th}>수정일시</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.수정이력.map((h, i) => (
-                  <tr key={i} className="border-t border-gray-100 dark:border-gray-800">
-                    <td className={td}>{필드표시(h.필드명, h.비고)}</td>
-                    <td className={tdRight}>{h.이전값 === null ? "—" : Math.round(h.이전값).toLocaleString()}</td>
-                    <td className={tdRight}>
-                      {h.이후값 === null ? "—" : Math.round(h.이후값).toLocaleString()}
-                      <span className={`ml-1 ${차이색상(h.필드명, h.이전값, h.이후값)}`}>
-                        {차이표시(h.필드명, h.이전값, h.이후값)}
-                      </span>
-                    </td>
-                    <td className={td}>{h.수정자}</td>
-                    <td className={td}>{h.수정일시}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="mt-3">
+            <button
+              type="button"
+              onClick={() => set수정이력펼침((v) => !v)}
+              className="flex items-center gap-1 text-xs font-medium text-gray-600 hover:underline dark:text-gray-300"
+            >
+              <span>{수정이력펼침 ? "▼" : "▶"}</span>
+              수정이력 ({data.수정이력.length}건)
+            </button>
+            {수정이력펼침 && (
+              <div className="mt-1 max-h-56 overflow-auto rounded-md border border-gray-200 dark:border-gray-800">
+                <table className="w-full whitespace-nowrap text-sm">
+                  <thead className="sticky top-0 bg-gray-50 dark:bg-gray-900">
+                    <tr>
+                      <th className={th}>필드</th>
+                      <th className={thRight}>이전값</th>
+                      <th className={thRight}>이후값</th>
+                      <th className={th}>수정자</th>
+                      <th className={th}>수정일시</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.수정이력.map((h, i) => (
+                      <tr key={i} className="border-t border-gray-100 dark:border-gray-800">
+                        <td className={td}>{필드표시(h.필드명, h.비고)}</td>
+                        <td className={tdRight}>{h.이전값 === null ? "—" : Math.round(h.이전값).toLocaleString()}</td>
+                        <td className={tdRight}>
+                          {h.이후값 === null ? "—" : Math.round(h.이후값).toLocaleString()}
+                          <span className={`ml-1 ${차이색상(h.필드명, h.이전값, h.이후값)}`}>
+                            {차이표시(h.필드명, h.이전값, h.이후값)}
+                          </span>
+                        </td>
+                        <td className={td}>{h.수정자}</td>
+                        <td className={td}>{h.수정일시}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         )}
 

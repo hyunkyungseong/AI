@@ -127,6 +127,15 @@ export default function Tab4Invoice({
     [filters.base5]
   );
 
+  // "선택 취소"(2026-08-16 사용자 요청) — 지금까지는 선택을 전부 지우려면 체크된 항목을 하나씩
+  // 해제하거나 필터를 바꿔 화면에서 사라지게 하는 수밖에 없었음("선택 유지"로 필터 밖 항목도 선택에
+  // 남아있을 수 있어 toggleAll(false)만으로는 안 지워짐). 필터와 무관하게 전체 선택을 한 번에 비운다.
+  const clearSelection = useCallback(() => {
+    setSelected(new Set());
+    set유지기준선택(null);
+    set숨김확인됨(new Set());
+  }, []);
+
   // "거래명세서 요청" 클릭 → 검증(기존과 동일) → 미리보기 API 호출 → 통과하면 팝업 오픈.
   // 여기서는 아직 아무것도 저장하지 않는다.
   async function handlePreviewClick() {
@@ -322,14 +331,25 @@ export default function Tab4Invoice({
           )}
 
           <div className="space-y-2">
-            <button
-              type="button"
-              onClick={handlePreviewClick}
-              disabled={previewLoading}
-              className="rounded-md bg-gray-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-gray-700 disabled:opacity-50 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-gray-300"
-            >
-              {previewLoading ? "불러오는 중..." : "거래명세서 요청"}
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handlePreviewClick}
+                disabled={previewLoading}
+                className="rounded-md bg-gray-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-gray-700 disabled:opacity-50 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-gray-300"
+              >
+                {previewLoading ? "불러오는 중..." : "거래명세서 요청"}
+              </button>
+              {selectedRows.length > 0 && (
+                <button
+                  type="button"
+                  onClick={clearSelection}
+                  className="rounded-md border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                >
+                  선택 취소
+                </button>
+              )}
+            </div>
             {selectedRows.length > 0 && (
               <div className="flex flex-wrap gap-4">
                 <InvoiceSelectionSummaryBar selectedRows={selectedRows} />

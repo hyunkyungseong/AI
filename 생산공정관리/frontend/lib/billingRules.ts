@@ -4,6 +4,7 @@ export type 원본품목 = {
   코드: string;
   품목: string;
   작업명: string | null;
+  자재명: string | null; // 단가마스터_자재단가로 등록된 자재 단위 단가가 적용된 행만 채워짐(2026-08-15)
   수량: number;
   단가: number;
   금액: number;
