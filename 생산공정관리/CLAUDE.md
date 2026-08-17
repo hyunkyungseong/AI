@@ -114,21 +114,23 @@ touch docs/CHANGELOG.md
 | 구분 | 현재 | 최종 목표 (2026-07-19 확정) |
 |---|---|---|
 | 언어 | Python 3.12.5 | Python 3.12.5 |
-| 프론트엔드 | Streamlit 1.58.0 | Next.js (Vercel 배포) |
-| 백엔드 | (app.py 내장) | FastAPI (`scripts/api.py`) |
+| 프론트엔드 | Next.js (로컬 dev) | Next.js (Vercel 배포) |
+| 백엔드 | FastAPI (`scripts/api.py`) | FastAPI (`scripts/api.py`) |
 | 차트 | Plotly 6.7.0 | 추후 결정 (Next.js 쪽) |
-| DB | SQLite (로컬) | MariaDB (사무실 PC) |
-| DB 드라이버 | sqlite3 (내장) | pymysql (FastAPI 전용) |
+| DB | MariaDB (사무실 PC) | MariaDB (사무실 PC) |
+| DB 드라이버 | pymysql (FastAPI 전용) | pymysql (FastAPI 전용) |
 
+> ⚠️ **Streamlit(`app.py`)은 2026-08-18부로 유지보수 종료**(실사용자 없음 확인, 신규 기능 이식 안 함) —
+> 실행 파일·SQLite(`work/dashboard.db`)는 참고용으로 남아있지만 더 이상 개발 대상 아님.
 > 상세 로드맵: `.claude/plans/plan_1단계_MariaDB전환.md`, `docs/작업현황-대시보드-생성-KNOWLEDGE.md` "최종 배포 목표"
 
 ## ⚙️ 실행 명령어
 
 ```
-대시보드 실행        : 대시보드_실행.bat
-데이터 갱신 후 실행  : 데이터갱신_후_실행.bat
+대시보드 실행        : 대시보드_실행.bat (Streamlit — 유지보수 종료, 참고용)
+데이터 갱신 후 실행  : 데이터갱신_후_실행.bat (Streamlit용 — 위와 동일)
 전처리만 실행        : python scripts/preprocess.py
-문법 검사            : python -m py_compile scripts/app.py
+문법 검사            : python -m py_compile scripts/app.py (app.py 수정 시에만 해당)
 API 서버 실행        : API서버_실행.bat  (FastAPI, localhost:8000 — 로컬 PC용, 사무실 PC는 API서버_실행_사무실PC.bat 포트 8001)
 API 서버 재시작      : API서버_재시작.bat (포트 8000 프로세스만 종료 후 재기동 — 코드 수정 후 반영 시 사용)
 웹 화면 실행         : 웹화면_실행.bat (Next.js, localhost:3000 — "접속 안 됨"일 때 이거 더블클릭)
