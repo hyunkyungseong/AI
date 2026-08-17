@@ -251,7 +251,7 @@ def get_db():
         CREATE TABLE IF NOT EXISTS 거래명세서_품목 (
             id              INT AUTO_INCREMENT PRIMARY KEY,
             거래명세서번호  VARCHAR(30) NOT NULL,
-            구분            ENUM('원본', '최종') NOT NULL,
+            구분            ENUM('원본', '최종', '기준') NOT NULL,
             순서            INT NOT NULL,
             코드            VARCHAR(10),
             품목            VARCHAR(100),
@@ -579,6 +579,20 @@ def migrate():
                 print("  마이그레이션: 단가마스터.인쇄면 컬럼 추가 완료(기존 행 전부 '양면'으로 채워짐)")
             else:
                 print("  마이그레이션: 단가마스터.인쇄면 컬럼 이미 존재 (건너뜀)")
+
+            # 2026-08-18 — "원본 vs 최종 비교" 팝업 왼쪽 "원본"이 조건식 적용 전 원자재 단위
+            # 품명(구분='원본')과 조건식 적용 후 합계(감사이력 기준선)를 섞어 보여주던 불일치 수정.
+            # 확정 시점에 "조건식 적용 후·사람이 손대기 전" 스냅샷(기준목록)을 구분='기준'으로
+            # 별도 저장해, 품명도 이 기준으로 표시할 수 있게 한다.
+            cur.execute(
+                "SELECT COLUMN_TYPE AS t FROM INFORMATION_SCHEMA.COLUMNS "
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='거래명세서_품목' AND COLUMN_NAME='구분'"
+            )
+            if "'기준'" not in cur.fetchone()["t"]:
+                cur.execute("ALTER TABLE 거래명세서_품목 MODIFY 구분 ENUM('원본','최종','기준') NOT NULL")
+                print("  마이그레이션: 거래명세서_품목.구분 ENUM에 '기준' 값 추가 완료")
+            else:
+                print("  마이그레이션: 거래명세서_품목.구분 ENUM에 '기준' 값 이미 존재 (건너뜀)")
 
 
 def main():

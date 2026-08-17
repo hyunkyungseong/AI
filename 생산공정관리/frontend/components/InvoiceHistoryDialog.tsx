@@ -158,7 +158,7 @@ export default function InvoiceHistoryDialog({ 거래명세서번호, onClose }:
       <div className="flex h-[85vh] w-[92vw] max-w-[1400px] flex-col rounded-lg border border-gray-200 bg-white p-5 shadow-lg dark:border-gray-700 dark:bg-gray-900">
         <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">원본 vs 최종 비교 — {거래명세서번호}</h2>
         <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-          왼쪽은 시스템이 자동계산한 원본, 오른쪽은 확정 당시 실제로 청구된 최종 내용입니다(읽기 전용).
+          왼쪽은 저장된 조건식이 적용된 원본(확정 당시 기준), 오른쪽은 확정 당시 실제로 청구된 최종 내용입니다(읽기 전용).
         </p>
 
         {loading && <p className="mt-6 text-sm text-gray-500 dark:text-gray-400">불러오는 중...</p>}
@@ -220,7 +220,7 @@ export default function InvoiceHistoryDialog({ 거래명세서번호, onClose }:
               </p>
             ) : (
               <div className="mt-3 grid flex-1 grid-cols-2 gap-4 overflow-hidden">
-                {표("원본(자동계산)", data.원본, data.원본공급가액, data.원본세액)}
+                {표("원본(조건식 적용)", data.원본, data.원본공급가액, data.원본세액)}
                 {표("최종(확정된 내용)", data.최종, data.최종공급가액, data.최종세액)}
               </div>
             )}
