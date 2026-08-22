@@ -173,15 +173,16 @@ def 거래처마스터_목록():
 
 @app.get("/단가마스터", dependencies=인증필요)
 def 단가마스터_목록():
-    """단가마스터 목록에 각 행의 자재단가(자재명 정규화, 2026-08-15) 하위목록을 중첩해서 함께 반환한다
-    — 프론트가 한 번의 요청으로 전체 트리(기본단가+자재별 단가)를 그릴 수 있도록."""
+    """단가마스터 목록에 각 행의 자재단가(자재명 정규화, 2026-08-15)·공정단가(공정별 단가 청구,
+    2026-08-21) 하위목록을 중첩해서 함께 반환한다 — 프론트가 한 번의 요청으로 전체 트리(기본단가+
+    자재별 단가+공정별 단가)를 그릴 수 있도록."""
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM 단가마스터 ORDER BY 거래처명, 업무명, 작업명")
             단가행목록 = cur.fetchall()
 
             cur.execute("""
-                SELECT ad.id, ad.단가마스터_id, ad.코드, ad.단가, ad.표시명, ad.비고,
+                SELECT ad.id, ad.단가마스터_id, ad.코드, ad.단가, ad.표시명, ad.인쇄면, ad.비고,
                        am.자재코드, am.자재명
                 FROM 단가마스터_자재단가 ad
                 LEFT JOIN 단가마스터_자재단가_매칭 am ON am.자재단가_id = ad.id
@@ -189,11 +190,19 @@ def 단가마스터_목록():
             """)
             자재단가행목록 = cur.fetchall()
 
+            cur.execute("""
+                SELECT id, 단가마스터_id, 공정코드, 단가, 비고
+                FROM 단가마스터_공정단가
+                ORDER BY 단가마스터_id, 공정코드
+            """)
+            공정단가행목록 = cur.fetchall()
+
     자재단가맵 = {}
     for r in 자재단가행목록:
         d = 자재단가맵.setdefault(r["id"], {
             "id": r["id"], "단가마스터_id": r["단가마스터_id"], "코드": r["코드"],
-            "단가": float(r["단가"] or 0), "표시명": r["표시명"], "비고": r["비고"], "매칭자재": [],
+            "단가": float(r["단가"] or 0), "표시명": r["표시명"], "인쇄면": r["인쇄면"],
+            "비고": r["비고"], "매칭자재": [],
         })
         if r["자재코드"] is not None or r["자재명"]:
             d["매칭자재"].append({"자재코드": r["자재코드"], "자재명": r["자재명"]})
@@ -202,8 +211,16 @@ def 단가마스터_목록():
     for d in 자재단가맵.values():
         하위목록맵.setdefault(d["단가마스터_id"], []).append(d)
 
+    공정단가하위목록맵 = {}
+    for r in 공정단가행목록:
+        공정단가하위목록맵.setdefault(r["단가마스터_id"], []).append({
+            "id": r["id"], "단가마스터_id": r["단가마스터_id"], "공정코드": r["공정코드"],
+            "단가": float(r["단가"] or 0), "비고": r["비고"],
+        })
+
     for row in 단가행목록:
         row["자재단가목록"] = 하위목록맵.get(row["id"], [])
+        row["공정단가목록"] = 공정단가하위목록맵.get(row["id"], [])
     return 단가행목록
 
 
@@ -272,21 +289,50 @@ def _자재map_조회(cur, 의뢰서목록=None):
     return cur.fetchall()
 
 
+def _우편요금맵_조회(cur, 의뢰서목록=None):
+    """billing.build_품목행()·calc_공급가맵()의 우편요금맵 인자로 바로 쓸 수 있는 형태
+    ({의뢰서번호int: 금액float})로 업무의뢰서_우편요금을 조회(2026-08-22,
+    `.claude/plans/plan_우편요금관리.md`). 의뢰서목록을 주면 그 의뢰서만 스코프,
+    없으면 전체(_자재map_조회()와 동일한 관례)."""
+    sql = "SELECT 업무의뢰서번호, 금액 FROM 업무의뢰서_우편요금"
+    params = []
+    if 의뢰서목록:
+        자리표시자 = ", ".join(["%s"] * len(의뢰서목록))
+        sql += f" WHERE 업무의뢰서번호 IN ({자리표시자})"
+        params = list(의뢰서목록)
+    cur.execute(sql, params)
+    return {int(float(r["업무의뢰서번호"])): float(r["금액"] or 0) for r in cur.fetchall()}
+
+
 def _자재단가df_조회(cur):
     """billing.build_단가맵()의 자재단가df 인자로 바로 쓸 수 있는 형태(거래처명·업무명·작업명·품목·단가·
-    자재코드·자재명·자재단가_id·표시명)로 단가마스터_자재단가를 단가마스터·단가마스터_자재단가_매칭과
+    자재코드·자재명·자재단가_id·표시명·인쇄면)로 단가마스터_자재단가를 단가마스터·단가마스터_자재단가_매칭과
     조인해서 반환(2026-08-15, 단가마스터 자재명 정규화). 매칭 행이 없는 자재단가(등록 중 미완료)는
     자재코드·자재명이 둘 다 NULL인 행으로 나오는데, build_단가맵()이 이런 행은 조회 대상에서 걸러낸다.
     자재단가_id·표시명(2026-08-16 추가)은 "한 자재단가에 여러 자재를 매칭"한 경우 원본 미리보기
     표에서도 한 줄로 합쳐 보여주기 위함(billing.build_단가맵()의 라벨 계산 참고) — 같은 자재단가_id
     행끼리는 단가가 항상 같으므로(자재단가 테이블 자체가 1행=1단가) 단가가 다른 자재끼리는 절대
-    한 그룹으로 묶이지 않는다."""
+    한 그룹으로 묶이지 않는다. 인쇄면(2026-08-22, "출력비" 코드 행 전용)은 NULL이면 build_단가맵()이
+    거래처+업무명 레벨 값으로 폴백 — 상세: `.claude/plans/plan_출력비_장수페이지기준_인쇄면자재별.md`."""
     cur.execute("""
         SELECT dm.거래처명, dm.업무명, dm.작업명, ad.코드 AS 품목, ad.단가, ad.id AS 자재단가_id,
-               ad.표시명, am.자재코드, am.자재명
+               ad.표시명, ad.인쇄면, am.자재코드, am.자재명
         FROM 단가마스터_자재단가 ad
         JOIN 단가마스터 dm ON ad.단가마스터_id = dm.id
         LEFT JOIN 단가마스터_자재단가_매칭 am ON am.자재단가_id = ad.id
+    """)
+    return cur.fetchall()
+
+
+def _공정단가df_조회(cur):
+    """billing.build_단가맵()의 공정단가df 인자로 바로 쓸 수 있는 형태(거래처명·업무명·작업명·공정코드·단가)로
+    단가마스터_공정단가를 단가마스터와 조인해서 반환(2026-08-21, 공정별 단가 청구 —
+    `.claude/plans/plan_공정별단가청구.md`). 자재단가와 달리 공정은 고정 8종 enum이라 매칭 테이블 조인이
+    필요 없다."""
+    cur.execute("""
+        SELECT dm.거래처명, dm.업무명, dm.작업명, gd.공정코드, gd.단가
+        FROM 단가마스터_공정단가 gd
+        JOIN 단가마스터 dm ON gd.단가마스터_id = dm.id
     """)
     return cur.fetchall()
 
@@ -463,7 +509,7 @@ def 예상공급가액(사업부: Optional[List[str]] = Query(default=None)):
     calc_공급가맵() 계산 자체는 app.py와 완전히 동일(billing.py 공용) — 자재 수량만 MariaDB에서 조회.
     사업부 필터는 /summary와 동일한 선택 사항.
     """
-    sql = "SELECT 업무의뢰서번호, 작업명, 거래처명, 업무명, 청구페이지, 확정청구페이지, 건수, 장수 FROM 운영통계자료"
+    sql = "SELECT 업무의뢰서번호, 작업명, 거래처명, 업무명, 청구페이지, 확정청구페이지, 건수, 장수, 압착, 주소출력, 봉입, 수작업, 중철, 제본, 무광코팅, 유광코팅, 에폭시, 날개접지 FROM 운영통계자료"
     params = []
     if 사업부:
         자리표시자 = ", ".join(["%s"] * len(사업부))
@@ -481,17 +527,20 @@ def 예상공급가액(사업부: Optional[List[str]] = Query(default=None)):
             단가행 = cur.fetchall()
             자재행 = _자재map_조회(cur)
             자재단가행 = _자재단가df_조회(cur)
+            공정단가행 = _공정단가df_조회(cur)
+            우편요금맵 = _우편요금맵_조회(cur)
 
     df_all = pd.DataFrame(원본행)
     단가df = pd.DataFrame(단가행) if 단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명"])
     자재df = pd.DataFrame(자재행) if 자재행 else pd.DataFrame(columns=["업무의뢰서번호", "작업이름", "자재종류", "자재형태", "자재코드", "자재명", "사용량"])
-    자재단가df = pd.DataFrame(자재단가행) if 자재단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명", "품목", "단가", "자재단가_id", "표시명", "자재코드", "자재명"])
+    자재단가df = pd.DataFrame(자재단가행) if 자재단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명", "품목", "단가", "자재단가_id", "표시명", "인쇄면", "자재코드", "자재명"])
+    공정단가df = pd.DataFrame(공정단가행) if 공정단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명", "공정코드", "단가"])
 
-    단가맵 = billing.build_단가맵(단가df, 자재단가df)
+    단가맵 = billing.build_단가맵(단가df, 자재단가df, 공정단가df)
     자재map = billing.build_자재map(자재df)
     의뢰서번호셋 = {int(float(x)) for x in df_all["업무의뢰서번호"] if pd.notna(x)}
 
-    결과 = billing.calc_공급가맵(df_all, 단가맵, 자재map, 의뢰서번호셋)
+    결과 = billing.calc_공급가맵(df_all, 단가맵, 자재map, 의뢰서번호셋, 우편요금맵=우편요금맵)
 
     응답 = []
     for 의뢰서, v in 결과.items():
@@ -523,7 +572,8 @@ def 미발행목록(사업부: Optional[List[str]] = Query(default=None)):
     발송여부(0/1)와 무관하게 거래명세서_의뢰서에 존재하기만 하면 제외한다(요청 시점부터 미발행 아님).
     """
     sql = """SELECT 업무의뢰서번호, 거래처명, 업무명, 업무명상세, 작업명, 사업부, 연월, 날짜,
-                     마케팅담당자, 청구페이지, 확정청구페이지, 건수, 출력페이지, 장수
+                     마케팅담당자, 청구페이지, 확정청구페이지, 건수, 출력페이지, 장수,
+                     압착, 주소출력, 봉입, 수작업, 중철, 제본, 무광코팅, 유광코팅, 에폭시, 날개접지
               FROM 운영통계자료"""
     params = []
     if 사업부:
@@ -553,22 +603,26 @@ def 미발행목록(사업부: Optional[List[str]] = Query(default=None)):
             단가행 = cur.fetchall()
             자재행 = _자재map_조회(cur, 미발행_의뢰서목록)
             자재단가행 = _자재단가df_조회(cur)
+            공정단가행 = _공정단가df_조회(cur)
+            우편요금맵 = _우편요금맵_조회(cur, 미발행_의뢰서목록)
 
     단가df = pd.DataFrame(단가행) if 단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명"])
     자재df = pd.DataFrame(자재행) if 자재행 else pd.DataFrame(
         columns=["업무의뢰서번호", "작업이름", "자재종류", "자재형태", "자재코드", "자재명", "사용량"])
-    자재단가df = pd.DataFrame(자재단가행) if 자재단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명", "품목", "단가", "자재단가_id", "표시명", "자재코드", "자재명"])
+    자재단가df = pd.DataFrame(자재단가행) if 자재단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명", "품목", "단가", "자재단가_id", "표시명", "인쇄면", "자재코드", "자재명"])
+    공정단가df = pd.DataFrame(공정단가행) if 공정단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명", "공정코드", "단가"])
 
     summary = billing.build_의뢰서_summary(df_미발행, 자재df)
 
-    단가맵 = billing.build_단가맵(단가df, 자재단가df)
+    단가맵 = billing.build_단가맵(단가df, 자재단가df, 공정단가df)
     자재map = billing.build_자재map(자재df)
     의뢰서번호셋 = {int(float(x)) for x in 미발행_의뢰서목록}
-    공급가맵 = billing.calc_공급가맵(df_미발행, 단가맵, 자재map, 의뢰서번호셋)
+    공급가맵 = billing.calc_공급가맵(df_미발행, 단가맵, 자재map, 의뢰서번호셋, 우편요금맵=우편요금맵)
 
     응답 = []
     for _, r in summary.iterrows():
-        가격 = 공급가맵.get(int(float(r["업무의뢰서번호"])))
+        의뢰서int = int(float(r["업무의뢰서번호"]))
+        가격 = 공급가맵.get(의뢰서int)
         예상공급가액 = round(가격["합계"]) if (가격 and 가격["합계"] > 0) else None
         응답.append({
             "의뢰서번호": r["업무의뢰서번호"],
@@ -585,9 +639,35 @@ def 미발행목록(사업부: Optional[List[str]] = Query(default=None)):
             "봉투수량": int(r["봉투_사용량_합"]),
             "삽지수량": int(r["삽지_사용량_합"]),
             "예상공급가액": 예상공급가액,
+            "우편요금": 우편요금맵.get(의뢰서int, 0),
         })
     응답.sort(key=lambda x: x["작업일자"], reverse=True)
     return 응답
+
+
+class 우편요금_수정(BaseModel):
+    model_config = ConfigDict(title="PostageUpdateRequest")  # Swagger 표시용 영문 별명 — 필드명은 한글 그대로
+
+    금액: float = 0
+
+
+@app.put("/업무의뢰서/{request_no}/우편요금", dependencies=인증필요)
+def 업무의뢰서_우편요금_수정(request_no: str, 요청: 우편요금_수정):
+    """미발행 목록에서 마케팅 담당자가 의뢰서별로 우편요금을 입력·수정(2026-08-22,
+    `.claude/plans/plan_우편요금관리.md`) — upsert(있으면 갱신, 없으면 신규 등록).
+    경로 파라미터명은 반드시 영문이어야 함(SKILL-13 — 한글 파라미터명은 Starlette 라우팅 정규식이
+    인식 못 해 /docs엔 정상 표시되지만 실제 호출은 항상 404가 나는 함정이 있음)."""
+    from datetime import date
+    오늘 = str(date.today())
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO 업무의뢰서_우편요금 (업무의뢰서번호, 금액, 등록일, 수정일)
+                   VALUES (%s, %s, %s, %s)
+                   ON DUPLICATE KEY UPDATE 금액=%s, 수정일=%s""",
+                (request_no, 요청.금액, 오늘, 오늘, 요청.금액, 오늘),
+            )
+    return {"status": "ok"}
 
 
 @app.get("/발행목록", dependencies=인증필요)
@@ -613,7 +693,8 @@ def 발행목록(사업부: Optional[List[str]] = Query(default=None)):
     요약이라 이 방식이 기존 집계 로직과 가장 잘 맞음). 분할 안 된 일반 건은 지금처럼 1행 그대로.
     """
     sql = """SELECT 업무의뢰서번호, 거래처명, 업무명, 업무명상세, 작업명, 사업부, 연월, 날짜,
-                     마케팅담당자, 청구페이지, 확정청구페이지, 건수, 출력페이지, 장수
+                     마케팅담당자, 청구페이지, 확정청구페이지, 건수, 출력페이지, 장수,
+                     압착, 주소출력, 봉입, 수작업, 중철, 제본, 무광코팅, 유광코팅, 에폭시, 날개접지
               FROM 운영통계자료"""
     params = []
     if 사업부:
@@ -670,18 +751,21 @@ def 발행목록(사업부: Optional[List[str]] = Query(default=None)):
             단가행 = cur.fetchall()
             자재행 = _자재map_조회(cur, 발행_의뢰서목록)
             자재단가행 = _자재단가df_조회(cur)
+            공정단가행 = _공정단가df_조회(cur)
+            우편요금맵 = _우편요금맵_조회(cur, 발행_의뢰서목록)
 
     단가df = pd.DataFrame(단가행) if 단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명"])
     자재df = pd.DataFrame(자재행) if 자재행 else pd.DataFrame(
         columns=["업무의뢰서번호", "작업이름", "자재종류", "자재형태", "자재코드", "자재명", "사용량"])
-    자재단가df = pd.DataFrame(자재단가행) if 자재단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명", "품목", "단가", "자재단가_id", "표시명", "자재코드", "자재명"])
+    자재단가df = pd.DataFrame(자재단가행) if 자재단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명", "품목", "단가", "자재단가_id", "표시명", "인쇄면", "자재코드", "자재명"])
+    공정단가df = pd.DataFrame(공정단가행) if 공정단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명", "공정코드", "단가"])
 
     summary = billing.build_의뢰서_summary(df_발행, 자재df)
 
-    단가맵 = billing.build_단가맵(단가df, 자재단가df)
+    단가맵 = billing.build_단가맵(단가df, 자재단가df, 공정단가df)
     자재map = billing.build_자재map(자재df)
     의뢰서번호셋 = {int(float(x)) for x in 발행_의뢰서목록}
-    공급가맵 = billing.calc_공급가맵(df_발행, 단가맵, 자재map, 의뢰서번호셋)
+    공급가맵 = billing.calc_공급가맵(df_발행, 단가맵, 자재map, 의뢰서번호셋, 우편요금맵=우편요금맵)
 
     응답 = []
     for _, r in summary.iterrows():
@@ -773,7 +857,7 @@ def _거래명세서_엑셀_바이트(cur, 거래명세서번호):
         return billing.write_거래명세서_excel(품목행목록, 총합계, 세액, 거래명세서["거래처명"], 업무명, 발행일, 담당자)
 
     cur.execute(
-        f"SELECT 업무의뢰서번호, 작업명, 거래처명, 업무명, 청구페이지, 확정청구페이지, 건수, 장수 "
+        f"SELECT 업무의뢰서번호, 작업명, 거래처명, 업무명, 청구페이지, 확정청구페이지, 건수, 장수, 압착, 주소출력, 봉입, 수작업, 중철, 제본, 무광코팅, 유광코팅, 에폭시, 날개접지 "
         f"FROM 운영통계자료 WHERE 업무의뢰서번호 IN ({자리표시자})",
         의뢰서목록,
     )
@@ -785,13 +869,15 @@ def _거래명세서_엑셀_바이트(cur, 거래명세서번호):
     단가행 = cur.fetchall()
     자재행 = _자재map_조회(cur, 의뢰서목록)
     자재단가행 = _자재단가df_조회(cur)
+    공정단가행 = _공정단가df_조회(cur)
 
     df_all = pd.DataFrame(원본행)
     단가df = pd.DataFrame(단가행) if 단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명"])
     자재df = pd.DataFrame(자재행) if 자재행 else pd.DataFrame(columns=["업무의뢰서번호", "작업이름", "자재종류", "자재형태", "자재코드", "자재명", "사용량"])
-    자재단가df = pd.DataFrame(자재단가행) if 자재단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명", "품목", "단가", "자재단가_id", "표시명", "자재코드", "자재명"])
+    자재단가df = pd.DataFrame(자재단가행) if 자재단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명", "품목", "단가", "자재단가_id", "표시명", "인쇄면", "자재코드", "자재명"])
+    공정단가df = pd.DataFrame(공정단가행) if 공정단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명", "공정코드", "단가"])
 
-    단가맵 = billing.build_단가맵(단가df, 자재단가df)
+    단가맵 = billing.build_단가맵(단가df, 자재단가df, 공정단가df)
     자재map = billing.build_자재map(자재df)
     의뢰서번호셋 = {int(float(x)) for x in 의뢰서목록}
     try:
@@ -841,7 +927,7 @@ def _거래명세서_엑셀_시트목록(cur, 거래명세서번호):
 
     if not 저장된_최종:
         cur.execute(
-            f"SELECT 업무의뢰서번호, 작업명, 거래처명, 업무명, 청구페이지, 확정청구페이지, 건수, 장수 "
+            f"SELECT 업무의뢰서번호, 작업명, 거래처명, 업무명, 청구페이지, 확정청구페이지, 건수, 장수, 압착, 주소출력, 봉입, 수작업, 중철, 제본, 무광코팅, 유광코팅, 에폭시, 날개접지 "
             f"FROM 운영통계자료 WHERE 업무의뢰서번호 IN ({자리표시자})",
             의뢰서목록,
         )
@@ -852,11 +938,13 @@ def _거래명세서_엑셀_시트목록(cur, 거래명세서번호):
         단가행 = cur.fetchall()
         자재행 = _자재map_조회(cur, 의뢰서목록)
         자재단가행 = _자재단가df_조회(cur)
+        공정단가행 = _공정단가df_조회(cur)
         df_all = pd.DataFrame(원본행)
         단가df = pd.DataFrame(단가행) if 단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명"])
         자재df = pd.DataFrame(자재행) if 자재행 else pd.DataFrame(columns=["업무의뢰서번호", "작업이름", "자재종류", "자재형태", "자재코드", "자재명", "사용량"])
-        자재단가df = pd.DataFrame(자재단가행) if 자재단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명", "품목", "단가", "자재단가_id", "표시명", "자재코드", "자재명"])
-        단가맵 = billing.build_단가맵(단가df, 자재단가df)
+        자재단가df = pd.DataFrame(자재단가행) if 자재단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명", "품목", "단가", "자재단가_id", "표시명", "인쇄면", "자재코드", "자재명"])
+        공정단가df = pd.DataFrame(공정단가행) if 공정단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명", "공정코드", "단가"])
+        단가맵 = billing.build_단가맵(단가df, 자재단가df, 공정단가df)
         자재map = billing.build_자재map(자재df)
         의뢰서번호셋 = {int(float(x)) for x in 의뢰서목록}
         try:
@@ -1221,7 +1309,7 @@ def 거래명세서미리보기(요청: 거래명세서미리보기_요청):
         with conn.cursor() as cur:
             자리표시자 = ", ".join(["%s"] * len(요청.의뢰서번호_목록))
             cur.execute(
-                f"SELECT 업무의뢰서번호, 작업명, 거래처명, 업무명, 청구페이지, 확정청구페이지, 건수, 장수 "
+                f"SELECT 업무의뢰서번호, 작업명, 거래처명, 업무명, 청구페이지, 확정청구페이지, 건수, 장수, 압착, 주소출력, 봉입, 수작업, 중철, 제본, 무광코팅, 유광코팅, 에폭시, 날개접지 "
                 f"FROM 운영통계자료 WHERE 업무의뢰서번호 IN ({자리표시자})",
                 요청.의뢰서번호_목록,
             )
@@ -1231,6 +1319,8 @@ def 거래명세서미리보기(요청: 거래명세서미리보기_요청):
             단가행 = cur.fetchall()
             자재행 = _자재map_조회(cur, 요청.의뢰서번호_목록)
             자재단가행 = _자재단가df_조회(cur)
+            공정단가행 = _공정단가df_조회(cur)
+            우편요금맵 = _우편요금맵_조회(cur, 요청.의뢰서번호_목록)
 
             if not 원본행:
                 raise HTTPException(status_code=404, detail="해당 업무의뢰서 데이터를 운영통계자료에서 찾을 수 없습니다")
@@ -1247,13 +1337,20 @@ def 거래명세서미리보기(요청: 거래명세서미리보기_요청):
             df_all = pd.DataFrame(원본행)
             단가df = pd.DataFrame(단가행) if 단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명"])
             자재df = pd.DataFrame(자재행) if 자재행 else pd.DataFrame(columns=["업무의뢰서번호", "작업이름", "자재종류", "자재형태", "자재코드", "자재명", "사용량"])
-            자재단가df = pd.DataFrame(자재단가행) if 자재단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명", "품목", "단가", "자재단가_id", "표시명", "자재코드", "자재명"])
+            자재단가df = pd.DataFrame(자재단가행) if 자재단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명", "품목", "단가", "자재단가_id", "표시명", "인쇄면", "자재코드", "자재명"])
+            공정단가df = pd.DataFrame(공정단가행) if 공정단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명", "공정코드", "단가"])
 
-            단가맵 = billing.build_단가맵(단가df, 자재단가df)
+            단가맵 = billing.build_단가맵(단가df, 자재단가df, 공정단가df)
             자재map = billing.build_자재map(자재df)
             의뢰서번호셋 = {int(float(x)) for x in 요청.의뢰서번호_목록}
 
-            정렬행, 총합계, 거래처명, 업무명_목록, 코드맵, 부가세구분맵 = billing.build_품목행(df_all, 단가맵, 자재map, 의뢰서번호셋)
+            # 단가미등록(2026-08-22): 실제 수량은 있는데 단가가 없어 원본 표에 줄 자체가 안 생기는
+            # 품목을 build_품목행() 호출과 동시에 수집(계산 결과에는 영향 없음, 안내 전용) — 상세:
+            # `.claude/plans/plan_단가미등록_품목누락_감지.md`.
+            단가미등록 = []
+            정렬행, 총합계, 거래처명, 업무명_목록, 코드맵, 부가세구분맵 = billing.build_품목행(
+                df_all, 단가맵, 자재map, 의뢰서번호셋, 미등록수집=단가미등록, 우편요금맵=우편요금맵
+            )
             if not 정렬행:
                 raise HTTPException(status_code=500, detail="미리보기 생성 실패 — 해당 업무의뢰서에 등록된 단가가 없을 수 있습니다")
 
@@ -1301,6 +1398,7 @@ def 거래명세서미리보기(요청: 거래명세서미리보기_요청):
         "부가세구분": 부가세구분,
         "부가세오류": 부가세오류,
         "수량불일치": 수량불일치,
+        "단가미등록": 단가미등록,
         "품목": [
             {"코드": row["코드"], "품목": row["품목"], "작업명": row["작업명"], "자재명": row.get("자재명"),
              "수량": row["수량"], "단가": row["단가"], "금액": row["금액"]}
@@ -1588,6 +1686,7 @@ class 단가마스터_신규(BaseModel):
     각대대봉투봉입단가: float = 0
     부가세구분: Literal["포함", "별도"] = "별도"
     인쇄면: Literal["단면", "양면"] = "양면"
+    청구단위: Literal["페이지기준", "장수기준"] = "페이지기준"
     비고: Optional[str] = None
 
 
@@ -1614,11 +1713,11 @@ def 단가마스터_추가(단가: 단가마스터_신규):
                     INSERT INTO 단가마스터
                         (거래처명, 업무명, 작업명, 출력단가, 봉입단가, 추가봉입단가, 동봉물삽입단가,
                          용지제작단가, 봉투제작단가, 삽지제작단가, 각대대봉투단가, 각대대봉투봉입단가,
-                         부가세구분, 인쇄면, 비고, 등록일, 수정일)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                         부가세구분, 인쇄면, 청구단위, 비고, 등록일, 수정일)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 """, (단가.거래처명, 단가.업무명, 단가.작업명, 단가.출력단가, 단가.봉입단가, 단가.추가봉입단가, 단가.동봉물삽입단가,
                       단가.용지제작단가, 단가.봉투제작단가, 단가.삽지제작단가, 단가.각대대봉투단가, 단가.각대대봉투봉입단가,
-                      단가.부가세구분, 단가.인쇄면, 단가.비고, 오늘, 오늘))
+                      단가.부가세구분, 단가.인쇄면, 단가.청구단위, 단가.비고, 오늘, 오늘))
                 새_id = cur.lastrowid
     except pymysql.err.IntegrityError:
         raise HTTPException(status_code=409, detail="동일한 거래처명·업무명·작업명 조합이 이미 존재합니다")
@@ -1641,6 +1740,7 @@ class 단가마스터_수정(BaseModel):
     각대대봉투봉입단가: float = 0
     부가세구분: Literal["포함", "별도"] = "별도"
     인쇄면: Literal["단면", "양면"] = "양면"
+    청구단위: Literal["페이지기준", "장수기준"] = "페이지기준"
     비고: Optional[str] = None
 
 
@@ -1654,11 +1754,13 @@ def 단가마스터_수정_요청(id: int, 단가: 단가마스터_수정):
                 UPDATE 단가마스터
                 SET 출력단가=%s, 봉입단가=%s, 추가봉입단가=%s, 동봉물삽입단가=%s,
                     용지제작단가=%s, 봉투제작단가=%s, 삽지제작단가=%s,
-                    각대대봉투단가=%s, 각대대봉투봉입단가=%s, 부가세구분=%s, 인쇄면=%s, 비고=%s, 수정일=%s
+                    각대대봉투단가=%s, 각대대봉투봉입단가=%s, 부가세구분=%s, 인쇄면=%s, 청구단위=%s,
+                    비고=%s, 수정일=%s
                 WHERE id=%s
             """, (단가.출력단가, 단가.봉입단가, 단가.추가봉입단가, 단가.동봉물삽입단가,
                   단가.용지제작단가, 단가.봉투제작단가, 단가.삽지제작단가,
-                  단가.각대대봉투단가, 단가.각대대봉투봉입단가, 단가.부가세구분, 단가.인쇄면, 단가.비고, 오늘, id))
+                  단가.각대대봉투단가, 단가.각대대봉투봉입단가, 단가.부가세구분, 단가.인쇄면, 단가.청구단위,
+                  단가.비고, 오늘, id))
             if cur.rowcount == 0:
                 raise HTTPException(status_code=404, detail="해당 id의 단가가 없습니다")
     return {"status": "ok"}
@@ -1724,6 +1826,10 @@ class 단가마스터_자재단가_신규(BaseModel):
     코드: Literal["출력비", "출력자재비", "봉입비", "봉입자재비", "삽지비"]
     단가: float = 0
     표시명: Optional[str] = None
+    # 인쇄면(2026-08-22, "출력비" 코드 행 전용) — 이 자재(용지 종류)가 단면/양면 중 어느 쪽인지.
+    # None(미설정)이면 계산 시 거래처+업무명 레벨 값으로 폴백한다. 다른 코드 행에 저장해도 계산에는
+    # 안 쓰인다(단순화). 상세: `.claude/plans/plan_출력비_장수페이지기준_인쇄면자재별.md`.
+    인쇄면: Optional[Literal["단면", "양면"]] = None
     비고: Optional[str] = None
     매칭자재: List[자재단가_매칭항목] = []
 
@@ -1748,9 +1854,9 @@ def 단가마스터_자재단가_추가(id: int, 자재단가: 단가마스터_�
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO 단가마스터_자재단가 (단가마스터_id, 코드, 단가, 표시명, 비고) "
-                    "VALUES (%s,%s,%s,%s,%s)",
-                    (id, 자재단가.코드, 자재단가.단가, 자재단가.표시명, 자재단가.비고),
+                    "INSERT INTO 단가마스터_자재단가 (단가마스터_id, 코드, 단가, 표시명, 인쇄면, 비고) "
+                    "VALUES (%s,%s,%s,%s,%s,%s)",
+                    (id, 자재단가.코드, 자재단가.단가, 자재단가.표시명, 자재단가.인쇄면, 자재단가.비고),
                 )
                 자재단가_id = cur.lastrowid
                 cur.executemany(
@@ -1767,6 +1873,7 @@ class 단가마스터_자재단가_수정(BaseModel):
 
     단가: float = 0
     표시명: Optional[str] = None
+    인쇄면: Optional[Literal["단면", "양면"]] = None
     비고: Optional[str] = None
     매칭자재: List[자재단가_매칭항목] = []
 
@@ -1783,8 +1890,8 @@ def 단가마스터_자재단가_수정_요청(id: int, 자재단가: 단가마�
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "UPDATE 단가마스터_자재단가 SET 단가=%s, 표시명=%s, 비고=%s WHERE id=%s",
-                    (자재단가.단가, 자재단가.표시명, 자재단가.비고, 자재단가_id),
+                    "UPDATE 단가마스터_자재단가 SET 단가=%s, 표시명=%s, 인쇄면=%s, 비고=%s WHERE id=%s",
+                    (자재단가.단가, 자재단가.표시명, 자재단가.인쇄면, 자재단가.비고, 자재단가_id),
                 )
                 if cur.rowcount == 0:
                     raise HTTPException(status_code=404, detail="해당 id의 자재단가가 없습니다")
@@ -1804,6 +1911,69 @@ def 단가마스터_자재단가_삭제(id: List[int] = Query(...)):
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.executemany("DELETE FROM 단가마스터_자재단가 WHERE id=%s", [(i,) for i in id])
+    return {"status": "ok", "삭제요청건수": len(id)}
+
+
+# ── 단가마스터_공정단가 쓰기 API (공정별 단가 청구, 2026-08-21) ──────────────────
+# 당사 생산공정관리시스템이 5월분부터 운영통계자료에 내려주는 공정 세분화 컬럼(압착·주소출력·
+# 중철·제본·무광코팅·유광코팅·에폭시·날개접지 — 봉입·수작업은 기존 봉입단가·각대대봉투봉입단가를
+# 재사용해 이 테이블 대상이 아님)에 (거래처+업무명+작업명) 단위로 단가를 등록한다. 자재단가와
+# 달리 공정은 고정 8종 enum이라 매칭 자식 테이블이 없다(`.claude/plans/plan_공정별단가청구.md`).
+
+class 단가마스터_공정단가_신규(BaseModel):
+    model_config = ConfigDict(title="ProcessPriceCreateRequest")  # Swagger 표시용 영문 별명 — 필드명은 한글 그대로
+
+    공정코드: Literal["압착", "주소출력", "중철", "제본", "무광코팅", "유광코팅", "에폭시", "날개접지"]
+    단가: float = 0
+    비고: Optional[str] = None
+
+
+@app.post("/단가마스터/{id}/공정단가", dependencies=인증필요)
+def 단가마스터_공정단가_추가(id: int, 공정단가: 단가마스터_공정단가_신규):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM 단가마스터 WHERE id=%s", (id,))
+            if not cur.fetchone():
+                raise HTTPException(status_code=404, detail="해당 id의 단가마스터가 없습니다")
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO 단가마스터_공정단가 (단가마스터_id, 공정코드, 단가, 비고) VALUES (%s,%s,%s,%s)",
+                    (id, 공정단가.공정코드, 공정단가.단가, 공정단가.비고),
+                )
+                공정단가_id = cur.lastrowid
+    except pymysql.err.IntegrityError:
+        raise HTTPException(status_code=409, detail="이미 같은 공정코드로 등록된 단가가 있습니다")
+    return {"status": "ok", "id": 공정단가_id}
+
+
+class 단가마스터_공정단가_수정(BaseModel):
+    model_config = ConfigDict(title="ProcessPriceUpdateRequest")  # Swagger 표시용 영문 별명 — 필드명은 한글 그대로
+
+    단가: float = 0
+    비고: Optional[str] = None
+
+
+@app.put("/단가마스터/공정단가/{id}", dependencies=인증필요)
+def 단가마스터_공정단가_수정_요청(id: int, 공정단가: 단가마스터_공정단가_수정):
+    """경로 파라미터명은 반드시 영문이어야 함(SKILL-13)."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE 단가마스터_공정단가 SET 단가=%s, 비고=%s WHERE id=%s",
+                (공정단가.단가, 공정단가.비고, id),
+            )
+            if cur.rowcount == 0:
+                raise HTTPException(status_code=404, detail="해당 id의 공정단가가 없습니다")
+    return {"status": "ok"}
+
+
+@app.delete("/단가마스터/공정단가", dependencies=인증필요)
+def 단가마스터_공정단가_삭제(id: List[int] = Query(...)):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.executemany("DELETE FROM 단가마스터_공정단가 WHERE id=%s", [(i,) for i in id])
     return {"status": "ok", "삭제요청건수": len(id)}
 
 
@@ -1982,7 +2152,7 @@ def 거래명세서요청(요청: 거래명세서요청_요청, 사용자: str =
         with conn.cursor() as cur:
             자리표시자 = ", ".join(["%s"] * len(요청.의뢰서번호_목록))
             cur.execute(
-                f"SELECT 업무의뢰서번호, 작업명, 거래처명, 업무명, 청구페이지, 확정청구페이지, 건수, 장수 "
+                f"SELECT 업무의뢰서번호, 작업명, 거래처명, 업무명, 청구페이지, 확정청구페이지, 건수, 장수, 압착, 주소출력, 봉입, 수작업, 중철, 제본, 무광코팅, 유광코팅, 에폭시, 날개접지 "
                 f"FROM 운영통계자료 WHERE 업무의뢰서번호 IN ({자리표시자})",
                 요청.의뢰서번호_목록,
             )
@@ -1991,15 +2161,20 @@ def 거래명세서요청(요청: 거래명세서요청_요청, 사용자: str =
             단가행 = cur.fetchall()
             자재행 = _자재map_조회(cur, 요청.의뢰서번호_목록)
             자재단가행 = _자재단가df_조회(cur)
+            공정단가행 = _공정단가df_조회(cur)
+            우편요금맵 = _우편요금맵_조회(cur, 요청.의뢰서번호_목록)
 
     df_all = pd.DataFrame(원본행)
     단가df = pd.DataFrame(단가행) if 단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명"])
     자재df = pd.DataFrame(자재행) if 자재행 else pd.DataFrame(columns=["업무의뢰서번호", "작업이름", "자재종류", "자재형태", "자재코드", "자재명", "사용량"])
-    자재단가df = pd.DataFrame(자재단가행) if 자재단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명", "품목", "단가", "자재단가_id", "표시명", "자재코드", "자재명"])
-    단가맵 = billing.build_단가맵(단가df, 자재단가df)
+    자재단가df = pd.DataFrame(자재단가행) if 자재단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명", "품목", "단가", "자재단가_id", "표시명", "인쇄면", "자재코드", "자재명"])
+    공정단가df = pd.DataFrame(공정단가행) if 공정단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명", "공정코드", "단가"])
+    단가맵 = billing.build_단가맵(단가df, 자재단가df, 공정단가df)
     자재map = billing.build_자재map(자재df)
     의뢰서번호셋 = {int(float(x)) for x in 요청.의뢰서번호_목록}
-    정렬행, _총, _거래처, _업무_목록, 코드맵, 부가세구분맵 = billing.build_품목행(df_all, 단가맵, 자재map, 의뢰서번호셋)
+    정렬행, _총, _거래처, _업무_목록, 코드맵, 부가세구분맵 = billing.build_품목행(
+        df_all, 단가맵, 자재map, 의뢰서번호셋, 우편요금맵=우편요금맵
+    )
     원본목록 = billing.정렬행_원본목록(정렬행, 코드맵)
 
     try:
@@ -2441,7 +2616,8 @@ def 거래명세서부분취소(요청: 거래명세서부분취소_요청, 사�
                 남을_자리표시자 = ", ".join(["%s"] * len(남을_목록))
                 cur.execute(
                     f"SELECT 업무의뢰서번호, 거래처명, 업무명, 업무명상세, 작업명, 사업부, 연월, 날짜, "
-                    f"마케팅담당자, 청구페이지, 확정청구페이지, 건수, 출력페이지, 장수 FROM 운영통계자료 "
+                    f"마케팅담당자, 청구페이지, 확정청구페이지, 건수, 출력페이지, 장수, "
+                    f"압착, 주소출력, 봉입, 수작업, 중철, 제본, 무광코팅, 유광코팅, 에폭시, 날개접지 FROM 운영통계자료 "
                     f"WHERE 업무의뢰서번호 IN ({남을_자리표시자})",
                     남을_목록,
                 )
@@ -2450,15 +2626,18 @@ def 거래명세서부분취소(요청: 거래명세서부분취소_요청, 사�
                 단가행 = cur.fetchall()
                 자재행 = _자재map_조회(cur, 남을_목록)
                 자재단가행 = _자재단가df_조회(cur)
+                공정단가행 = _공정단가df_조회(cur)
+                우편요금맵 = _우편요금맵_조회(cur, 남을_목록)
 
                 df_남을 = pd.DataFrame(원본행)
                 단가df = pd.DataFrame(단가행) if 단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명"])
                 자재df = pd.DataFrame(자재행) if 자재행 else pd.DataFrame(
                     columns=["업무의뢰서번호", "작업이름", "자재종류", "자재형태", "자재코드", "자재명", "사용량"])
-                자재단가df = pd.DataFrame(자재단가행) if 자재단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명", "품목", "단가", "자재단가_id", "표시명", "자재코드", "자재명"])
+                자재단가df = pd.DataFrame(자재단가행) if 자재단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명", "품목", "단가", "자재단가_id", "표시명", "인쇄면", "자재코드", "자재명"])
+                공정단가df = pd.DataFrame(공정단가행) if 공정단가행 else pd.DataFrame(columns=["거래처명", "업무명", "작업명", "공정코드", "단가"])
 
                 summary = billing.build_의뢰서_summary(df_남을, 자재df)
-                단가맵 = billing.build_단가맵(단가df, 자재단가df)
+                단가맵 = billing.build_단가맵(단가df, 자재단가df, 공정단가df)
                 자재map = billing.build_자재map(자재df)
                 남을_번호셋 = {int(float(x)) for x in 남을_목록}
                 # 부분취소 후 남는 의뢰서들의 금액은 원래 거래명세서요청() 확정 시점과 정확히 같은
@@ -2467,7 +2646,7 @@ def 거래명세서부분취소(요청: 거래명세서부분취소_요청, 사�
                 # build_품목행()에만 반영되고 calc_공급가맵()엔 안 돼 있어서, 부분취소를 하면 정확했던
                 # 금액이 부정확한 값으로 덮어써지는 실제 청구 금액 버그가 있었다(2026-08-20 수정).
                 정렬행, 총합계, _거래처, _업무_목록, _코드맵, 부가세구분맵 = billing.build_품목행(
-                    df_남을, 단가맵, 자재map, 남을_번호셋
+                    df_남을, 단가맵, 자재map, 남을_번호셋, 우편요금맵=우편요금맵
                 )
                 공급가액 = round(총합계)
                 try:
@@ -2513,6 +2692,18 @@ class 운영통계행(BaseModel):
     건수: int = 0
     출력페이지: int = 0
     청구페이지: int = 0
+    # 2026-08-21 추가 — 공정 세분화 컬럼 10개(`.claude/plans/plan_공정별단가청구.md`). 전부
+    # 기본값 0이라 구버전 송신 시스템이 이 필드를 안 보내도 요청이 깨지지 않음(하위호환).
+    압착: int = 0
+    주소출력: int = 0
+    봉입: int = 0
+    수작업: int = 0
+    중철: int = 0
+    제본: int = 0
+    무광코팅: int = 0
+    유광코팅: int = 0
+    에폭시: int = 0
+    날개접지: int = 0
 
 
 class 자재행(BaseModel):

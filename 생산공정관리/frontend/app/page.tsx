@@ -98,6 +98,7 @@ export default async function Home() {
       봉투수량: Number(r.봉투수량 ?? 0),
       삽지수량: Number(r.삽지수량 ?? 0),
       예상공급가액: r.예상공급가액 != null ? Number(r.예상공급가액) : null,
+      우편요금: Number(r.우편요금 ?? 0),
     }));
   }
 

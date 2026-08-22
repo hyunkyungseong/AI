@@ -255,6 +255,11 @@ export default function PricingMaterialSection({
   const [코드, set코드] = useState<자재단가행["코드"]>("출력자재비");
   const [단가, set단가] = useState("");
   const [표시명, set표시명] = useState("");
+  // 인쇄면(2026-08-22, "출력비" 항목 전용) — 이 자재(용지 종류)만 단면/양면을 따로 지정. 빈 문자열
+  // = 미설정(위 단가마스터 기본단가의 인쇄면 값을 그대로 씀) — 내지=양면, 표지=단면처럼 같은 작업
+  // 안에서 자재별로 인쇄면이 섞인 경우를 표현하기 위함. 상세:
+  // `.claude/plans/plan_출력비_장수페이지기준_인쇄면자재별.md`.
+  const [인쇄면, set인쇄면] = useState<"단면" | "양면" | "">("");
   const [비고, set비고] = useState("");
   const [매칭, set매칭] = useState<매칭자재입력[]>(빈매칭());
   const [error, setError] = useState<string | null>(null);
@@ -265,8 +270,17 @@ export default function PricingMaterialSection({
   // 자재단가를 이미 여러 개 등록해둔 상태에서 "+ 자재단가 추가"·"수정"을 누르면 편집창이 목록 맨
   // 아래에 나타나 화면 밖에 있는 경우가 많아, 매번 스크롤을 내려야 하는 불편함이 있었다(2026-08-16
   // 사용자 요청) — 편집창이 열릴 때마다 자동으로 그 위치까지 스크롤한다.
+  // block:"nearest"는 editorRef가 이미 화면에 일부 걸쳐 있으면 오히려 위로 스크롤되거나 거의 안
+  // 움직여서 아래쪽 취소·저장 버튼이 안 보이는 문제가 있었다(2026-08-21 사용자 재제보) — 아래
+  // "매칭 자재 추가" 시와 동일하게 실제 스크롤 컨테이너(다이얼로그 전체)를 맨 아래까지 내린다.
   useEffect(() => {
-    if (editing !== null) editorRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    if (editing === null) return;
+    const container = 스크롤가능부모(editorRef.current);
+    if (container) {
+      container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
+    } else {
+      editorRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    }
   }, [editing]);
 
   // "+ 같은 단가로 자재 추가"를 눌러도 새로 생긴 자재명 칸이 화면 밖에 생겨 매번 손으로 스크롤해야
@@ -337,6 +351,7 @@ export default function PricingMaterialSection({
     set코드("출력자재비");
     set단가("");
     set표시명("");
+    set인쇄면("");
     set비고("");
     set매칭(빈매칭());
     setError(null);
@@ -347,6 +362,7 @@ export default function PricingMaterialSection({
     set코드(row.코드);
     set단가(String(row.단가));
     set표시명(row.표시명 ?? "");
+    set인쇄면(row.인쇄면 ?? "");
     set비고(row.비고 ?? "");
     set매칭(
       row.매칭자재.length > 0
@@ -369,6 +385,7 @@ export default function PricingMaterialSection({
     set코드(row.코드);
     set단가(String(row.단가));
     set표시명(row.표시명 ?? "");
+    set인쇄면(row.인쇄면 ?? "");
     set비고(row.비고 ?? "");
     set매칭(빈매칭());
     setError(null);
@@ -419,6 +436,7 @@ export default function PricingMaterialSection({
             코드,
             단가: 단가값,
             표시명: 표시명.trim() || null,
+            인쇄면: 인쇄면 || null,
             비고: 비고.trim() || null,
             매칭자재,
           }),
@@ -436,6 +454,7 @@ export default function PricingMaterialSection({
             코드,
             단가: 단가값,
             표시명: 표시명.trim() || null,
+            인쇄면: 인쇄면 || null,
             비고: 비고.trim() || null,
             매칭자재,
           },
@@ -448,6 +467,7 @@ export default function PricingMaterialSection({
             id: editing,
             단가: 단가값,
             표시명: 표시명.trim() || null,
+            인쇄면: 인쇄면 || null,
             비고: 비고.trim() || null,
             매칭자재,
           }),
@@ -460,7 +480,14 @@ export default function PricingMaterialSection({
         onChange(
           rows.map((r) =>
             r.id === editing
-              ? { ...r, 단가: 단가값, 표시명: 표시명.trim() || null, 비고: 비고.trim() || null, 매칭자재 }
+              ? {
+                  ...r,
+                  단가: 단가값,
+                  표시명: 표시명.trim() || null,
+                  인쇄면: 인쇄면 || null,
+                  비고: 비고.trim() || null,
+                  매칭자재,
+                }
               : r
           )
         );
@@ -516,6 +543,11 @@ export default function PricingMaterialSection({
               <span className="truncate">
                 <span className="font-medium text-gray-700 dark:text-gray-300">{r.코드}</span>{" "}
                 <span className="text-gray-500 dark:text-gray-400">{r.단가.toLocaleString()}원</span>{" "}
+                {r.인쇄면 && (
+                  <span className="text-gray-400" title="이 자재만 따로 설정된 인쇄면">
+                    [{r.인쇄면}]
+                  </span>
+                )}{" "}
                 <span className="text-gray-400">
                   ({r.매칭자재.map((m) => m.자재명 ?? `코드${m.자재코드}`).join(", ")})
                 </span>
@@ -590,6 +622,32 @@ export default function PricingMaterialSection({
                 className={`mt-1 w-full ${inputCls}`}
               />
             </label>
+            {/* 인쇄면(2026-08-22) — "출력비"(용지 인쇄 서비스 요금)·"출력자재비"(용지 실물 재료비)
+                둘 다 자재별로 단면/양면이 섞일 수 있어 노출한다. 봉입비·삽지비 등은 페이지 개념이
+                없어 계속 숨긴다. 두 항목의 동작 차이가 커서 안내 문구를 분리했다:
+                - 출력비: 미설정 시 위 "인쇄면" 기본단가 값을 그대로 따름(지금까지의 유일한 동작)
+                - 출력자재비: 미설정 시 인쇄면 보정 없이 실제 쓴 장 수 그대로 청구(재료비의 기본
+                  원칙 — 종이는 몇 장 썼는지로 정해짐). 다만 삼성화재해상보험처럼 재료 단가 자체를
+                  "페이지 단가"로 등록해둔 경우엔 여기서 인쇄면을 지정해야 정상 청구된다. */}
+            {(코드 === "출력비" || 코드 === "출력자재비") && (
+              <label className="text-xs text-gray-600 dark:text-gray-400">
+                인쇄면(선택) —{" "}
+                {코드 === "출력비"
+                  ? "비워두면 위 기본단가의 인쇄면을 따름"
+                  : "비워두면 보정 없이 실제 쓴 장 수 그대로 청구(재료 단가가 페이지 단가면 지정 필요)"}
+                <select
+                  value={인쇄면}
+                  onChange={(e) => set인쇄면(e.target.value as "단면" | "양면" | "")}
+                  className={`mt-1 w-full ${inputCls}`}
+                >
+                  <option value="">
+                    {코드 === "출력비" ? "미설정(기본단가 값 사용)" : "미설정(장 수 그대로 청구)"}
+                  </option>
+                  <option value="양면">양면(한 장에 앞뒤 2쪽)</option>
+                  <option value="단면">단면(한 장에 1쪽)</option>
+                </select>
+              </label>
+            )}
             <label className="text-xs text-gray-600 dark:text-gray-400">
               비고(선택)
               <input value={비고} onChange={(e) => set비고(e.target.value)} className={`mt-1 w-full ${inputCls}`} />

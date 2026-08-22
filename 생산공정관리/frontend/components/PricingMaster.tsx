@@ -4,7 +4,7 @@ import { useCallback, useMemo, useState } from "react";
 import PricingMasterTable from "./PricingMasterTable";
 import PricingFormDialog from "./PricingFormDialog";
 import ConfirmDialog from "./ConfirmDialog";
-import type { 거래처행, 단가행, 운영통계행, 자재단가행 } from "@/components/Dashboard";
+import type { 거래처행, 단가행, 운영통계행, 자재단가행, 공정단가행 } from "@/components/Dashboard";
 
 type 배너 = { type: "success" | "warning" | "error"; text: string };
 
@@ -124,6 +124,7 @@ export default function PricingMaster({
       | "각대대봉투봉입단가"
       | "부가세구분"
       | "인쇄면"
+      | "청구단위"
       | "비고"
       | "수정일"
     >
@@ -138,6 +139,11 @@ export default function PricingMaster({
     // 폼을 열어둔 채로 목록만 갱신되므로(PricingMaterialSection이 자체적으로 서버 반영 후 호출),
     // 다이얼로그에 다시 넘겨줄 editing도 함께 최신화해 재열람 시 최신 목록이 보이게 한다.
     setEditing((prev) => (prev && prev.id === id ? { ...prev, 자재단가목록 } : prev));
+  }
+
+  function handleProcessPricesChanged(id: number, 공정단가목록: 공정단가행[]) {
+    setPrices((prev) => prev.map((p) => (p.id === id ? { ...p, 공정단가목록 } : p)));
+    setEditing((prev) => (prev && prev.id === id ? { ...prev, 공정단가목록 } : prev));
   }
 
   function handleDeleteClick() {
@@ -252,6 +258,7 @@ export default function PricingMaster({
         onCreated={handleCreated}
         onUpdated={handleUpdated}
         onMaterialPricesChanged={handleMaterialPricesChanged}
+        onProcessPricesChanged={handleProcessPricesChanged}
       />
 
       <ConfirmDialog

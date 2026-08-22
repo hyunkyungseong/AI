@@ -3,7 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import EditableCombo from "./EditableCombo";
 import PricingMaterialSection from "./PricingMaterialSection";
-import type { 단가행, 운영통계행, 자재단가행 } from "@/components/Dashboard";
+import PricingProcessSection from "./PricingProcessSection";
+import type { 단가행, 운영통계행, 자재단가행, 공정단가행 } from "@/components/Dashboard";
 
 type Props = {
   open: boolean;
@@ -29,11 +30,13 @@ type Props = {
       | "각대대봉투봉입단가"
       | "부가세구분"
       | "인쇄면"
+      | "청구단위"
       | "비고"
       | "수정일"
     >
   ) => void;
   onMaterialPricesChanged: (id: number, 자재단가목록: 자재단가행[]) => void;
+  onProcessPricesChanged: (id: number, 공정단가목록: 공정단가행[]) => void;
 };
 
 const label = "block text-sm text-gray-700 dark:text-gray-300";
@@ -89,6 +92,7 @@ export default function PricingFormDialog({
   onCreated,
   onUpdated,
   onMaterialPricesChanged,
+  onProcessPricesChanged,
 }: Props) {
   const [업무명, set업무명] = useState(initial?.업무명 ?? "");
   const [작업명, set작업명] = useState(initial?.작업명 ?? "");
@@ -110,6 +114,10 @@ export default function PricingFormDialog({
   // 인쇄면(2026-08-17): 청구페이지 원본이 없는 업무의 출력비를 용지 자재사용량으로 대체 계산할 때
   // 몇 배로 환산할지(단면=1배/양면=2배) — 실사용 데이터 절대다수가 양면이라 기본값 양면.
   const [인쇄면, set인쇄면] = useState<"단면" | "양면">(initial?.인쇄면 ?? "양면");
+  // 청구단위(2026-08-22): 위 인쇄면 배율을 적용할 때 "페이지 수" 기준으로 청구할지, 인쇄면과 무관하게
+  // 물리적 "장 수" 그대로 청구할지 — 거래처와의 계약 조건. 기본값 "페이지기준"은 지금까지의 유일한
+  // 동작과 동일(회귀 없음). 인쇄면(단면/양면) 자체는 자재별 단가 등록에서도 따로 설정 가능해짐.
+  const [청구단위, set청구단위] = useState<"페이지기준" | "장수기준">(initial?.청구단위 ?? "페이지기준");
   const [비고, set비고] = useState(initial?.비고 ?? "");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -154,6 +162,7 @@ export default function PricingFormDialog({
           ...Object.fromEntries(가격필드목록.map(({ key }) => [key, 숫자값(key)])),
           부가세구분,
           인쇄면,
+          청구단위,
           비고: 비고.trim() || null,
         };
         const res = await fetch("/api/pricing-create", {
@@ -183,10 +192,12 @@ export default function PricingFormDialog({
           각대대봉투단가: 숫자값("각대대봉투단가"),
           부가세구분,
           인쇄면,
+          청구단위,
           비고: 비고.trim(),
           등록일: 오늘,
           수정일: 오늘,
           자재단가목록: [],
+          공정단가목록: [],
         });
       } else {
         const payload = {
@@ -194,6 +205,7 @@ export default function PricingFormDialog({
           ...Object.fromEntries(가격필드목록.map(({ key }) => [key, 숫자값(key)])),
           부가세구분,
           인쇄면,
+          청구단위,
           비고: 비고.trim() || null,
         };
         const res = await fetch("/api/pricing-update", {
@@ -219,6 +231,7 @@ export default function PricingFormDialog({
           각대대봉투단가: 숫자값("각대대봉투단가"),
           부가세구분,
           인쇄면,
+          청구단위,
           비고: 비고.trim(),
           수정일: 오늘,
         });
@@ -330,7 +343,22 @@ export default function PricingFormDialog({
             </select>
             <span className="mt-1 block text-xs font-normal text-gray-400">
               청구페이지 원본이 없는 업무의 출력비를 용지 자재사용량으로 계산할 때 몇 배로 셀지
-              결정합니다(자재별 단가 등록에도 동일하게 적용).
+              결정합니다(자재별로 따로 설정하려면 아래 &quot;자재별 단가&quot;에서 개별 등록).
+            </span>
+          </label>
+
+          <label className={`${label} col-span-2`}>
+            청구단위
+            <select
+              value={청구단위}
+              onChange={(e) => set청구단위(e.target.value as "페이지기준" | "장수기준")}
+              className={input}
+            >
+              <option value="페이지기준">페이지기준(양면은 장 수의 2배로 청구)</option>
+              <option value="장수기준">장수기준(인쇄면과 무관하게 물리적 장 수 그대로 청구)</option>
+            </select>
+            <span className="mt-1 block text-xs font-normal text-gray-400">
+              이 거래처와의 계약이 출력비를 페이지 수로 받는지 장 수로 받는지 결정합니다.
             </span>
           </label>
 
@@ -370,6 +398,20 @@ export default function PricingFormDialog({
           ) : (
             <p className="col-span-2 text-xs text-gray-400">
               자재별로 다른 단가(용지·봉투 종류별 등)는 먼저 저장한 뒤 “수정”에서 추가할 수 있습니다.
+            </p>
+          )}
+
+          {/* 공정별 단가(2026-08-21, 공정별 단가 청구) — 자재별 단가와 동일하게 저장된 id가 있어야
+              하위 공정단가를 연결할 수 있어 수정 모드에서만 노출. */}
+          {mode === "edit" && initial ? (
+            <PricingProcessSection
+              단가마스터_id={initial.id}
+              rows={initial.공정단가목록}
+              onChange={(rows) => onProcessPricesChanged(initial.id, rows)}
+            />
+          ) : (
+            <p className="col-span-2 text-xs text-gray-400">
+              압착·중철·제본 등 공정별 단가는 먼저 저장한 뒤 “수정”에서 추가할 수 있습니다.
             </p>
           )}
         </div>

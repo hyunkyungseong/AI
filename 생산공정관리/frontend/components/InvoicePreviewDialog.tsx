@@ -52,6 +52,16 @@ export type 수량불일치행 = {
   사유: string;
 };
 
+// 단가미등록(2026-08-22, billing.build_품목행()의 미등록수집) — 실제 생산 실적(수량)은 있는데
+// 단가(기본단가·자재단가 전부)가 하나도 등록 안 돼 있어 왼쪽 원본 표에 줄 자체가 생기지 않는 품목.
+// 미분류(원본에는 있지만 오른쪽으로 안 옮겨진 경우)와 달리 원본 표에도 안 보여서 사용자가 알아챌
+// 방법이 없어, 별도로 감지해 확정을 막는다.
+export type 단가미등록행 = {
+  품목: string;
+  작업: string;
+  수량: number;
+};
+
 export type 미리보기결과 = {
   거래처명: string;
   업무명_목록: string[];
@@ -69,6 +79,7 @@ export type 미리보기결과 = {
   부가세구분: "포함" | "별도" | null;
   부가세오류?: string | null;
   수량불일치?: 수량불일치행[];
+  단가미등록?: 단가미등록행[];
   규칙목록?: 저장된규칙[]; // POST /거래명세서미리보기 응답에 이미 포함되어 내려옴(2026-08-01,
   // 별도 왕복 없이 한 번의 응답으로 끝내도록 단순화)
 };
@@ -220,6 +231,10 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
   // (2026-08-17 실사례 96,960원 누락). 확정 클릭 시 바로 제출하지 않고 이 state로 안내창을 띄워
   // "그래도 확정" / "미리보기로 돌아가기"를 받는다 — overlapConfirm과 동일한 대기 패턴.
   const [미분류확인대기, set미분류확인대기] = useState(false);
+  // 단가미등록(2026-08-22) — 미분류와 같은 이유("실제 청구 금액이 사용자 모르게 빠짐")로 확정을
+  // 막는다. 원본 표에도 줄이 안 생기는 경우라 미분류처럼 원본에서 체크 표시로 보여줄 수 없어,
+  // 이 경고창이 사용자가 이 문제를 알 수 있는 유일한 경로다.
+  const [단가미등록확인대기, set단가미등록확인대기] = useState(false);
   // 복사 직후 자동으로 연 편집창의 대상 행 인덱스(2026-08-08) — 이 상태에서 편집을 취소하면
   // "복사 자체가 없었던 일"이 되도록 방금 끼워넣은 복사본을 되돌린다. 저장하면(겹침 확인을
   // 거치더라도) null로 되돌아가 더 이상 취소 대상이 아니게 된다.
@@ -352,6 +367,22 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
     }
     return Array.from(map.entries()).sort((a, b) => b[1].금액 - a[1].금액);
   }, [미분류행]);
+
+  // 단가미등록(2026-08-22) — 서버가 이미 (품목,작업,수량) 단위로 내려주므로 여기서는 표시용으로만
+  // 품목+작업 기준으로 합친다. 단가 자체가 없어서 생긴 문제라 미분류그룹과 달리 "금액"은 계산할 수
+  // 없다(단가가 있었다면 애초에 원본 표에 줄이 생겼을 것) — 수량만 보여준다.
+  const 단가미등록행 = useMemo(() => data?.단가미등록 ?? [], [data]);
+  const 단가미등록그룹 = useMemo(() => {
+    const map = new Map<string, { 건수: number; 수량: number }>();
+    for (const r of 단가미등록행) {
+      const key = `${r.품목}(${r.작업})`;
+      const cur = map.get(key) ?? { 건수: 0, 수량: 0 };
+      cur.건수 += 1;
+      cur.수량 += r.수량;
+      map.set(key, cur);
+    }
+    return Array.from(map.entries()).sort((a, b) => b[1].수량 - a[1].수량);
+  }, [단가미등록행]);
 
   const 오른쪽합계 = useMemo(() => rightRows.reduce((s, r) => s + (Number.isFinite(r.금액) ? r.금액 : 0), 0), [rightRows]);
 
@@ -759,6 +790,10 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
   const 세액_표시값 = 세액조정_수동 ? 세액조정값 : 표시_세액_오른쪽;
 
   function handleConfirmClick() {
+    if (단가미등록행.length > 0) {
+      set단가미등록확인대기(true);
+      return;
+    }
     if (미분류행.length > 0) {
       set미분류확인대기(true);
       return;
@@ -830,6 +865,25 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
               {data.수량불일치.map((x, i) => (
                 <li key={i}>
                   {x.작업명}: {x.사유}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {/* 단가미등록(2026-08-22) — 미분류와 달리 원본 표에 줄 자체가 안 생겨 왼쪽 표만 봐서는
+            사용자가 알아챌 방법이 없다. 확정 시 아래 ConfirmDialog로 한 번 더 막지만, 미리보기
+            단계에서도 눈에 띄도록 상단에 배너로 미리 알려준다(수량불일치와 같은 자리, 다만 실제
+            금액이 빠지는 문제라 더 눈에 띄는 빨간색 사용). */}
+        {data.단가미등록 && data.단가미등록.length > 0 && (
+          <div className="mt-2 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
+            <p className="font-medium">
+              ⚠ 단가가 등록되지 않아 원본 표에 빠진 품목이 있습니다 — 단가마스터에 단가를 등록하면
+              반영됩니다. 확정 시 다시 한번 확인창이 뜹니다.
+            </p>
+            <ul className="mt-1 list-disc space-y-0.5 pl-4">
+              {단가미등록그룹.map(([이름, v]) => (
+                <li key={이름}>
+                  {이름} — {v.수량.toLocaleString()}
                 </li>
               ))}
             </ul>
@@ -1210,6 +1264,29 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
             setOverlapConfirm(null);
           }}
           onClose={() => setOverlapConfirm(null)}
+        />
+
+        <ConfirmDialog
+          open={단가미등록확인대기}
+          title="단가가 등록되지 않은 품목이 있습니다"
+          message={`실제 생산 실적은 있지만 단가(기본단가·자재별 단가 모두)가 등록되지 않아 ${단가미등록행.length.toLocaleString()}건이 청구서에서 빠집니다. 단가마스터에 단가를 등록한 뒤 다시 시도하거나, 그래도 진행할 수 있습니다.`}
+          items={[
+            ...단가미등록그룹.slice(0, 15).map(([이름, v]) => `${이름} — 수량 ${v.수량.toLocaleString()}(${v.건수}건)`),
+            ...(단가미등록그룹.length > 15 ? [`외 ${단가미등록그룹.length - 15}개 항목 더`] : []),
+          ]}
+          confirmLabel="그래도 확정"
+          cancelLabel="미리보기로 돌아가기"
+          danger
+          dangerText="누락된 금액은 이후 별도로 청구해야 합니다."
+          onConfirm={() => {
+            set단가미등록확인대기(false);
+            if (미분류행.length > 0) {
+              set미분류확인대기(true);
+              return;
+            }
+            applyConfirm();
+          }}
+          onClose={() => set단가미등록확인대기(false)}
         />
 
         <ConfirmDialog

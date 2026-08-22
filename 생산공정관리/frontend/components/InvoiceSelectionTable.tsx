@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useRef } from "react";
+import { memo, useRef, useState } from "react";
 import type { Ref } from "react";
 import type { 미발행행 } from "@/components/Dashboard";
 import { useVirtualRows } from "@/lib/useVirtualRows";
@@ -10,6 +10,9 @@ type Props = {
   selected: Set<string>;
   onToggleRow: (의뢰서번호: string) => void;
   onToggleAll: (checked: boolean) => void;
+  // 우편요금(2026-08-22) — 의뢰서 단위 입력, blur/Enter 시에만 저장(타이핑 중 매 글자마다 서버
+  // 요청을 보내지 않기 위함, 상세: `.claude/plans/plan_우편요금관리.md`).
+  onPostageChange: (의뢰서번호: string, 금액: number) => void;
 };
 
 type RowProps = {
@@ -17,16 +20,73 @@ type RowProps = {
   index: number;
   checked: boolean;
   onToggle: (의뢰서번호: string) => void;
+  onPostageChange: (의뢰서번호: string, 금액: number) => void;
   rowRef?: Ref<HTMLTableRowElement>;
 };
 
-const COL_COUNT = 17;
+const COL_COUNT = 18;
+
+// InvoicePreviewDialog.tsx의 콤마표시()/콤마숫자파싱()과 동일한 왕복 변환(2026-08-09 SKILL 패턴,
+// 그 파일에는 export가 안 돼 있어 이 파일에도 동일하게 복제) — type="number"는 콤마 문자열을
+// 값으로 못 받아들여 type="text"로 표시·파싱을 직접 처리한다.
+function 콤마표시(n: number): string {
+  return Number.isFinite(n) && n !== 0 ? n.toLocaleString() : "";
+}
+function 콤마숫자파싱(s: string): number {
+  const n = Number(s.replace(/,/g, "").trim());
+  return Number.isFinite(n) ? n : 0;
+}
+
+// 우편요금 입력칸 — 부모(Row)의 React.memo가 리렌더를 건너뛰어도 이 안의 로컬 state(타이핑 중
+// 표시값)는 그대로 유지된다. 타이핑할 때마다 천단위 콤마를 다시 붙여 보여주되(콤마표시/콤마숫자파싱
+// 왕복), 서버 저장은 blur·Enter 시에만 onChange(→ 부모 rows state 갱신 + 서버 저장)로 호출해
+// 수천 행이 떠 있는 화면에서 키 입력마다 네트워크 요청이 나가지 않게 한다. 외부에서 value가
+// 바뀌면(다른 화면에서 갱신 등) useEffect+setState 대신 호출부가 key={value}로 이 컴포넌트를
+// 재마운트시켜 useState 초기값을 다시 계산하게 한다(SKILL-24, 이 프로젝트 린트가 "effect 안에서
+// setState" 패턴을 막음).
+function PostageInput({
+  의뢰서번호,
+  value,
+  onChange,
+}: {
+  의뢰서번호: string;
+  value: number;
+  onChange: (의뢰서번호: string, 금액: number) => void;
+}) {
+  const [text, setText] = useState(콤마표시(value));
+
+  function commit() {
+    const 파싱값 = Math.max(0, 콤마숫자파싱(text));
+    if (파싱값 !== value) onChange(의뢰서번호, 파싱값);
+    setText(콤마표시(파싱값));
+  }
+
+  return (
+    <input
+      type="text"
+      inputMode="numeric"
+      value={text}
+      onChange={(e) => setText(콤마표시(콤마숫자파싱(e.target.value)))}
+      onFocus={(e) => e.target.select()}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          commit();
+          e.currentTarget.blur();
+        }
+      }}
+      placeholder="0"
+      aria-label={`${의뢰서번호} 우편요금`}
+      className="w-24 rounded border border-gray-300 bg-white px-1.5 py-0.5 text-right text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+    />
+  );
+}
 
 // 체크박스 하나만 토글해도 미발행 건 전체(수천 건)가 매번 다시 그려지면서 느려지는 문제 방지 —
 // 행마다 Set 전체가 아니라 checked(boolean) 하나만 prop으로 받아, React.memo가 바뀐 행 딱 하나만
 // 다시 그리고 나머지 수천 행은 그대로 재사용하도록 함(부모의 toggleRow도 useCallback으로 고정 필요).
 // rowRef는 가상 스크롤(useVirtualRows)이 실제 행 높이를 실측하기 위해 맨 위 행에만 전달한다.
-const Row = memo(function Row({ row: r, index, checked, onToggle, rowRef }: RowProps) {
+const Row = memo(function Row({ row: r, index, checked, onToggle, onPostageChange, rowRef }: RowProps) {
   return (
     <tr ref={rowRef} className="border-t border-gray-100 dark:border-gray-800">
       <td className="px-3 py-1.5">
@@ -69,13 +129,16 @@ const Row = memo(function Row({ row: r, index, checked, onToggle, rowRef }: RowP
       <td className="px-3 py-1.5 text-right tabular-nums text-gray-700 dark:text-gray-300">
         {r.예상공급가액 === null ? "—" : `${r.예상공급가액.toLocaleString()}원`}
       </td>
+      <td className="px-3 py-1.5 text-right">
+        <PostageInput key={r.우편요금} 의뢰서번호={r.의뢰서번호} value={r.우편요금} onChange={onPostageChange} />
+      </td>
     </tr>
   );
 });
 
 // 프로젝트 최초의 체크박스 선택 그리드 — Streamlit(app.py t4a, SKILL-04)은 data_editor의 key를
 // 강제로 리마운트해 선택 상태를 관리했지만, React는 selected(Set<string>) state 하나로 충분하다.
-export default function InvoiceSelectionTable({ rows, selected, onToggleRow, onToggleAll }: Props) {
+export default function InvoiceSelectionTable({ rows, selected, onToggleRow, onToggleAll, onPostageChange }: Props) {
   const 전체선택됨 = rows.length > 0 && rows.every((r) => selected.has(r.의뢰서번호));
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -121,6 +184,7 @@ export default function InvoiceSelectionTable({ rows, selected, onToggleRow, onT
             <th className="px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300">봉투수량</th>
             <th className="px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300">삽지수량</th>
             <th className="px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300">예상공급가액</th>
+            <th className="px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300">우편요금</th>
           </tr>
         </thead>
         <tbody>
@@ -138,6 +202,7 @@ export default function InvoiceSelectionTable({ rows, selected, onToggleRow, onT
                 index={index}
                 checked={selected.has(r.의뢰서번호)}
                 onToggle={onToggleRow}
+                onPostageChange={onPostageChange}
                 rowRef={index === 0 ? firstRowRef : undefined}
               />
             );

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import EditableCombo from "./EditableCombo";
 
 export type 규칙조건단일 = {
   field: "코드" | "품목" | "작업명" | "단가" | "자재명";
@@ -180,47 +181,46 @@ export default function ConditionRuleModal({
         왼쪽에 열려 있는 원본 표를 참고하면서 조건을 만드세요.
       </p>
 
-      <label className="mt-3 block text-sm text-gray-700 dark:text-gray-300">
-        최종 청구 품명
-        <input
-          type="text"
-          list="최종청구품명옵션"
+      {/* <input list>+<datalist>(브라우저 기본 자동완성)는 값이 이미 있는 상태에서 클릭하면 그
+          값과 매칭되는 후보만 필터링돼(브라우저 기본 동작) 전체 목록이 안 보인다 — "조건식 복사 후
+          기존 값을 지워야만 전체 목록이 뜬다"는 문제로 실사용 중 발견(2026-08-22). PricingFormDialog.tsx
+          등에서 이미 같은 이유로 쓰던 EditableCombo(클릭/포커스 시 입력값과 무관하게 항상 전체 후보
+          표시)로 교체. <label> 안에 EditableCombo의 후보 목록(<ul>)까지 들어가면 label의 접근성
+          텍스트가 라벨+후보 전체로 합쳐지는 문제가 있어(2026-07-19 다른 화면에서 Playwright 실측으로
+          발견) <label> 대신 <div>+<span>+aria-label 조합을 쓴다(기존 관례 재사용). */}
+      <div className="mt-3">
+        <span className="block text-sm text-gray-700 dark:text-gray-300">최종 청구 품명</span>
+        <EditableCombo
           value={최종청구품명}
-          onChange={(e) => set최종청구품명(e.target.value)}
+          onChange={set최종청구품명}
+          options={품목옵션}
           placeholder="예: 통합 인쇄봉입비"
+          aria-label="최종 청구 품명"
           className={`mt-1 w-full ${inputCls}`}
         />
-        <datalist id="최종청구품명옵션">
-          {품목옵션.map((v) => (
-            <option key={v} value={v} />
-          ))}
-        </datalist>
-      </label>
+      </div>
 
-      <label className="mt-3 block text-sm text-gray-700 dark:text-gray-300">
-        작업구분(시트명) <span className="text-gray-400">— 비워두면 분리발급 안 함</span>
-        <input
-          type="text"
-          list="조옵션"
+      <div className="mt-3">
+        <span className="block text-sm text-gray-700 dark:text-gray-300">
+          작업구분(시트명) <span className="text-gray-400">— 비워두면 분리발급 안 함</span>
+        </span>
+        <EditableCombo
           value={조표시값}
-          onChange={(e) => {
+          onChange={(v) => {
             set조수동입력됨(true);
-            set조(e.target.value);
+            set조(v);
           }}
+          options={조옵션}
           placeholder="예: 은행A (비워두면 거래명세서 1건)"
+          aria-label="작업구분(시트명)"
           className={`mt-1 w-full ${inputCls}`}
         />
-        <datalist id="조옵션">
-          {조옵션.map((v) => (
-            <option key={v} value={v} />
-          ))}
-        </datalist>
         {!조수동입력됨 && 자동조 && (
           <span className="mt-1 block text-xs text-gray-400">
             &quot;작업명 == {자동조}&quot; 조건에서 자동으로 채웠습니다 — 직접 입력하면 그 값을 씁니다.
           </span>
         )}
-      </label>
+      </div>
 
       <div className="mt-3 grid grid-cols-3 gap-2">
         <label className="block text-sm text-gray-700 dark:text-gray-300">
@@ -299,20 +299,36 @@ export default function ConditionRuleModal({
                         </option>
                       ))}
                     </select>
-                    <input
-                      type={cond.field === "단가" ? "number" : "text"}
-                      step={cond.field === "단가" ? "0.01" : undefined}
-                      list={`값옵션-${gi}-${ci}`}
-                      value={cond.value}
-                      onChange={(e) => updateCond(gi, ci, { value: e.target.value })}
-                      placeholder="값"
-                      className={`w-28 ${inputCls}`}
-                    />
-                    <datalist id={`값옵션-${gi}-${ci}`}>
-                      {값옵션(cond.field, 코드옵션, 품목옵션, 작업명옵션, 단가옵션, 자재명옵션).map((v) => (
-                        <option key={v} value={v} />
-                      ))}
-                    </datalist>
+                    {cond.field === "단가" ? (
+                      // 단가는 숫자 입력(스핀 버튼·숫자 키패드)이 더 중요해 네이티브 number input을
+                      // 유지 — 이 필드는 후보가 적어(등록된 단가 값들) "값 있을 때 목록이 안 뜨는"
+                      // 문제의 체감이 크지 않았던 것도 이유(사용자 제보는 자재명·작업명 중심).
+                      <input
+                        type="number"
+                        step="0.01"
+                        list={`값옵션-${gi}-${ci}`}
+                        value={cond.value}
+                        onChange={(e) => updateCond(gi, ci, { value: e.target.value })}
+                        placeholder="값"
+                        className={`w-28 ${inputCls}`}
+                      />
+                    ) : (
+                      <EditableCombo
+                        value={cond.value}
+                        onChange={(v) => updateCond(gi, ci, { value: v })}
+                        options={값옵션(cond.field, 코드옵션, 품목옵션, 작업명옵션, 단가옵션, 자재명옵션)}
+                        placeholder="값"
+                        aria-label="조건 값"
+                        className={`w-28 ${inputCls}`}
+                      />
+                    )}
+                    {cond.field === "단가" && (
+                      <datalist id={`값옵션-${gi}-${ci}`}>
+                        {값옵션(cond.field, 코드옵션, 품목옵션, 작업명옵션, 단가옵션, 자재명옵션).map((v) => (
+                          <option key={v} value={v} />
+                        ))}
+                      </datalist>
+                    )}
                     {group.and.length > 1 && (
                       <button type="button" onClick={() => removeCond(gi, ci)} className="text-xs text-gray-500 hover:underline dark:text-gray-400">
                         삭제

@@ -109,6 +109,22 @@ export default function Tab4Invoice({
     });
   }, []);
 
+  // 우편요금 입력(2026-08-22, `.claude/plans/plan_우편요금관리.md`) — 매일 발송하는 업무는
+  // 영업일마다 우편요금이 달라져 미발행 목록에서 의뢰서 단위로 직접 입력·관리한다. 낙관적으로
+  // 화면부터 갱신하고(다른 "선택 유지" 등 로컬 state와 동일한 패턴) 서버에 저장 — 실패하면
+  // 다음 새로고침 때 서버 값으로 되돌아간다(간단한 정책, 이 화면의 다른 낙관적 업데이트와 동일).
+  const updatePostage = useCallback(
+    (의뢰서번호: string, 금액: number) => {
+      setRows((prev) => prev.map((r) => (r.의뢰서번호 === 의뢰서번호 ? { ...r, 우편요금: 금액 } : r)));
+      fetch("/api/invoice-postage", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 의뢰서번호, 금액 }),
+      }).catch(() => {});
+    },
+    [setRows]
+  );
+
   const toggleAll = useCallback(
     (checked: boolean) => {
       setSelected((prev) => {
@@ -367,6 +383,7 @@ export default function Tab4Invoice({
             selected={selected}
             onToggleRow={toggleRow}
             onToggleAll={toggleAll}
+            onPostageChange={updatePostage}
           />
 
           {selectedRows.length > 0 && (

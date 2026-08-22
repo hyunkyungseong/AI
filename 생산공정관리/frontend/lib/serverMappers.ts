@@ -1,6 +1,16 @@
-import type { 거래처행, 단가행, 자재단가행, 미발행행 } from "@/components/Dashboard";
+import type { 거래처행, 단가행, 자재단가행, 공정단가행, 미발행행 } from "@/components/Dashboard";
 
 type Rec = Record<string, unknown>;
+
+function mapProcessPriceRow(r: Rec): 공정단가행 {
+  return {
+    id: Number(r.id ?? 0),
+    단가마스터_id: Number(r.단가마스터_id ?? 0),
+    공정코드: (r.공정코드 as 공정단가행["공정코드"]) ?? "압착",
+    단가: Number(r.단가 ?? 0),
+    비고: r.비고 != null ? String(r.비고) : null,
+  };
+}
 
 function mapMaterialPriceRow(r: Rec): 자재단가행 {
   const 매칭 = Array.isArray(r.매칭자재) ? (r.매칭자재 as Rec[]) : [];
@@ -10,6 +20,7 @@ function mapMaterialPriceRow(r: Rec): 자재단가행 {
     코드: (r.코드 as 자재단가행["코드"]) ?? "출력자재비",
     단가: Number(r.단가 ?? 0),
     표시명: r.표시명 != null ? String(r.표시명) : null,
+    인쇄면: r.인쇄면 === "단면" || r.인쇄면 === "양면" ? r.인쇄면 : null,
     비고: r.비고 != null ? String(r.비고) : null,
     매칭자재: 매칭.map((m) => ({
       자재코드: m.자재코드 != null ? Number(m.자재코드) : null,
@@ -52,10 +63,12 @@ export function mapPricingRow(r: Rec): 단가행 {
     각대대봉투봉입단가: Number(r.각대대봉투봉입단가 ?? 0),
     부가세구분: r.부가세구분 === "포함" ? "포함" : "별도",
     인쇄면: r.인쇄면 === "단면" ? "단면" : "양면",
+    청구단위: r.청구단위 === "장수기준" ? "장수기준" : "페이지기준",
     비고: r.비고 != null ? String(r.비고) : "",
     등록일: String(r.등록일 ?? ""),
     수정일: String(r.수정일 ?? ""),
     자재단가목록: Array.isArray(r.자재단가목록) ? (r.자재단가목록 as Rec[]).map(mapMaterialPriceRow) : [],
+    공정단가목록: Array.isArray(r.공정단가목록) ? (r.공정단가목록 as Rec[]).map(mapProcessPriceRow) : [],
   };
 }
 
@@ -75,5 +88,6 @@ export function mapInvoiceRow(r: Rec): 미발행행 {
     봉투수량: Number(r.봉투수량 ?? 0),
     삽지수량: Number(r.삽지수량 ?? 0),
     예상공급가액: r.예상공급가액 != null ? Number(r.예상공급가액) : null,
+    우편요금: Number(r.우편요금 ?? 0),
   };
 }

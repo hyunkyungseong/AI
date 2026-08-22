@@ -52,6 +52,7 @@ const Row = memo(function Row({ row: r, checked, onToggle, onEdit }: RowProps) {
       </td>
       <td className="px-3 py-1.5 text-center text-gray-700 dark:text-gray-300">{r.부가세구분}</td>
       <td className="px-3 py-1.5 text-center text-gray-700 dark:text-gray-300">{r.인쇄면}</td>
+      <td className="px-3 py-1.5 text-center text-gray-700 dark:text-gray-300">{r.청구단위}</td>
       <td className="px-3 py-1.5 text-gray-700 dark:text-gray-300">{r.비고}</td>
       <td className="px-3 py-1.5">
         <button
@@ -95,6 +96,7 @@ export default function PricingMasterTable({ rows, selected, onToggleRow, onTogg
             <th className="px-3 py-2 text-center font-medium text-gray-600 dark:text-gray-300">자재별 단가</th>
             <th className="px-3 py-2 text-center font-medium text-gray-600 dark:text-gray-300">부가세</th>
             <th className="px-3 py-2 text-center font-medium text-gray-600 dark:text-gray-300">인쇄면</th>
+            <th className="px-3 py-2 text-center font-medium text-gray-600 dark:text-gray-300">청구단위</th>
             <th className="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-300">비고</th>
             <th className="px-3 py-2" />
           </tr>

@@ -97,6 +97,16 @@ def get_db():
             용지_사용량     INT DEFAULT 0,
             삽지_사용량     INT DEFAULT 0,
             미구분_사용량   INT DEFAULT 0,
+            압착            INT DEFAULT 0,
+            주소출력        INT DEFAULT 0,
+            봉입            INT DEFAULT 0,
+            수작업          INT DEFAULT 0,
+            중철            INT DEFAULT 0,
+            제본            INT DEFAULT 0,
+            무광코팅        INT DEFAULT 0,
+            유광코팅        INT DEFAULT 0,
+            에폭시          INT DEFAULT 0,
+            날개접지        INT DEFAULT 0,
             INDEX idx_업무의뢰서번호 (업무의뢰서번호),
             INDEX idx_거래처명 (거래처명),
             INDEX idx_연월 (연월)
@@ -177,6 +187,20 @@ def get_db():
             FOREIGN KEY (자재단가_id) REFERENCES 단가마스터_자재단가(id) ON DELETE CASCADE,
             UNIQUE KEY uk_자재코드매칭 (자재단가_id, 자재코드),
             UNIQUE KEY uk_자재명매칭 (자재단가_id, 자재명)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """,
+
+    "단가마스터_공정단가": """
+        CREATE TABLE IF NOT EXISTS 단가마스터_공정단가 (
+            id              INT AUTO_INCREMENT PRIMARY KEY,
+            단가마스터_id   INT NOT NULL,
+            공정코드        ENUM('압착','주소출력','중철','제본','무광코팅','유광코팅','에폭시','날개접지') NOT NULL,
+            단가            DECIMAL(10,2) NOT NULL DEFAULT 0,
+            비고            TEXT,
+            등록일          DATETIME DEFAULT CURRENT_TIMESTAMP,
+            수정일          DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            FOREIGN KEY (단가마스터_id) REFERENCES 단가마스터(id) ON DELETE CASCADE,
+            UNIQUE KEY uk_단가마스터_공정 (단가마스터_id, 공정코드)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """,
 
@@ -317,6 +341,19 @@ def get_db():
             조          VARCHAR(50),
             등록일      DATETIME DEFAULT CURRENT_TIMESTAMP,
             UNIQUE KEY uk_거래처품명 (거래처명, 품명)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """,
+
+    # 업무의뢰서 단위 우편요금(2026-08-22, `.claude/plans/plan_우편요금관리.md`) — 마케팅 담당자가
+    # 미발행 목록 화면에서 의뢰서별로 직접 입력. 운영통계자료(실시간 수신+preprocess.py 재적재 시
+    # TRUNCATE 대상)와 분리된 별도 테이블이라 재적재해도 입력값이 안전하다. 의뢰서가 취소돼 미발행
+    # 목록으로 돌아와도 값은 그대로 남는다(거래명세서품명이력과 동일한 관례 — 삭제 안 함).
+    "업무의뢰서_우편요금": """
+        CREATE TABLE IF NOT EXISTS 업무의뢰서_우편요금 (
+            업무의뢰서번호  VARCHAR(20) PRIMARY KEY,
+            금액            DECIMAL(10,2) NOT NULL DEFAULT 0,
+            등록일          DATE DEFAULT (CURRENT_DATE),
+            수정일          DATE DEFAULT (CURRENT_DATE)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """,
 
@@ -580,6 +617,31 @@ def migrate():
             else:
                 print("  마이그레이션: 단가마스터.인쇄면 컬럼 이미 존재 (건너뜀)")
 
+            # 2026-08-22 — "인쇄면 자재별 관리 + 장수기준/페이지기준 청구단위" 통합 개선
+            # (`.claude/plans/plan_출력비_장수페이지기준_인쇄면자재별.md`). 인쇄면(단면/양면)은 이제
+            # 거래처+업무명 단위 값(위 컬럼, 그대로 유지 — 자재별 미설정 시 폴백용)뿐 아니라 자재
+            # 단위로도 설정 가능해야 해서 단가마스터_자재단가에도 같은 이름의 컬럼을 추가한다.
+            # 청구단위는 거래처+업무명(+작업명)의 계약 조건이라 단가마스터에만 둔다 — 기본값을
+            # 지금까지의 유일한 동작이었던 '페이지기준'으로 채워 기존 거래처는 회귀 없음.
+            if not _컬럼_존재(cur, "단가마스터", "청구단위"):
+                cur.execute(
+                    "ALTER TABLE 단가마스터 ADD COLUMN 청구단위 ENUM('페이지기준','장수기준') "
+                    "DEFAULT '페이지기준' AFTER 인쇄면"
+                )
+                print("  마이그레이션: 단가마스터.청구단위 컬럼 추가 완료(기존 행 전부 '페이지기준'으로 채워짐)")
+            else:
+                print("  마이그레이션: 단가마스터.청구단위 컬럼 이미 존재 (건너뜀)")
+
+            if not _컬럼_존재(cur, "단가마스터_자재단가", "인쇄면"):
+                cur.execute(
+                    "ALTER TABLE 단가마스터_자재단가 ADD COLUMN 인쇄면 ENUM('단면','양면') NULL "
+                    "AFTER 표시명"
+                )
+                print("  마이그레이션: 단가마스터_자재단가.인쇄면 컬럼 추가 완료(NULL=자재별 미설정, "
+                      "상위 단가마스터.인쇄면 값으로 폴백)")
+            else:
+                print("  마이그레이션: 단가마스터_자재단가.인쇄면 컬럼 이미 존재 (건너뜀)")
+
             # 2026-08-18 — "원본 vs 최종 비교" 팝업 왼쪽 "원본"이 조건식 적용 전 원자재 단위
             # 품명(구분='원본')과 조건식 적용 후 합계(감사이력 기준선)를 섞어 보여주던 불일치 수정.
             # 확정 시점에 "조건식 적용 후·사람이 손대기 전" 스냅샷(기준목록)을 구분='기준'으로
@@ -593,6 +655,20 @@ def migrate():
                 print("  마이그레이션: 거래명세서_품목.구분 ENUM에 '기준' 값 추가 완료")
             else:
                 print("  마이그레이션: 거래명세서_품목.구분 ENUM에 '기준' 값 이미 존재 (건너뜀)")
+
+            # 2026-08-21 — 당사 생산공정관리시스템이 5월분부터 운영통계자료에 공정 세분화 컬럼
+            # 10개를 추가로 내려주기 시작함(압착/봉입/수작업/중철/제본은 "그 공정을 거친 물량이
+            # 건수와 동일한 값으로 반복 표시"되는 방식, 나머지 5개는 공정상 수량). 고객사별로
+            # 압착비·봉입비·수작업비·중철비·제본비 등을 각각 별도 항목으로 청구하기 위해 신설
+            # (`.claude/plans/plan_공정별단가청구.md`). 5월 이전 데이터는 이 컬럼들이 전부 0으로
+            # 남아 기존 계산(봉입건수 기준 폴백)과 동일하게 동작 — 회귀 없음.
+            for 컬럼 in ["압착", "주소출력", "봉입", "수작업", "중철", "제본",
+                        "무광코팅", "유광코팅", "에폭시", "날개접지"]:
+                if not _컬럼_존재(cur, "운영통계자료", 컬럼):
+                    cur.execute(f"ALTER TABLE 운영통계자료 ADD COLUMN {컬럼} INT DEFAULT 0")
+                    print(f"  마이그레이션: 운영통계자료.{컬럼} 컬럼 추가 완료")
+                else:
+                    print(f"  마이그레이션: 운영통계자료.{컬럼} 컬럼 이미 존재 (건너뜀)")
 
 
 def main():

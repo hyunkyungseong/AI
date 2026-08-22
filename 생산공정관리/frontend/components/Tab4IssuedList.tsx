@@ -335,6 +335,7 @@ export default function Tab4IssuedList({
             봉투수량: r.봉투수량,
             삽지수량: r.삽지수량,
             예상공급가액: r.예상공급가액,
+            우편요금: r.우편요금,
           })
         )
       );
