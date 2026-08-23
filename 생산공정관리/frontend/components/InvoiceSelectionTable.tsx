@@ -183,7 +183,12 @@ export default function InvoiceSelectionTable({ rows, selected, onToggleRow, onT
             <th className="px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300">용지수량</th>
             <th className="px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300">봉투수량</th>
             <th className="px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300">삽지수량</th>
-            <th className="px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300">예상공급가액</th>
+            <th
+              className="px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300"
+              title="시스템 자동계산 값입니다 — 조건식 적용·확정 후 실제 청구 금액과 다를 수 있습니다"
+            >
+              예상공급가액
+            </th>
             <th className="px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300">우편요금</th>
           </tr>
         </thead>

@@ -1,4 +1,4 @@
-import type { 거래처행, 단가행, 자재단가행, 공정단가행, 미발행행 } from "@/components/Dashboard";
+import type { 거래처행, 단가행, 자재단가행, 공정단가행, 미발행행, 발행행 } from "@/components/Dashboard";
 
 type Rec = Record<string, unknown>;
 
@@ -75,6 +75,33 @@ export function mapPricingRow(r: Rec): 단가행 {
 export function mapInvoiceRow(r: Rec): 미발행행 {
   return {
     의뢰서번호: String(r.의뢰서번호 ?? ""),
+    담당자: String(r.담당자 ?? ""),
+    사업부: String(r.사업부 ?? ""),
+    거래처명: String(r.거래처명 ?? ""),
+    업무명: String(r.업무명 ?? ""),
+    업무명상세: String(r.업무명상세 ?? ""),
+    작업일자: String(r.작업일자 ?? ""),
+    청구페이지: Number(r.청구페이지 ?? 0),
+    장수: Number(r.장수 ?? 0),
+    봉입건수: Number(r.봉입건수 ?? 0),
+    용지수량: Number(r.용지수량 ?? 0),
+    봉투수량: Number(r.봉투수량 ?? 0),
+    삽지수량: Number(r.삽지수량 ?? 0),
+    예상공급가액: r.예상공급가액 != null ? Number(r.예상공급가액) : null,
+    우편요금: Number(r.우편요금 ?? 0),
+  };
+}
+
+export function mapIssuedRow(r: Rec): 발행행 {
+  return {
+    의뢰서번호: String(r.의뢰서번호 ?? ""),
+    거래명세서번호: String(r.거래명세서번호 ?? ""),
+    발송여부: Number(r.발송여부 ?? 0) === 1 ? 1 : 0,
+    편집여부: Number(r.편집여부 ?? 0) === 1 ? 1 : 0,
+    발행가능: Number(r.발행가능 ?? 1) === 0 ? 0 : 1,
+    수정이력있음: Boolean(r.수정이력있음),
+    합계증감: Number(r.합계증감 ?? 0),
+    확정공급가액: Number(r.확정공급가액 ?? 0),
     담당자: String(r.담당자 ?? ""),
     사업부: String(r.사업부 ?? ""),
     거래처명: String(r.거래처명 ?? ""),

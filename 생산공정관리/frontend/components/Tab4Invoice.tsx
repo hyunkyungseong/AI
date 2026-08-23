@@ -304,6 +304,10 @@ export default function Tab4Invoice({
             수정이력있음: Boolean(data.수정이력있음),
             합계증감: Number(data.합계증감 ?? 0),
             확정공급가액: Number(data.확정공급가액 ?? 0),
+            // 2026-08-23 — `...r`(원래 미발행행)의 예상공급가액은 개별 의뢰서 몫(조건식 미적용)이라
+            // 발행요청목록의 거래명세서 단위 값과 스케일이 다르다. null로 두면 Tab4.tsx의
+            // handleIssued가 곧바로 refreshIssued()로 정확한 값을 받아와 덮어쓴다.
+            예상공급가액: null,
           }))
         )
       );

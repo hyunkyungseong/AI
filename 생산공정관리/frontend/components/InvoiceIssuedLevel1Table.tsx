@@ -228,12 +228,17 @@ export default function InvoiceIssuedLevel1Table({
             <th className="px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300">용지수량</th>
             <th className="px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300">봉투수량</th>
             <th className="px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300">삽지수량</th>
-            <th className="px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300">예상공급가액</th>
             <th
               className="px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300"
-              title="실제 확정 저장된 공급가액(괄호는 예상공급가액과의 차이)"
+              title="조건식 적용 후·사람이 수정하기 전 공급가액"
             >
-              청구공급가액
+              수정전공급가액
+            </th>
+            <th
+              className="px-3 py-2 text-right font-medium text-gray-600 dark:text-gray-300"
+              title="실제 확정 저장된 공급가액(괄호는 수정전공급가액과의 차이)"
+            >
+              확정공급가액
             </th>
           </tr>
         </thead>

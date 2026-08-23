@@ -34,7 +34,36 @@ export default function Tab4({
   const [invoice, setInvoice] = useState(invoiceRows);
   const [issued, setIssued] = useState(issuedRows);
 
-  // "거래명세서 관리" 탭을 다시 클릭할 때마다 미발행 목록을 서버에서 새로 받아온다(2026-08-09,
+  const refreshInvoice = useCallback(async () => {
+    try {
+      // cache: "no-store" 명시(2026-08-23) — 브라우저가 이 GET을 디스크/메모리 캐시에 태워 재사용할
+      // 여지를 원천 차단한다(취소·확정 직후의 재조회가 조금이라도 오래된 응답을 받으면 안 됨).
+      const res = await fetch("/api/invoice-list", { cache: "no-store" });
+      if (!res.ok) return;
+      const data: 미발행행[] = await res.json();
+      setInvoice(data);
+    } catch {
+      // 새로고침 실패는 조용히 무시 — 화면에 이미 떠 있는 기존 데이터를 그대로 유지한다
+      // (백그라운드 갱신이라 사용자 작업을 막는 오류 표시까지는 불필요).
+    }
+  }, []);
+
+  // refreshInvoice와 동일한 이유(2026-08-23 신설) — 발행요청목록·발행완료의 "수정전공급가액"이
+  // 이제 거래명세서번호 단위 값이라(bug_예상공급가액_부가세미반영.md), 거래명세서 요청 확정 직후의
+  // 낙관적 업데이트(원래 미발행행의 개별 예상공급가액을 그대로 물려받음, 레벨1 그룹 합산 시 값이
+  // 완전히 틀어짐)를 서버 값으로 즉시 덮어써야 한다(bug_취소시_예상공급가액_전체값복사.md).
+  const refreshIssued = useCallback(async () => {
+    try {
+      const res = await fetch("/api/invoice-issued-list", { cache: "no-store" });
+      if (!res.ok) return;
+      const data: 발행행[] = await res.json();
+      setIssued(data);
+    } catch {
+      // 새로고침 실패는 조용히 무시 — 화면에 이미 떠 있는 기존 데이터를 그대로 유지한다.
+    }
+  }, []);
+
+  // "거래명세서 관리" 탭을 다시 클릭할 때마다 미발행·발행 목록을 서버에서 새로 받아온다(2026-08-09,
   // 사용자 요청) — 예상공급가액은 서버(billing.py)가 단가마스터 기준으로 계산해 내려주는 값인데,
   // 이 화면은 페이지를 처음 열 때 딱 한 번만 받아온 뒤로는 다시 안 받아오고 있어서, "단가관리"
   // 탭에서 방금 등록한 단가가 미발행 목록의 "단가 미등록" 표시에 실시간 반영되지 않는 문제가 있었음.
@@ -45,18 +74,9 @@ export default function Tab4({
     const 방금까지비활성 = !이전active.current;
     이전active.current = active;
     if (!active || !방금까지비활성) return;
-    (async () => {
-      try {
-        const res = await fetch("/api/invoice-list");
-        if (!res.ok) return;
-        const data: 미발행행[] = await res.json();
-        setInvoice(data);
-      } catch {
-        // 새로고침 실패는 조용히 무시 — 화면에 이미 떠 있는 기존 데이터를 그대로 유지한다
-        // (백그라운드 갱신이라 사용자 작업을 막는 오류 표시까지는 불필요).
-      }
-    })();
-  }, [active]);
+    void refreshInvoice();
+    void refreshIssued();
+  }, [active, refreshInvoice, refreshIssued]);
 
   // FastAPI(/미발행목록·/발행목록)는 작업일자 내림차순으로 정렬해서 내려주는데, 여기서 단순
   // append만 하면 방금 옮겨온 항목이 정렬 순서를 깨고 배열 맨 끝(화면상 맨 아래)에 붙어버린다.
@@ -68,20 +88,35 @@ export default function Tab4({
 
   const handleIssued = useCallback(
     (신규: 발행행[]) => {
+      // 낙관적 업데이트(신규 각 항목의 예상공급가액은 원래 미발행행의 개별 값을 그대로 물려받아
+      // 신뢰할 수 없음 — Tab4Invoice.tsx 참고)로 우선 반영한 뒤, 곧바로 refreshIssued()로 서버의
+      // 정확한 거래명세서 단위 값으로 덮어쓴다(2026-08-23, handleReturnToUnissued와 동일한 이유).
       setIssued((prev) => 작업일자내림차순([...prev, ...신규]));
+      void refreshIssued();
       // 거래명세서 요청 확정 직후 발행요청목록 탭으로 자동 이동(2026-08-12 사용자 요청) — 방금
       // 만든 건을 그 탭의 다운로드 아이콘으로 바로 받아볼 수 있어서, 성공 배너에 별도 다운로드
       // 버튼을 두는 것보다 낫다는 판단.
       setSubTab("pending");
     },
-    [작업일자내림차순, setSubTab]
+    [작업일자내림차순, refreshIssued, setSubTab]
   );
 
   const handleReturnToUnissued = useCallback(
     (반환: 미발행행[]) => {
+      // 낙관적 업데이트로 우선 화면에 반영(예상공급가액은 신뢰할 수 없어 null — Tab4IssuedList.tsx
+      // 참고)한 뒤, 곧바로 서버에서 정확한 개별 값으로 다시 받아와 덮어쓴다(2026-08-23) — 서브탭만
+      // 전환해서는(발행요청목록→미발행목록) 최상위 탭 재진입 트리거가 안 걸려 이 재조회가 없으면
+      // 잘못된 임시값이 계속 남아있는 버그가 있었다.
       setInvoice((prev) => 작업일자내림차순([...prev, ...반환]));
+      void refreshInvoice();
+      // 부분취소(거래명세서 일부 의뢰서만 취소, 나머지는 그 거래명세서에 남음)면 완전취소된 의뢰서가
+      // 없어 위 반환 배열이 비어있을 수 있지만, 그 경우에도 서버가 남은 항목들로 공급가액을 다시
+      // 계산해 저장했으므로(거래명세서_품목 갱신) 발행요청목록·발행완료에 남아있는 라인들의
+      // "수정전공급가액"도 함께 재조회해야 한다(2026-08-23, this 함수는 완전취소든 부분취소든
+      // 성공행이 있으면 항상 호출되므로 이 한 곳에서 함께 처리).
+      void refreshIssued();
     },
-    [작업일자내림차순]
+    [작업일자내림차순, refreshInvoice, refreshIssued]
   );
 
   return (
