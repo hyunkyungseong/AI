@@ -80,7 +80,10 @@ export default function ClientMaster({
     setBanner({ type: "success", text: `'${row.거래처명}' 거래처가 등록되었습니다.` });
   }
 
-  function handleUpdated(거래처명: string, patch: Pick<거래처행, "사업자등록번호" | "수신이메일" | "비고" | "수정일">) {
+  function handleUpdated(
+    거래처명: string,
+    patch: Pick<거래처행, "사업자등록번호" | "수신이메일" | "비고" | "역발행" | "수정일">
+  ) {
     setRows((prev) => prev.map((c) => (c.거래처명 === 거래처명 ? { ...c, ...patch } : c)));
     setFormOpen(false);
     setBanner({ type: "success", text: `'${거래처명}' 거래처가 수정되었습니다.` });

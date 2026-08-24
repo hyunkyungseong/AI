@@ -117,7 +117,14 @@ const Row = memo(function Row({
         </button>
       </td>
       <td className="px-3 py-1.5 text-gray-700 dark:text-gray-300">{g.사업부}</td>
-      <td className="px-3 py-1.5 text-gray-900 dark:text-gray-100">{g.거래처명}</td>
+      <td className="px-3 py-1.5 text-gray-900 dark:text-gray-100">
+        {g.거래처명}
+        {g.역발행 && (
+          <span className="ml-1.5 rounded border border-purple-300 px-1 text-xs text-purple-700 dark:border-purple-700 dark:text-purple-400">
+            역발행
+          </span>
+        )}
+      </td>
       <td className="max-w-[220px] truncate px-3 py-1.5 text-gray-700 dark:text-gray-300" title={g.업무명}>
         {g.업무명}
       </td>

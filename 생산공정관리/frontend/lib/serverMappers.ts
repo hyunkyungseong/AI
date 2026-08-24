@@ -41,6 +41,7 @@ export function mapClientRow(r: Rec): 거래처행 {
     사업자등록번호: r.사업자등록번호 != null ? String(r.사업자등록번호) : "",
     수신이메일: r.수신이메일 != null ? String(r.수신이메일) : "",
     비고: r.비고 != null ? String(r.비고) : "",
+    역발행: Boolean(r.역발행),
     등록일: String(r.등록일 ?? ""),
     수정일: String(r.수정일 ?? ""),
   };
@@ -102,6 +103,7 @@ export function mapIssuedRow(r: Rec): 발행행 {
     수정이력있음: Boolean(r.수정이력있음),
     합계증감: Number(r.합계증감 ?? 0),
     확정공급가액: Number(r.확정공급가액 ?? 0),
+    역발행: Boolean(r.역발행),
     담당자: String(r.담당자 ?? ""),
     사업부: String(r.사업부 ?? ""),
     거래처명: String(r.거래처명 ?? ""),

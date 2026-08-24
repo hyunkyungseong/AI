@@ -737,6 +737,10 @@ def 발행목록(사업부: Optional[List[str]] = Query(default=None)):
                 JOIN 거래명세서 b ON a.거래명세서번호 = b.거래명세서번호
             """)
             발행행목록 = cur.fetchall()
+            # 역발행(2026-08-24) — 거래처명 기준 표시용 조회, 거래명세서 단위 값이라 별도 저장 없이
+            # 매번 거래처마스터에서 조회해 붙인다(거래처마스터가 나중에 바뀌어도 항상 최신값 반영).
+            cur.execute("SELECT 거래처명, 역발행 FROM 거래처마스터")
+            역발행맵 = {r["거래처명"]: bool(r["역발행"]) for r in cur.fetchall()}
             if not 발행행목록:
                 return []
 
@@ -858,6 +862,7 @@ def 발행목록(사업부: Optional[List[str]] = Query(default=None)):
                 # 발행요청목록/발행완료 "청구공급가액" 열 전용(2026-08-14, 사용자 요청) — 거래명세서번호
                 # 단위로 이미 확정 저장된 값(공급가액_직접입력 우선)이라 의뢰서 라인마다 동일하게 붙는다.
                 "확정공급가액": 확정공급가액,
+                "역발행": 역발행맵.get(r["거래처명"], False),
                 "담당자": r["마케팅담당자"],
                 "사업부": r["사업부"],
                 "거래처명": r["거래처명"],
@@ -1678,6 +1683,9 @@ class 거래처행(BaseModel):
     사업자등록번호: Optional[str] = None
     수신이메일: Optional[str] = None
     비고: Optional[str] = None
+    # 역발행(2026-08-24) — 고객사가 거래명세서를 우리 쪽으로 역으로 발행하는 거래처 표시.
+    # 신규 등록 시 기본값은 항상 비워둠(False) — 사용자가 명시적으로 체크한 거래처만 대상이 된다.
+    역발행: Optional[bool] = False
     등록일: Optional[str] = None
     수정일: Optional[str] = None
 
@@ -1696,10 +1704,10 @@ def 거래처마스터_추가(거래처: 거래처행):
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    INSERT INTO 거래처마스터 (거래처명, 사업자등록번호, 수신이메일, 비고, 등록일, 수정일)
-                    VALUES (%s,%s,%s,%s,%s,%s)
+                    INSERT INTO 거래처마스터 (거래처명, 사업자등록번호, 수신이메일, 비고, 역발행, 등록일, 수정일)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s)
                 """, (거래처명, 거래처.사업자등록번호, 거래처.수신이메일, 거래처.비고,
-                      거래처.등록일 or 오늘, 거래처.수정일 or 오늘))
+                      1 if 거래처.역발행 else 0, 거래처.등록일 or 오늘, 거래처.수정일 or 오늘))
     except pymysql.err.IntegrityError:
         raise HTTPException(status_code=409, detail="이미 존재하는 거래처명입니다")
     except Exception as e:
@@ -1713,11 +1721,12 @@ class 거래처행_수정(BaseModel):
     사업자등록번호: Optional[str] = None
     수신이메일: Optional[str] = None
     비고: Optional[str] = None
+    역발행: Optional[bool] = False
 
 
 @app.put("/거래처마스터/{name}", dependencies=인증필요)
 def 거래처마스터_수정_요청(name: str, 거래처: 거래처행_수정):
-    """거래처 1건 수정 — 사업자등록번호·수신이메일·비고만 변경 가능, 거래처명은 요청 바디에
+    """거래처 1건 수정 — 사업자등록번호·수신이메일·비고·역발행만 변경 가능, 거래처명은 요청 바디에
     필드 자체가 없어 API 레벨에서부터 변경 불가."""
     from datetime import date
     오늘 = str(date.today())
@@ -1725,9 +1734,10 @@ def 거래처마스터_수정_요청(name: str, 거래처: 거래처행_수정):
         with conn.cursor() as cur:
             cur.execute("""
                 UPDATE 거래처마스터
-                SET 사업자등록번호=%s, 수신이메일=%s, 비고=%s, 수정일=%s
+                SET 사업자등록번호=%s, 수신이메일=%s, 비고=%s, 역발행=%s, 수정일=%s
                 WHERE 거래처명=%s
-            """, (거래처.사업자등록번호, 거래처.수신이메일, 거래처.비고, 오늘, name))
+            """, (거래처.사업자등록번호, 거래처.수신이메일, 거래처.비고,
+                  1 if 거래처.역발행 else 0, 오늘, name))
             if cur.rowcount == 0:
                 raise HTTPException(status_code=404, detail="해당 거래처명이 없습니다")
     return {"status": "ok"}
@@ -2370,15 +2380,22 @@ def 거래명세서요청(요청: 거래명세서요청_요청, 사용자: str =
         with get_db() as conn:
             with conn.cursor() as cur:
                 거래명세서번호 = _발급_거래명세서번호(cur, 요청.사업부)
+                # 역발행(2026-08-24) — 고객사가 스스로 거래명세서를 발행하는 거래처면, 담당자 확인
+                # 없이 그냥 발행되지 않도록 생성 시점부터 "거래처 승인 대기" 게이트(발행가능=0, 원래
+                # 2026-08-12에 다른 용도로 만들어진 컬럼)를 꺼서 시작한다 — 이후 발행요청목록의
+                # "승인대기" 표시·체크박스·POST /거래명세서발행의 409 차단은 기존 코드 그대로 재사용.
+                cur.execute("SELECT 역발행 FROM 거래처마스터 WHERE 거래처명=%s", (요청.거래처명,))
+                _역발행행 = cur.fetchone()
+                발행가능_초기값 = 0 if (_역발행행 and _역발행행["역발행"]) else 1
                 cur.execute("""
                     INSERT INTO 거래명세서
                         (거래명세서번호, 거래처명, 담당자, 발행일자, 품목, 공급가액, 세액, 합계,
-                         공급가액_직접입력, 세액_직접입력, 발송여부, 편집여부,
+                         공급가액_직접입력, 세액_직접입력, 발송여부, 편집여부, 발행가능,
                          통합시트명, 통합상단업무명, 등록일)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0, %s, %s, %s, NOW())
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0, %s, %s, %s, %s, NOW())
                 """, (거래명세서번호, 요청.거래처명, 요청.담당자, 오늘, 요청.품목,
                       요청.공급가액, 요청.세액, 요청.합계,
-                      공급가액_직접입력_저장, 세액_직접입력_저장, 편집여부,
+                      공급가액_직접입력_저장, 세액_직접입력_저장, 편집여부, 발행가능_초기값,
                       통합시트명_저장, 상단업무명_저장))
 
                 if 공급가액_조정됨:

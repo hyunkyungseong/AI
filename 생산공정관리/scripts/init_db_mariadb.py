@@ -134,6 +134,7 @@ def get_db():
             사업자등록번호  VARCHAR(30),
             수신이메일      VARCHAR(200),
             비고            TEXT,
+            역발행          TINYINT(1) DEFAULT 0,
             등록일          DATE DEFAULT (CURRENT_DATE),
             수정일          DATE DEFAULT (CURRENT_DATE)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -669,6 +670,15 @@ def migrate():
                     print(f"  마이그레이션: 운영통계자료.{컬럼} 컬럼 추가 완료")
                 else:
                     print(f"  마이그레이션: 운영통계자료.{컬럼} 컬럼 이미 존재 (건너뜀)")
+
+            # 2026-08-24 — "역발행"(고객사가 거래명세서를 우리 쪽으로 역으로 발행하는 거래처) 표시
+            # 기능. 기존 행은 DEFAULT 0(일반)으로 자동 채워져 회귀 없음 — 사용자가 거래처마스터
+            # 화면에서 개별적으로 체크해야만 역발행으로 전환된다.
+            if not _컬럼_존재(cur, "거래처마스터", "역발행"):
+                cur.execute("ALTER TABLE 거래처마스터 ADD COLUMN 역발행 TINYINT(1) DEFAULT 0 AFTER 비고")
+                print("  마이그레이션: 거래처마스터.역발행 컬럼 추가 완료(기존 행 전부 0으로 채워짐)")
+            else:
+                print("  마이그레이션: 거래처마스터.역발행 컬럼 이미 존재 (건너뜀)")
 
 
 def main():

@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { 자재단가행 } from "@/components/Dashboard";
+import { 계산_드롭다운위치, type DropdownPos } from "@/lib/dropdownPosition";
 
 type 매칭자재입력 = { 자재코드: string; 자재명: string };
 type 자재후보 = { 자재코드: number | null; 자재명: string | null; 자재종류: string };
@@ -72,27 +73,6 @@ function 매칭키(m: 매칭자재입력): string | null {
   if (m.자재코드.trim()) return `code:${m.자재코드.trim()}`;
   if (m.자재명.trim()) return `name:${m.자재명.trim()}`;
   return null;
-}
-
-type DropdownPos =
-  | { placement: "below"; top: number; left: number; width: number; maxHeight: number }
-  | { placement: "above"; bottom: number; left: number; width: number; maxHeight: number };
-
-// 입력칸 기준 드롭다운을 아래/위 중 어디에 띄울지 계산(2026-08-16, 실사용 제보 — 화면 아래쪽에 있는
-// 입력칸에서 열면 목록이 브라우저 창 밑으로 잘려 안 보이던 문제). 아래쪽 여유 공간이 목록 높이(또는
-// 위쪽 공간)보다 충분하면 아래로, 아니면 위로 뒤집고, 어느 쪽이든 실제 남은 공간을 넘지 않도록
-// max-height를 그때그때 다시 계산한다.
-function 계산_드롭다운위치(el: HTMLInputElement): DropdownPos {
-  const r = el.getBoundingClientRect();
-  const 여백 = 8;
-  const 기본최대높이 = 192; // Tailwind max-h-48과 동일
-  const 아래공간 = window.innerHeight - r.bottom - 여백;
-  const 위공간 = r.top - 여백;
-  const 아래로 = 아래공간 >= 기본최대높이 || 아래공간 >= 위공간;
-  const maxHeight = Math.max(80, Math.min(기본최대높이, 아래로 ? 아래공간 : 위공간));
-  return 아래로
-    ? { placement: "below", top: r.bottom + 4, left: r.left, width: r.width, maxHeight }
-    : { placement: "above", bottom: window.innerHeight - r.top + 4, left: r.left, width: r.width, maxHeight };
 }
 
 // 매칭 자재 한 줄 — 자재명 입력칸에 실제 운영통계자료·자재사용현황에 등장한 자재 후보를 드롭다운으로

@@ -35,6 +35,13 @@ const Row = memo(function Row({ row: r, checked, onToggle, onEdit }: RowProps) {
       <td className="px-3 py-1.5 text-gray-700 dark:text-gray-300">{r.사업자등록번호}</td>
       <td className="px-3 py-1.5 text-gray-700 dark:text-gray-300">{r.수신이메일}</td>
       <td className="px-3 py-1.5 text-gray-700 dark:text-gray-300">{r.비고}</td>
+      <td className="px-3 py-1.5">
+        {r.역발행 && (
+          <span className="rounded border border-purple-300 px-1.5 py-0.5 text-xs text-purple-700 dark:border-purple-700 dark:text-purple-400">
+            역발행
+          </span>
+        )}
+      </td>
       <td className="px-3 py-1.5 text-gray-500 dark:text-gray-400">{r.등록일}</td>
       <td className="px-3 py-1.5 text-gray-500 dark:text-gray-400">{r.수정일}</td>
       <td className="px-3 py-1.5">
@@ -73,6 +80,7 @@ export default function ClientMasterTable({ rows, selected, onToggleRow, onToggl
             <th className="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-300">사업자등록번호</th>
             <th className="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-300">수신이메일</th>
             <th className="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-300">비고</th>
+            <th className="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-300">역발행</th>
             <th className="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-300">등록일</th>
             <th className="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-300">수정일</th>
             <th className="px-3 py-2" />
@@ -84,7 +92,7 @@ export default function ClientMasterTable({ rows, selected, onToggleRow, onToggl
           ))}
           {rows.length === 0 && (
             <tr>
-              <td colSpan={8} className="px-3 py-6 text-center text-xs text-gray-400">
+              <td colSpan={9} className="px-3 py-6 text-center text-xs text-gray-400">
                 등록된 거래처가 없습니다.
               </td>
             </tr>

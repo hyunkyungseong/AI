@@ -42,7 +42,14 @@ const Row = memo(function Row({ row: r, index, checked, onToggle }: RowProps) {
       <td className="px-3 py-1.5 text-gray-700 dark:text-gray-300">{r.담당자}</td>
       <td className="px-3 py-1.5 text-gray-900 dark:text-gray-100">{r.의뢰서번호}</td>
       <td className="px-3 py-1.5 text-gray-700 dark:text-gray-300">{r.사업부}</td>
-      <td className="px-3 py-1.5 text-gray-900 dark:text-gray-100">{r.거래처명}</td>
+      <td className="px-3 py-1.5 text-gray-900 dark:text-gray-100">
+        {r.거래처명}
+        {r.역발행 && (
+          <span className="ml-1.5 rounded border border-purple-300 px-1 text-xs text-purple-700 dark:border-purple-700 dark:text-purple-400">
+            역발행
+          </span>
+        )}
+      </td>
       <td className="px-3 py-1.5 text-gray-700 dark:text-gray-300">{r.업무명}</td>
       <td className="px-3 py-1.5 text-gray-700 dark:text-gray-300">{r.업무명상세}</td>
       <td className="px-3 py-1.5 text-gray-700 dark:text-gray-300">{r.작업일자}</td>

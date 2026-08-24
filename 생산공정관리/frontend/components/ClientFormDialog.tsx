@@ -12,7 +12,10 @@ type Props = {
   taskRows: 운영통계행[]; // 거래처명 자동완성 후보 추출용(표시는 안 함) — PricingFormDialog.tsx와 동일 패턴
   onClose: () => void;
   onCreated: (row: 거래처행) => void;
-  onUpdated: (거래처명: string, patch: Pick<거래처행, "사업자등록번호" | "수신이메일" | "비고" | "수정일">) => void;
+  onUpdated: (
+    거래처명: string,
+    patch: Pick<거래처행, "사업자등록번호" | "수신이메일" | "비고" | "역발행" | "수정일">
+  ) => void;
 };
 
 const 이메일형식 = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -43,6 +46,8 @@ export default function ClientFormDialog({
   const [사업자등록번호, set사업자등록번호] = useState(initial?.사업자등록번호 ?? "");
   const [수신이메일, set수신이메일] = useState(initial?.수신이메일 ?? "");
   const [비고, set비고] = useState(initial?.비고 ?? "");
+  // 역발행(2026-08-24) — 신규 등록 시 기본값은 항상 비워둠(체크 안 함), 요청사항과 일치.
+  const [역발행, set역발행] = useState(initial?.역발행 ?? false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -84,7 +89,7 @@ export default function ClientFormDialog({
         const res = await fetch("/api/client-create", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ 거래처명: 이름, 사업자등록번호, 수신이메일, 비고 }),
+          body: JSON.stringify({ 거래처명: 이름, 사업자등록번호, 수신이메일, 비고, 역발행 }),
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
@@ -92,12 +97,12 @@ export default function ClientFormDialog({
           return;
         }
         const 오늘 = new Date().toISOString().slice(0, 10);
-        onCreated({ 거래처명: 이름, 사업자등록번호, 수신이메일, 비고, 등록일: 오늘, 수정일: 오늘 });
+        onCreated({ 거래처명: 이름, 사업자등록번호, 수신이메일, 비고, 역발행, 등록일: 오늘, 수정일: 오늘 });
       } else {
         const res = await fetch("/api/client-update", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ 거래처명: initial!.거래처명, 사업자등록번호, 수신이메일, 비고 }),
+          body: JSON.stringify({ 거래처명: initial!.거래처명, 사업자등록번호, 수신이메일, 비고, 역발행 }),
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
@@ -105,7 +110,7 @@ export default function ClientFormDialog({
           return;
         }
         const 오늘 = new Date().toISOString().slice(0, 10);
-        onUpdated(initial!.거래처명, { 사업자등록번호, 수신이메일, 비고, 수정일: 오늘 });
+        onUpdated(initial!.거래처명, { 사업자등록번호, 수신이메일, 비고, 역발행, 수정일: 오늘 });
       }
     } catch {
       setError("서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.");
@@ -162,6 +167,10 @@ export default function ClientFormDialog({
           <label className={label}>
             비고
             <textarea value={비고} onChange={(e) => set비고(e.target.value)} rows={2} className={input} />
+          </label>
+          <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+            <input type="checkbox" checked={역발행} onChange={(e) => set역발행(e.target.checked)} />
+            역발행 (고객사가 거래명세서를 역으로 발행하는 거래처)
           </label>
         </div>
 

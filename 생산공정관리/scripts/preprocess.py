@@ -39,6 +39,13 @@ def load_자재_raw():
     자재df["업무의뢰서번호"] = 자재df["업무의뢰서번호"].astype(int)
     자재df["작업내역서번호"] = 자재df["작업내역서번호"].astype(int)
     자재df["작업일자"] = pd.to_datetime(자재df["작업일자"]).dt.strftime("%Y-%m-%d")
+
+    # 자재종류가 비어있는 행은 DB(자재사용현황.자재종류 NOT NULL)에 저장할 수 없어 제외
+    결측 = 자재df["자재종류"].isna()
+    if 결측.any():
+        print(f"  [load_자재_raw] 자재종류 결측 {결측.sum()}건 제외")
+        자재df = 자재df[~결측]
+
     return 자재df
 
 
