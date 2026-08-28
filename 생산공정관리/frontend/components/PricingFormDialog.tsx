@@ -26,6 +26,9 @@ type Props = {
       | "용지제작단가"
       | "봉투제작단가"
       | "삽지제작단가"
+      | "용지제작무상"
+      | "봉투제작무상"
+      | "삽지제작무상"
       | "각대대봉투단가"
       | "각대대봉투봉입단가"
       | "부가세구분"
@@ -68,6 +71,17 @@ const 가격필드목록: { key: 가격필드; label: string }[] = [
   { key: "삽지제작단가", label: "삽지제작단가(원)" },
   { key: "각대대봉투단가", label: "각대대봉투단가(원)" },
 ];
+
+// 재료비 무상(2026-08-25) — 용지제작단가·봉투제작단가·삽지제작단가와, 그 재료의 개별 단가를
+// 등록하는 PricingMaterialSection.tsx의 "코드" 사이의 대응 관계. 무상 체크 시 해당 코드의 자재별
+// 단가 신규 등록을 막고(정방향), 그 코드로 이미 등록된 자재단가가 있으면 무상 체크를 막는다
+// (역방향) — 기본이 무상인데 특정 자재만 유상으로 등록되는 모순 방지. 상세:
+// `.claude/plans/plan_재료비_무상표시.md`.
+const 무상필드_코드맵: Record<"용지제작단가" | "봉투제작단가" | "삽지제작단가", 자재단가행["코드"]> = {
+  용지제작단가: "출력자재비",
+  봉투제작단가: "봉입자재비",
+  삽지제작단가: "삽지비",
+};
 
 // 각대대봉투단가는 계산에서 더 이상 쓰이지 않는다(2026-08-17 — 큰 봉투도 그냥 "봉투제작단가" 밑에
 // 자재단가(PricingMaterialSection)로 등록하는 방식으로 통합, 상세:
@@ -118,7 +132,26 @@ export default function PricingFormDialog({
   // 물리적 "장 수" 그대로 청구할지 — 거래처와의 계약 조건. 기본값 "페이지기준"은 지금까지의 유일한
   // 동작과 동일(회귀 없음). 인쇄면(단면/양면) 자체는 자재별 단가 등록에서도 따로 설정 가능해짐.
   const [청구단위, set청구단위] = useState<"페이지기준" | "장수기준">(initial?.청구단위 ?? "페이지기준");
+  // 재료비 무상(2026-08-25) — 대부분 유상이라 기본값은 항상 미체크(신규 등록 시 initial이 없어
+  // 자동으로 false). 상세: `.claude/plans/plan_재료비_무상표시.md`.
+  const [용지제작무상, set용지제작무상] = useState(initial?.용지제작무상 ?? false);
+  const [봉투제작무상, set봉투제작무상] = useState(initial?.봉투제작무상 ?? false);
+  const [삽지제작무상, set삽지제작무상] = useState(initial?.삽지제작무상 ?? false);
   const [비고, set비고] = useState(initial?.비고 ?? "");
+
+  // 역방향 차단: 이미 등록된 자재별 단가가 있는 코드는 무상 체크박스를 비활성화한다(2026-08-25).
+  const 기존자재코드셋 = useMemo(
+    () => new Set((initial?.자재단가목록 ?? []).map((r) => r.코드)),
+    [initial]
+  );
+  // 정방향 차단: 지금 체크된 무상 필드에 대응하는 코드는 PricingMaterialSection의 등록 대상에서 뺀다.
+  const 무상차단코드 = useMemo(() => {
+    const set = new Set<자재단가행["코드"]>();
+    if (용지제작무상) set.add(무상필드_코드맵.용지제작단가);
+    if (봉투제작무상) set.add(무상필드_코드맵.봉투제작단가);
+    if (삽지제작무상) set.add(무상필드_코드맵.삽지제작단가);
+    return set;
+  }, [용지제작무상, 봉투제작무상, 삽지제작무상]);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -160,6 +193,9 @@ export default function PricingFormDialog({
           업무명: 업무명.trim() || null,
           작업명: 작업명.trim() || null,
           ...Object.fromEntries(가격필드목록.map(({ key }) => [key, 숫자값(key)])),
+          용지제작무상,
+          봉투제작무상,
+          삽지제작무상,
           부가세구분,
           인쇄면,
           청구단위,
@@ -189,6 +225,9 @@ export default function PricingFormDialog({
           용지제작단가: 숫자값("용지제작단가"),
           봉투제작단가: 숫자값("봉투제작단가"),
           삽지제작단가: 숫자값("삽지제작단가"),
+          용지제작무상,
+          봉투제작무상,
+          삽지제작무상,
           각대대봉투단가: 숫자값("각대대봉투단가"),
           부가세구분,
           인쇄면,
@@ -203,6 +242,9 @@ export default function PricingFormDialog({
         const payload = {
           id: initial!.id,
           ...Object.fromEntries(가격필드목록.map(({ key }) => [key, 숫자값(key)])),
+          용지제작무상,
+          봉투제작무상,
+          삽지제작무상,
           부가세구분,
           인쇄면,
           청구단위,
@@ -228,6 +270,9 @@ export default function PricingFormDialog({
           용지제작단가: 숫자값("용지제작단가"),
           봉투제작단가: 숫자값("봉투제작단가"),
           삽지제작단가: 숫자값("삽지제작단가"),
+          용지제작무상,
+          봉투제작무상,
+          삽지제작무상,
           각대대봉투단가: 숫자값("각대대봉투단가"),
           부가세구분,
           인쇄면,
@@ -299,22 +344,54 @@ export default function PricingFormDialog({
               SKILL-08 관례와 동일). onFocus만으론 이미 포커스된 입력을 다시 클릭했을 때
               재적용이 안 되므로(EditableCombo.tsx에서 실측으로 확인된 것과 동일한 이유)
               onClick에도 같이 건다. */}
-          {표시_가격필드목록.map(({ key, label: 필드라벨 }) => (
-            <label key={key} className={label}>
-              {필드라벨}
-              <input
-                type="number"
-                min={0}
-                step="0.01"
-                value={가격[key]}
-                onChange={(e) => set가격((prev) => ({ ...prev, [key]: e.target.value }))}
-                onFocus={(e) => e.target.select()}
-                onClick={(e) => e.currentTarget.select()}
-                placeholder="0.00"
-                className={input}
-              />
-            </label>
-          ))}
+          {표시_가격필드목록.map(({ key, label: 필드라벨 }) => {
+            // 재료비 무상(2026-08-25) — 용지/봉투/삽지제작단가 3개 필드에만 체크박스를 붙인다.
+            const 무상필드 =
+              key === "용지제작단가" || key === "봉투제작단가" || key === "삽지제작단가" ? key : null;
+            const 무상상태 =
+              무상필드 === "용지제작단가"
+                ? { checked: 용지제작무상, set: set용지제작무상 }
+                : 무상필드 === "봉투제작단가"
+                  ? { checked: 봉투제작무상, set: set봉투제작무상 }
+                  : 무상필드 === "삽지제작단가"
+                    ? { checked: 삽지제작무상, set: set삽지제작무상 }
+                    : null;
+            const 자재등록됨 = 무상필드 ? 기존자재코드셋.has(무상필드_코드맵[무상필드]) : false;
+            return (
+              <label key={key} className={label}>
+                {필드라벨}
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={가격[key]}
+                  onChange={(e) => set가격((prev) => ({ ...prev, [key]: e.target.value }))}
+                  onFocus={(e) => e.target.select()}
+                  onClick={(e) => e.currentTarget.select()}
+                  placeholder="0.00"
+                  className={input}
+                />
+                {무상상태 && (
+                  <span
+                    className="mt-1 flex items-center gap-1 text-xs font-normal text-gray-500 dark:text-gray-400"
+                    title={
+                      자재등록됨
+                        ? "이미 등록된 자재별 단가가 있어 무상으로 설정할 수 없습니다 — 먼저 삭제해 주세요"
+                        : undefined
+                    }
+                  >
+                    <input
+                      type="checkbox"
+                      checked={무상상태.checked}
+                      disabled={자재등록됨}
+                      onChange={(e) => 무상상태.set(e.target.checked)}
+                    />
+                    무상(고객사 제공)
+                  </span>
+                )}
+              </label>
+            );
+          })}
 
           <label className={`${label} col-span-2`}>
             부가세
@@ -394,6 +471,7 @@ export default function PricingFormDialog({
               작업명={initial.작업명}
               rows={initial.자재단가목록}
               onChange={(rows) => onMaterialPricesChanged(initial.id, rows)}
+              무상차단코드={무상차단코드}
             />
           ) : (
             <p className="col-span-2 text-xs text-gray-400">

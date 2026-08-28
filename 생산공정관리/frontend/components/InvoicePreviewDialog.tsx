@@ -977,10 +977,16 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
                       <td className={td}>
                         {row.품목}
                         {row.작업명 && <span className="text-gray-500 dark:text-gray-400">({row.작업명})</span>}
-                        {row.자재명 && (
-                          <span className="text-blue-600 dark:text-blue-400" title="자재단가로 분할된 항목">
+                        {/* 자재명(자재단가 분할)과 공정비고(공정단가 등록 시 입력한 메모, 2026-08-24)는
+                            한 품목에 동시에 붙지 않아(자재단가 항목 vs 공정단가 항목) 같은 자리·스타일을
+                            공유한다 — 사용자 요청: "자재명과 완전히 같은 자리·스타일". */}
+                        {(row.자재명 || row.공정비고) && (
+                          <span
+                            className="text-blue-600 dark:text-blue-400"
+                            title={row.자재명 ? "자재단가로 분할된 항목" : "공정단가 등록 시 입력한 비고"}
+                          >
                             {" "}
-                            · {row.자재명}
+                            · {row.자재명 || row.공정비고}
                           </span>
                         )}
                       </td>

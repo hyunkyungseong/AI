@@ -15,6 +15,10 @@ type Props = {
   작업명: string; // 빈 문자열이면 "업무 기본단가" — 후보 조회 시 넘기지 않음
   rows: 자재단가행[];
   onChange: (rows: 자재단가행[]) => void;
+  // 무상차단코드(2026-08-25) — 상위 단가마스터에서 재료비(용지/봉투/삽지)를 "무상(고객사 제공)"으로
+  // 체크한 코드는 새로 자재단가를 등록하지 못하게 막는다(기본이 무상인데 특정 자재만 유상으로
+  // 등록되는 모순 방지). 지금 폼에 이미 선택돼 있는 코드(수정 중인 기존 행 등)는 예외로 계속 보임.
+  무상차단코드?: Set<자재단가행["코드"]>;
 };
 
 const inputCls =
@@ -230,6 +234,7 @@ export default function PricingMaterialSection({
   작업명,
   rows,
   onChange,
+  무상차단코드,
 }: Props) {
   const [editing, setEditing] = useState<number | "new" | null>(null);
   const [코드, set코드] = useState<자재단가행["코드"]>("출력자재비");
@@ -301,6 +306,14 @@ export default function PricingMaterialSection({
   const 코드필터후보목록 = useMemo(
     () => 후보목록.filter((c) => c.자재종류 === 코드_자재종류맵[코드]),
     [후보목록, 코드]
+  );
+
+  // 무상차단코드(2026-08-25) — 상위 단가마스터가 그 코드를 "무상"으로 체크했으면 선택지에서 뺀다.
+  // 지금 폼에 이미 선택된 값(수정 중인 기존 행 등)은 예외로 계속 보여준다(기존 데이터를 깨지 않기
+  // 위함, PricingProcessSection.tsx의 미등록옵션() 자기 자신 포함 패턴과 동일).
+  const 필터된코드옵션 = useMemo(
+    () => 코드옵션.filter((c) => !무상차단코드?.has(c.value) || c.value === 코드),
+    [코드, 무상차단코드]
   );
 
   // 같은 "항목"(코드) 안에서 이미 다른 자재단가 행에 매칭돼 있는 자재는 후보에서 뺀다(2026-08-16
@@ -575,7 +588,7 @@ export default function PricingMaterialSection({
                 onChange={(e) => set코드(e.target.value as 자재단가행["코드"])}
                 className={`mt-1 w-full ${inputCls}`}
               >
-                {코드옵션.map((c) => (
+                {필터된코드옵션.map((c) => (
                   <option key={c.value} value={c.value}>
                     {c.label}
                   </option>

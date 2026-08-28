@@ -153,6 +153,9 @@ def get_db():
             용지제작단가        DECIMAL(10,2) DEFAULT 0,
             봉투제작단가        DECIMAL(10,2) DEFAULT 0,
             삽지제작단가        DECIMAL(10,2) DEFAULT 0,
+            용지제작무상        TINYINT(1) DEFAULT 0,
+            봉투제작무상        TINYINT(1) DEFAULT 0,
+            삽지제작무상        TINYINT(1) DEFAULT 0,
             각대대봉투단가      DECIMAL(10,2) DEFAULT 0,
             각대대봉투봉입단가  DECIMAL(10,2) DEFAULT 0,
             부가세구분          ENUM('포함','별도') DEFAULT '별도',
@@ -679,6 +682,17 @@ def migrate():
                 print("  마이그레이션: 거래처마스터.역발행 컬럼 추가 완료(기존 행 전부 0으로 채워짐)")
             else:
                 print("  마이그레이션: 거래처마스터.역발행 컬럼 이미 존재 (건너뜀)")
+
+            # 2026-08-25 — 재료비(용지·봉투·삽지) "무상(고객사 제공)" 표시. 고객사가 자재를 직접
+            # 제공해 원래부터 무상인 항목을, "단가 등록을 깜빡한 실수"로 오판해 단가미등록 경고를
+            # 띄우던 오탐을 막기 위함(의뢰서 97531 제보) — 상세:
+            # `.claude/plans/plan_재료비_무상표시.md`. 기존 행은 DEFAULT 0(유상)으로 채워져 회귀 없음.
+            for 컬럼 in ("용지제작무상", "봉투제작무상", "삽지제작무상"):
+                if not _컬럼_존재(cur, "단가마스터", 컬럼):
+                    cur.execute(f"ALTER TABLE 단가마스터 ADD COLUMN {컬럼} TINYINT(1) DEFAULT 0")
+                    print(f"  마이그레이션: 단가마스터.{컬럼} 컬럼 추가 완료(기존 행 전부 0으로 채워짐)")
+                else:
+                    print(f"  마이그레이션: 단가마스터.{컬럼} 컬럼 이미 존재 (건너뜀)")
 
 
 def main():

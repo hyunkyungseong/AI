@@ -207,10 +207,7 @@ export default function PricingProcessSection({ 단가마스터_id, rows, onChan
                 disabled={typeof editing === "number"}
                 className={`mt-1 w-full ${inputCls} disabled:opacity-60`}
               >
-                {(typeof editing === "number"
-                  ? [{ value: 공정코드, label: 공정코드 }, ...옵션목록]
-                  : 옵션목록
-                ).map((c) => (
+                {옵션목록.map((c) => (
                   <option key={c.value} value={c.value}>
                     {c.label}
                   </option>
