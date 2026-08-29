@@ -861,7 +861,9 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
               ⚠ 장수·봉입건수와 실제 자재사용량이 다른 작업이 있습니다 — 자재사용량 기준으로
               청구됩니다(생산공정관리시스템 입력 오류로 추정, 다음 작업 등록 시 확인해 주세요).
             </p>
-            <ul className="mt-1 list-disc space-y-0.5 pl-4">
+            {/* 경고 항목이 많으면 목록이 무한정 늘어나 아래 취소·확정 버튼까지 화면 밖으로 밀어내던
+                문제(2026-08-29, 실사용 제보) — 목록만 높이 제한 + 자체 스크롤로 분리. */}
+            <ul className="mt-1 max-h-32 list-disc space-y-0.5 overflow-y-auto pl-4">
               {data.수량불일치.map((x, i) => (
                 <li key={i}>
                   {x.작업명}: {x.사유}
@@ -880,7 +882,9 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
               ⚠ 단가가 등록되지 않아 원본 표에 빠진 품목이 있습니다 — 단가마스터에 단가를 등록하면
               반영됩니다. 확정 시 다시 한번 확인창이 뜹니다.
             </p>
-            <ul className="mt-1 list-disc space-y-0.5 pl-4">
+            {/* 경고 항목이 많으면 목록이 무한정 늘어나 아래 취소·확정 버튼까지 화면 밖으로 밀어내던
+                문제(2026-08-29, 실사용 제보) — 목록만 높이 제한 + 자체 스크롤로 분리. */}
+            <ul className="mt-1 max-h-32 list-disc space-y-0.5 overflow-y-auto pl-4">
               {단가미등록그룹.map(([이름, v]) => (
                 <li key={이름}>
                   {이름} — {v.수량.toLocaleString()}

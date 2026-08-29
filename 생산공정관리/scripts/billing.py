@@ -841,6 +841,24 @@ def generate_거래명세서_excel(df_all, 단가맵, 자재map, 의뢰서번호
     return write_거래명세서_excel(품목행목록, 표시_공급가액, 표시_세액, 거래처명, ", ".join(업무명_목록), 발행일, 담당자)
 
 
+def _esc(text):
+    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _set_num(xml, ref, value):
+    s_m = re.search(rf'<c r="{ref}"([^>]*?)/?>', xml)
+    s_attr = re.search(r's="(\d+)"', s_m.group(1)).group(0) if s_m else ''
+    new = f'<c r="{ref}" {s_attr}><v>{value}</v></c>'
+    return re.sub(rf'<c r="{ref}"[^>]*?(?:/>|>.*?</c>)', new, xml, count=1, flags=re.DOTALL)
+
+
+def _set_str(xml, ref, text):
+    s_m = re.search(rf'<c r="{ref}"([^>]*?)/?>', xml)
+    s_attr = re.search(r's="(\d+)"', s_m.group(1)).group(0) if s_m else ''
+    new = f'<c r="{ref}" {s_attr} t="inlineStr"><is><t>{_esc(text)}</t></is></c>'
+    return re.sub(rf'<c r="{ref}"[^>]*?(?:/>|>.*?</c>)', new, xml, count=1, flags=re.DOTALL)
+
+
 def write_거래명세서_excel(품목행목록, 총합계, 세액, 거래처명, 업무명, 발행일, 담당자=None):
     """정렬행_원본목록() 반환 형식(또는 동일 형식으로 재구성한 편집/규칙 적용 결과)을 받아
     실제 xlsx 바이트를 만든다. generate_거래명세서_excel()과 GET /거래명세서엑셀/{no}(편집된
@@ -856,21 +874,6 @@ def write_거래명세서_excel(품목행목록, 총합계, 세액, 거래처명
     추가행수 = max(0, len(품목행목록) - 기본_품목행수)
 
     # ── zipfile로 템플릿 복사 → sheet2.xml 가변 셀 교체 → bytes 반환 ──
-    def _esc(text):
-        return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-    def _set_num(xml, ref, value):
-        s_m = re.search(rf'<c r="{ref}"([^>]*?)/?>', xml)
-        s_attr = re.search(r's="(\d+)"', s_m.group(1)).group(0) if s_m else ''
-        new = f'<c r="{ref}" {s_attr}><v>{value}</v></c>'
-        return re.sub(rf'<c r="{ref}"[^>]*?(?:/>|>.*?</c>)', new, xml, count=1, flags=re.DOTALL)
-
-    def _set_str(xml, ref, text):
-        s_m = re.search(rf'<c r="{ref}"([^>]*?)/?>', xml)
-        s_attr = re.search(r's="(\d+)"', s_m.group(1)).group(0) if s_m else ''
-        new = f'<c r="{ref}" {s_attr} t="inlineStr"><is><t>{_esc(text)}</t></is></c>'
-        return re.sub(rf'<c r="{ref}"[^>]*?(?:/>|>.*?</c>)', new, xml, count=1, flags=re.DOTALL)
-
     def _insert_extra_item_rows(xml, n_extra):
         """29행 뒤에 품목 행 n_extra개를 복제 삽입하고, 30행 이후(소계·합계·코드표 등)를 n_extra만큼 아래로 민다.
         복제 원본은 20행(A열·글꼴이 표준인 "정상" 품목 행) — 29행은 A열 셀이 없고 글꼴도 달라 복제 원본으로 부적합."""
@@ -1059,10 +1062,44 @@ def write_거래명세서_excel(품목행목록, 총합계, 세액, 거래처명
         return f.read()
 
 
+def _요청내용_채우기(file_map, 표지정보):
+    """file_map(zip 경로→bytes dict)의 xl/worksheets/sheet1.xml("요청내용" 표지)을 실제 발행된
+    거래명세서 값으로 채운다(2026-08-29). in-place로 file_map을 수정하며 반환값 없음.
+
+    표지정보 키: 거래명세서번호·거래처명·사업자등록번호·발행일(date)·품목·공급가액·세액·합계·
+    수신이메일(거래처마스터.수신이메일 — 내부 계정 담당자 이메일이 아니라 거래처 수신처
+    이메일, 2026-08-29 사용자 확인)·비고(호출부가 "시트참조(...)" 형태로 조립).
+
+    C8(합계)은 템플릿 원본의 SUM(C6:C7) 수식 대신 리터럴 숫자로 쓴다 — write_거래명세서_excel()이
+    다른 합계성 셀도 전부 리터럴로 쓰고 워크북 재계산에 의존하지 않는 것과 동일한 관례이며,
+    거래명세서.합계(이미 화면 표시값·override 반영)를 그대로 써야 C6+C7 재계산과 어긋나지 않는다.
+
+    C9(담당자이메일) — 원본 템플릿에 걸려있던 죽은 mailto 하이퍼링크를 제거해 실제 값과 표시가
+    어긋나지 않도록 한다."""
+    xml = file_map["xl/worksheets/sheet1.xml"].decode("utf-8")
+
+    xml = re.sub(r'<hyperlinks>.*?</hyperlinks>', '', xml, flags=re.DOTALL)
+
+    xml = _set_str(xml, "C2", 표지정보.get("사업자등록번호") or "")
+    xml = _set_str(xml, "C3", 표지정보.get("거래처명") or "")
+    xml = _set_str(xml, "C4", 표지정보["발행일"].strftime("%Y-%m-%d"))
+    xml = _set_str(xml, "C5", 표지정보.get("품목") or "")
+    xml = _set_num(xml, "C6", round(float(표지정보.get("공급가액") or 0)))
+    xml = _set_num(xml, "C7", round(float(표지정보.get("세액") or 0)))
+    xml = _set_num(xml, "C8", round(float(표지정보.get("합계") or 0)))
+    xml = _set_str(xml, "C9", 표지정보.get("수신이메일") or "")
+    xml = _set_str(xml, "C10", 표지정보.get("비고") or "")
+    xml = _set_str(xml, "C11", 표지정보.get("거래명세서번호") or "")
+
+    file_map["xl/worksheets/sheet1.xml"] = xml.encode("utf-8")
+
+
 def _rename_single_sheet(엑셀바이트, 새이름):
     """표지(sheet1)+데이터(sheet2) 2시트 구조는 그대로 두고, 데이터 시트의 탭 이름만 바꾼다
     (2026-08-12). combine_거래명세서_시트들()이 시트가 1개뿐이라 여러 워크북을 합칠 필요가 없을
-    때도, 작업구분(조) 우선·없으면 "거래처명(업무명)" 시트명 규칙을 그대로 적용하기 위해 사용."""
+    때도, 작업구분(조) 우선·없으면 "거래처명(업무명)" 시트명 규칙을 그대로 적용하기 위해 사용.
+    zip 재포장은 호출부가 담당한다(file_map, 안전이름) 튜플 반환 — 표지 채우기까지 마친 뒤 한
+    번만 zip으로 묶기 위함(2026-08-29)."""
     with zipfile.ZipFile(io.BytesIO(엑셀바이트)) as z:
         file_map = {name: z.read(name) for name in z.namelist()}
 
@@ -1086,18 +1123,19 @@ def _rename_single_sheet(엑셀바이트, 새이름):
         wb_xml = wb_xml.replace(f"'{old_name}'!", f"'{안전이름_esc}'!")
         file_map["xl/workbook.xml"] = wb_xml.encode("utf-8")
 
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zout:
-        for name, data in file_map.items():
-            zout.writestr(name, data)
-    return buf.getvalue()
+    return file_map, 안전이름
 
 
-def combine_거래명세서_시트들(시트_목록):
+def combine_거래명세서_시트들(시트_목록, 표지정보=None):
     """write_거래명세서_excel()이 만든 완성된 단일-데이터-시트 xlsx(표지 sheet1 + 데이터 sheet2)를
-    여러 개 [(엑셀바이트, 시트명), ...] 로 받아, 표지 시트("요청내용")·셀 코멘트(comments1.xml)·
-    vmlDrawing은 통합본에서 제외하고 데이터 시트만 하나의 워크북에 이어붙인 xlsx bytes를 반환한다
-    (거래명세서 조별 분할발급, 2026-07-29 — `.claude/plans/plan_거래명세서_조별분할발급_통합엑셀.md`).
+    여러 개 [(엑셀바이트, 시트명), ...] 로 받아, 데이터 시트를 하나의 워크북에 이어붙인 xlsx
+    bytes를 반환한다(거래명세서 조별 분할발급, 2026-07-29 —
+    `.claude/plans/plan_거래명세서_조별분할발급_통합엑셀.md`).
+
+    표지정보(2026-08-29, 선택 인자) — dict(거래명세서번호·거래처명·사업자등록번호·발행일·품목·
+    공급가액·세액·합계·수신이메일, "비고"는 이 함수가 자동으로 채움)를 주면 표지 시트("요청내용")를
+    실제 값으로 채워 최종 워크북 맨 앞에 포함시킨다. None이면(기본값, 레거시 `묶음번호` 경로 등)
+    기존과 완전히 동일하게 표지를 제거한다 — 회귀 없음.
 
     모든 입력 파일이 같은 템플릿(거래명세서_템플릿_base.xlsx)·같은 직인 이미지에서 나온다는 전제로,
     styles.xml·sharedStrings.xml·theme·직인 이미지·printerSettings는 전부 첫 파일(컨테이너) 것을
@@ -1107,9 +1145,28 @@ def combine_거래명세서_시트들(시트_목록):
         if not 시트_목록:
             return None
         엑셀바이트, 시트명 = 시트_목록[0]
-        # 시트명이 있으면(2026-08-12부터 호출부가 항상 채워 보냄) 표지+데이터 구조는 그대로 두고
-        # 데이터 시트 탭 이름만 반영, 없으면(과거 코드 경로 호환) 템플릿 원본 이름 그대로 반환.
-        return _rename_single_sheet(엑셀바이트, 시트명) if 시트명 else 엑셀바이트
+
+        if not 시트명 and 표지정보 is None:
+            # 기존과 완전히 동일한 패스스루(회귀 없음, 과거 코드 경로 호환)
+            return 엑셀바이트
+
+        if 시트명:
+            # 시트명이 있으면(2026-08-12부터 호출부가 항상 채워 보냄) 표지+데이터 구조는 그대로
+            # 두고 데이터 시트 탭 이름만 반영.
+            file_map, 최종이름 = _rename_single_sheet(엑셀바이트, 시트명)
+        else:
+            with zipfile.ZipFile(io.BytesIO(엑셀바이트)) as z:
+                file_map = {name: z.read(name) for name in z.namelist()}
+            최종이름 = None
+
+        if 표지정보 is not None:
+            _요청내용_채우기(file_map, {**표지정보, "비고": f"시트참조({최종이름 or '명세서'})"})
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zout:
+            for name, data in file_map.items():
+                zout.writestr(name, data)
+        return buf.getvalue()
 
     file_maps = []
     for 엑셀바이트, _ in 시트_목록:
@@ -1156,24 +1213,36 @@ def combine_거래명세서_시트들(시트_목록):
         )
         return m.group(1) if m else "$B$1:$N$31"
 
+    표지_유지 = 표지정보 is not None
+
     base = dict(file_maps[0])
-    for key in (
-        "xl/worksheets/sheet1.xml", "xl/worksheets/_rels/sheet1.xml.rels",
-        "xl/comments1.xml", "xl/drawings/vmlDrawing1.vml",
-        "xl/printerSettings/printerSettings1.bin",
-    ):
+    pop_keys = ["xl/comments1.xml", "xl/drawings/vmlDrawing1.vml"]
+    if not 표지_유지:
+        pop_keys += [
+            "xl/worksheets/sheet1.xml", "xl/worksheets/_rels/sheet1.xml.rels",
+            "xl/printerSettings/printerSettings1.bin",
+        ]
+    for key in pop_keys:
         base.pop(key, None)
 
     ct = base["[Content_Types].xml"].decode("utf-8")
-    ct = re.sub(r'<Override PartName="/xl/worksheets/sheet1\.xml"[^>]*/>', '', ct)
+    if not 표지_유지:
+        ct = re.sub(r'<Override PartName="/xl/worksheets/sheet1\.xml"[^>]*/>', '', ct)
     ct = re.sub(r'<Override PartName="/xl/comments1\.xml"[^>]*/>', '', ct)
 
     wb_xml = base["xl/workbook.xml"].decode("utf-8")
     wb_rels = base["xl/_rels/workbook.xml.rels"].decode("utf-8")
 
     sheet1_rel_m = re.search(r'<Relationship Id="(rId\d+)"[^>]*Target="worksheets/sheet1\.xml"[^>]*/>', wb_rels)
-    wb_rels = wb_rels.replace(sheet1_rel_m.group(0), '')
-    wb_xml = re.sub(rf'<sheet [^>]*r:id="{sheet1_rel_m.group(1)}"[^>]*/>', '', wb_xml, count=1)
+    sheet1_rid = sheet1_rel_m.group(1)
+    if 표지_유지:
+        # 표지 탭을 그대로 살려두고, 실제 탭 이름은 workbook.xml에서 읽어와 쓴다(템플릿이 나중에
+        # 바뀌어도 하드코딩 없이 안전) — <Relationship>/<sheet> 태그 제거는 하지 않는다.
+        표지_이름_m = re.search(rf'<sheet name="([^"]*)"[^>]*r:id="{sheet1_rid}"/>', wb_xml)
+        표지_이름 = 표지_이름_m.group(1) if 표지_이름_m else "요청내용"
+    else:
+        wb_rels = wb_rels.replace(sheet1_rel_m.group(0), '')
+        wb_xml = re.sub(rf'<sheet [^>]*r:id="{sheet1_rid}"[^>]*/>', '', wb_xml, count=1)
 
     data_rid = re.search(
         r'<Relationship Id="(rId\d+)"[^>]*Target="worksheets/sheet2\.xml"[^>]*/>', wb_rels
@@ -1183,11 +1252,17 @@ def combine_거래명세서_시트들(시트_목록):
     used_names = set()
     sheet_entries = []   # [(시트명, rid), ...] — <sheets> 재구성용
     print_areas = []     # [(localSheetId, 시트명, 범위), ...] — Print_Area 재구성용
+    if 표지_유지:
+        sheet_entries.append((표지_이름, sheet1_rid))
+    localSheetId_오프셋 = 1 if 표지_유지 else 0
+    첫_데이터탭_이름 = None
 
     for i, (엑셀바이트, 시트명) in enumerate(시트_목록):
         이름 = _safe_sheet_name(시트명 or f"시트{i+1}", used_names)
+        if i == 0:
+            첫_데이터탭_이름 = 이름
         범위 = _print_area_range(file_maps[i]["xl/workbook.xml"].decode("utf-8"))
-        print_areas.append((i, 이름, 범위))
+        print_areas.append((i + localSheetId_오프셋, 이름, 범위))
 
         own_sheet = file_maps[i]["xl/worksheets/sheet2.xml"].decode("utf-8")
         own_rels = file_maps[i]["xl/worksheets/_rels/sheet2.xml.rels"].decode("utf-8")
@@ -1225,6 +1300,9 @@ def combine_거래명세서_시트들(시트_목록):
         # drawing 파일 자체(내부 rId1/rId2)와 그 rels는 이름만 바꿔 그대로 복사하면 된다.
         base[f"xl/drawings/drawing{sheet_num}.xml"] = file_maps[i]["xl/drawings/drawing1.xml"]
         base[f"xl/drawings/_rels/drawing{sheet_num}.xml.rels"] = file_maps[i]["xl/drawings/_rels/drawing1.xml.rels"]
+
+    if 표지_유지:
+        _요청내용_채우기(base, {**표지정보, "비고": f"시트참조({첫_데이터탭_이름})"})
 
     sheets_block = "".join(
         f'<sheet name="{_xml_esc(name)}" sheetId="{1000 + idx}" r:id="{rid}"/>'
