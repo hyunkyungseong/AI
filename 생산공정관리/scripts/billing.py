@@ -1094,6 +1094,182 @@ def _요청내용_채우기(file_map, 표지정보):
     file_map["xl/worksheets/sheet1.xml"] = xml.encode("utf-8")
 
 
+# ── 조별표지(2026-08-30) — "요청내용" 다중블록 렌더링 ────────────────────────
+# 거래처마스터.조별표지=1인 거래처는 통합 명세서 대신 이 표지에 조별 부분합을 2개씩 가로로,
+# 3번째 조부터는 세로로(row-block 복제) 배치한다. 원본 왼쪽 블록(B/C열, row 2~11)이 유일한
+# "정상 원본"이고, 오른쪽 블록(E/F/G/H열)과 추가 row-block은 전부 이 원본을 그대로 복제해서
+# 만든다 — 새 스타일을 발명하지 않고 항상 검증된 원본을 재사용(SKILL-11 원칙).
+
+_CELL_RE = re.compile(r'<c r="([A-Z]+)(\d+)"([^>]*?)(?:/>|>(.*?)</c>)', flags=re.DOTALL)
+
+
+def _col_letter_to_num(letter):
+    n = 0
+    for ch in letter:
+        n = n * 26 + (ord(ch) - ord("A") + 1)
+    return n
+
+
+def _col_num_to_letter(n):
+    s = ""
+    while n > 0:
+        n, r = divmod(n - 1, 26)
+        s = chr(65 + r) + s
+    return s
+
+
+def _row_추출(xml, row_num):
+    """sheetData의 <row r="row_num">...</row> 원본 조각을 그대로 추출(없으면 None)."""
+    m = re.search(rf'<row r="{row_num}"[^>]*>.*?</row>', xml, flags=re.DOTALL)
+    return m.group(0) if m else None
+
+
+def _row_cells_이동(row_xml, new_row, col_shift=0):
+    """row XML 조각 하나에서 셀(<c>...</c>)들만 추출해, 새 행 번호(new_row)로 옮기고 col_shift만큼
+    열도 이동시킨 "셀 문자열"을 반환한다(<row> 래퍼 없음 — 왼쪽·오른쪽 블록의 셀을 한 행에
+    합치기 위해 래퍼는 호출부가 나중에 한 번만 씌운다). 셀 스타일(s=)·내용은 원본 그대로 보존."""
+    head_m = re.match(r'<row r="\d+"([^>]*)>', row_xml)
+    inner = row_xml[head_m.end():-len("</row>")]
+    cells = []
+    for cm in _CELL_RE.finditer(inner):
+        col, _row, attrs, content = cm.groups()
+        new_col = _col_num_to_letter(_col_letter_to_num(col) + col_shift)
+        if content is not None:
+            cells.append(f'<c r="{new_col}{new_row}"{attrs}>{content}</c>')
+        else:
+            cells.append(f'<c r="{new_col}{new_row}"{attrs}/>')
+    return "".join(cells)
+
+
+def _cells_셀_삽입(cells_xml, col, row_num, inner_xml):
+    """셀 문자열(<row> 래퍼 없음)에 원래 없던 셀(번호 열 등)을 열 오름차순 규칙을 지키며 새로
+    삽입한다."""
+    new_cell = f'<c r="{col}{row_num}">{inner_xml}</c>'
+    col_num = _col_letter_to_num(col)
+    for cm in _CELL_RE.finditer(cells_xml):
+        if _col_letter_to_num(cm.group(1)) > col_num:
+            return cells_xml[:cm.start()] + new_cell + cells_xml[cm.start():]
+    return cells_xml + new_cell
+
+
+def _row_감싸기(new_row, cells_xml, ht=None):
+    """셀 문자열을 <row> 태그로 감싸고, 실제 셀 범위에 맞는 spans를 계산해 붙인다."""
+    cols = [_col_letter_to_num(m.group(1)) for m in _CELL_RE.finditer(cells_xml)]
+    spans_attr = f' spans="{min(cols)}:{max(cols)}"' if cols else ""
+    ht_attr = f' ht="{ht}" customHeight="1"' if ht else ""
+    return f'<row r="{new_row}"{spans_attr}{ht_attr} x14ac:dyDescent="0.3">{cells_xml}</row>'
+
+
+def _요청내용_2블록_cols_확장(xml):
+    """A~H 2블록 구조에 맞게 <cols> 정의를 오른쪽 블록(E~H)까지 확장한다(최초 1회 구조 —
+    조 개수와 무관하게 항상 이 너비만 있으면 됨). 템플릿이 바뀌어 이 패턴을 못 찾으면 회귀를
+    조용히 넘기지 않고 바로 예외를 던진다."""
+    새_xml, n = re.subn(
+        r'<col min="4" max="16384" width="8.6640625" style="35"/>',
+        '<col min="4" max="5" width="8.6640625" style="35"/>'
+        '<col min="6" max="6" width="16.44140625" style="35" customWidth="1"/>'
+        '<col min="7" max="7" width="40.77734375" style="35" customWidth="1"/>'
+        '<col min="8" max="16384" width="8.6640625" style="35"/>',
+        xml,
+        count=1,
+    )
+    if n == 0:
+        raise ValueError(
+            "요청내용 표지 템플릿의 <cols> 구조가 예상과 달라 조별표지 다중블록 열 너비를 "
+            "확장할 수 없습니다 — 템플릿(data/거래명세서_템플릿_base.xlsx)이 변경되었는지 확인하세요"
+        )
+    return 새_xml
+
+
+def 읽기_시트2_셀(엑셀바이트, ref):
+    """개별 조 시트(xl/worksheets/sheet2.xml)에 실제로 write_거래명세서_excel()이 써넣은 셀 텍스트를
+    그대로 읽어온다(조별표지 표지 "품목" 필드용, 2026-08-30 — 예: B12=업무명). 코드가 별도로
+    재계산·재조합하지 않고 이미 생성된 시트 내용을 그대로 반영해, 업무명 계산 로직이 나중에
+    바뀌어도 표지가 항상 실제 시트와 일치한다."""
+    with zipfile.ZipFile(io.BytesIO(엑셀바이트)) as z:
+        xml = z.read("xl/worksheets/sheet2.xml").decode("utf-8")
+    m = re.search(rf'<c r="{ref}"[^>]*>(?:<is><t[^>]*>(.*?)</t></is>|<v>(.*?)</v>)</c>', xml, flags=re.DOTALL)
+    if not m:
+        return ""
+    raw = m.group(1) if m.group(1) is not None else m.group(2)
+    return (raw or "").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+
+
+def _요청내용_다중블록_채우기(file_map, 표지정보):
+    """"조별목록"(작업구분(조)별 부분합, 2개 이상)이 있는 거래처(거래처마스터.조별표지=1)용 —
+    통합 명세서 대신 "요청내용" 표지에 조별 부분합을 2개씩 가로로, 3번째 조부터는 아래쪽 새
+    row-block으로 배치한다(2026-08-30). in-place로 file_map을 수정하며 반환값 없음.
+
+    사업자등록증·법인명·발행일자·담당자이메일·거래명세서번호는 인보이스 공통값을 각 블록에
+    반복 표시하고, 품목(그 조 시트의 B12, 즉 write_거래명세서_excel()이 실제로 써넣은 업무명)·
+    공급가액·세액·합계는 그 조의 부분합, 비고는 기존 단일 표지(_요청내용_채우기)와 동일하게
+    "시트참조(그 조의 시트명)" 형식으로 쓴다."""
+    ROW_BLOCK_HEIGHT = 10   # row 2~11 (사업자등록증~거래명세서번호)
+    ROW_GAP = 1             # row-block 사이 여백(빈 행 번호를 건너뜀 — 원래 row 12 이후가 없어 안전)
+    RIGHT_COL_SHIFT = 4     # B/C(왼쪽 라벨/값) → F/G(오른쪽 라벨/값), A→E(번호)
+
+    xml = file_map["xl/worksheets/sheet1.xml"].decode("utf-8")
+    xml = re.sub(r'<hyperlinks>.*?</hyperlinks>', '', xml, flags=re.DOTALL)
+
+    원본_행들 = [_row_추출(xml, r) for r in range(2, 2 + ROW_BLOCK_HEIGHT)]
+    if any(r is None for r in 원본_행들):
+        raise ValueError(
+            "요청내용 표지 템플릿(row 2~11) 구조가 예상과 달라 조별표지 다중블록을 렌더링할 "
+            "수 없습니다 — 템플릿(data/거래명세서_템플릿_base.xlsx)이 변경되었는지 확인하세요"
+        )
+
+    def _블록_값들(블록):
+        return [
+            ("str", 표지정보.get("사업자등록번호") or ""),
+            ("str", 표지정보.get("거래처명") or ""),
+            ("str", 표지정보["발행일"].strftime("%Y-%m-%d")),
+            ("str", 블록["품목"]),
+            ("num", round(float(블록["공급가액"] or 0))),
+            ("num", round(float(블록["세액"] or 0))),
+            ("num", round(float(블록["합계"] or 0))),
+            ("str", 표지정보.get("수신이메일") or ""),
+            ("str", f"시트참조({블록['시트명']})"),   # 기존 단일 표지(_요청내용_채우기)와 동일 형식으로 통일
+            ("str", 표지정보.get("거래명세서번호") or ""),   # 인보이스 공통값 — 모든 블록에 동일하게 표시
+        ]
+
+    원본_ht들 = [re.search(r'\bht="([^"]*)"', r).group(1) if re.search(r'\bht="([^"]*)"', r) else None
+                for r in 원본_행들]
+
+    조별목록 = 표지정보["조별목록"]
+    새_행들 = {}
+
+    for pair_idx in range(0, len(조별목록), 2):
+        block_set_idx = pair_idx // 2
+        row_base = 2 + block_set_idx * (ROW_BLOCK_HEIGHT + ROW_GAP)
+        양쪽 = 조별목록[pair_idx:pair_idx + 2]
+        for r_off in range(ROW_BLOCK_HEIGHT):
+            new_row = row_base + r_off
+            cells_xml = ""
+            for side, 블록 in enumerate(양쪽):
+                col_shift = 0 if side == 0 else RIGHT_COL_SHIFT
+                side_cells = _row_cells_이동(원본_행들[r_off], new_row, col_shift)
+                if r_off == 0:
+                    번호_col = _col_num_to_letter(_col_letter_to_num("A") + col_shift)
+                    side_cells = _cells_셀_삽입(side_cells, 번호_col, new_row, f"<v>{블록['번호']}</v>")
+                값_타입, 값 = _블록_값들(블록)[r_off]
+                값_col = _col_num_to_letter(_col_letter_to_num("C") + col_shift)
+                if 값_타입 == "str":
+                    side_cells = _set_str(side_cells, f"{값_col}{new_row}", str(값))
+                elif 값_타입 == "num":
+                    side_cells = _set_num(side_cells, f"{값_col}{new_row}", 값)
+                cells_xml += side_cells
+            새_행들[new_row] = _row_감싸기(new_row, cells_xml, ht=원본_ht들[r_off])
+
+    새_sheetData = "".join(새_행들[r] for r in sorted(새_행들))
+    xml = re.sub(r'<sheetData>.*?</sheetData>', lambda _: f'<sheetData>{새_sheetData}</sheetData>', xml, flags=re.DOTALL)
+
+    마지막_row = max(새_행들)
+    xml = re.sub(r'<dimension ref="[^"]*"/>', f'<dimension ref="A2:G{마지막_row}"/>', xml)
+    xml = _요청내용_2블록_cols_확장(xml)
+
+    file_map["xl/worksheets/sheet1.xml"] = xml.encode("utf-8")
+
+
 def _rename_single_sheet(엑셀바이트, 새이름):
     """표지(sheet1)+데이터(sheet2) 2시트 구조는 그대로 두고, 데이터 시트의 탭 이름만 바꾼다
     (2026-08-12). combine_거래명세서_시트들()이 시트가 1개뿐이라 여러 워크북을 합칠 필요가 없을
@@ -1160,7 +1336,10 @@ def combine_거래명세서_시트들(시트_목록, 표지정보=None):
             최종이름 = None
 
         if 표지정보 is not None:
-            _요청내용_채우기(file_map, {**표지정보, "비고": f"시트참조({최종이름 or '명세서'})"})
+            if 표지정보.get("조별목록"):
+                _요청내용_다중블록_채우기(file_map, 표지정보)
+            else:
+                _요청내용_채우기(file_map, {**표지정보, "비고": f"시트참조({최종이름 or '명세서'})"})
 
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zout:
@@ -1302,7 +1481,10 @@ def combine_거래명세서_시트들(시트_목록, 표지정보=None):
         base[f"xl/drawings/_rels/drawing{sheet_num}.xml.rels"] = file_maps[i]["xl/drawings/_rels/drawing1.xml.rels"]
 
     if 표지_유지:
-        _요청내용_채우기(base, {**표지정보, "비고": f"시트참조({첫_데이터탭_이름})"})
+        if 표지정보.get("조별목록"):
+            _요청내용_다중블록_채우기(base, 표지정보)
+        else:
+            _요청내용_채우기(base, {**표지정보, "비고": f"시트참조({첫_데이터탭_이름})"})
 
     sheets_block = "".join(
         f'<sheet name="{_xml_esc(name)}" sheetId="{1000 + idx}" r:id="{rid}"/>'

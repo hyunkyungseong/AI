@@ -82,7 +82,7 @@ export default function ClientMaster({
 
   function handleUpdated(
     거래처명: string,
-    patch: Pick<거래처행, "사업자등록번호" | "수신이메일" | "비고" | "역발행" | "수정일">
+    patch: Pick<거래처행, "사업자등록번호" | "수신이메일" | "비고" | "역발행" | "조별표지" | "수정일">
   ) {
     setRows((prev) => prev.map((c) => (c.거래처명 === 거래처명 ? { ...c, ...patch } : c)));
     setFormOpen(false);

@@ -78,6 +78,9 @@ export type 미리보기결과 = {
   // 작업명끼리 포함/별도가 섞여 있으면 null이 되고 부가세오류에 안내 문구가 담긴다(2026-08-04).
   부가세구분: "포함" | "별도" | null;
   부가세오류?: string | null;
+  // 조별표지(2026-08-30) — 이 거래처가 통합 명세서 대신 "요청내용" 표지에 조별로 나눠 보여주는
+  // 대상이면 true. 서버가 통합시트명을 자동으로 무시하므로, 화면도 그 입력칸을 감춰 혼란을 줄인다.
+  조별표지?: boolean;
   수량불일치?: 수량불일치행[];
   단가미등록?: 단가미등록행[];
   규칙목록?: 저장된규칙[]; // POST /거래명세서미리보기 응답에 이미 포함되어 내려옴(2026-08-01,
@@ -136,6 +139,7 @@ type Props = {
     통합조건식_해결?: 통합조건식_해결 | null;
     통합시트명?: string;
     상단업무명?: string;
+    조상단업무명맵?: Record<string, string>;
     // 공급가액·부가세 직접 입력(override, 2026-08-13, 마케팅팀 요청 — 원단위 절사·반올림 차이 보정).
     공급가액_직접입력?: number;
     세액_직접입력?: number;
@@ -252,6 +256,9 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
   // 마지막 저장값을 불러와 기본 제안하고, 없으면 "통합명세서"/업무명_목록 조인 문구를 기본으로 둔다.
   const [통합시트명, set통합시트명] = useState("");
   const [상단업무명, set상단업무명] = useState("");
+  // 개별 조 시트 B12에 표시할 조별 상단 업무명(2026-08-30) — {조: 값} 형태, 조별표지 여부와
+  // 무관하게 조가 2개 이상이면 항상 그룹 헤더에 입력칸으로 노출된다(통합상단업무명과는 별개).
+  const [조상단업무명맵, set조상단업무명맵] = useState<Record<string, string>>({});
   // 공급가액·부가세 직접 입력(override, 2026-08-13) — 손대기 전엔 입력칸이 지금 자동계산값을
   // 그대로 보여주며(값을 다시 처음부터 입력하지 않고 그 자리에서 바로 고칠 수 있도록, 2026-08-13
   // 사용자 피드백) 품목 수정에 따라 계속 갱신되고, 한 번이라도 고치면(수동=true) 그 값에 고정된다
@@ -313,6 +320,27 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
         if (취소됨) return;
         set통합시트명(json?.통합시트명 || "통합명세서");
         set상단업무명(json?.상단업무명 || (data?.업무명_목록 ?? []).join(", "));
+      })
+      .catch(() => {});
+    return () => {
+      취소됨 = true;
+    };
+  }, [data?.거래처명, data?.업무명_목록]);
+
+  // 개별 조 시트 B12에 표시할 조별 상단 업무명(2026-08-30) — 위 통합시트기본값과 동일한 방식으로
+  // 이 거래처+업무명조합의 조마다 마지막 저장값을 한 번에 조회해 프리필한다. 조가 없거나 저장된
+  // 값이 없는 조는 빈 문자열(입력 안 하면 기존처럼 자동 업무명 사용).
+  useEffect(() => {
+    const 거래처명 = data?.거래처명;
+    if (!거래처명) return;
+    let 취소됨 = false;
+    const qs = new URLSearchParams({ 거래처명 });
+    (data?.업무명_목록 ?? []).forEach((u) => qs.append("업무명_목록", u));
+    fetch(`/api/group-title-defaults?${qs.toString()}`)
+      .then((res) => (res.ok ? res.json() : {}))
+      .then((json: Record<string, string>) => {
+        if (취소됨) return;
+        set조상단업무명맵(json && typeof json === "object" ? json : {});
       })
       .catch(() => {});
     return () => {
@@ -829,8 +857,11 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
       품목_최종,
       규칙,
       통합조건식_해결: resolution,
-      ...(분할표시 ? { 통합시트명, 상단업무명 } : {}),
+      ...(분할표시 && !data?.조별표지 ? { 통합시트명, 상단업무명 } : {}),
       ...(조정입력가능 ? { 공급가액_직접입력: 공급가액_표시값, 세액_직접입력: 세액_표시값 } : {}),
+      조상단업무명맵: Object.fromEntries(
+        Object.entries(조상단업무명맵).filter(([, v]) => v.trim() !== "")
+      ),
     });
   }
 
@@ -1045,7 +1076,16 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
               </div>
             </div>
 
-            {분할표시 && (
+            {분할표시 && data?.조별표지 && (
+              <div className="mb-1 space-y-1">
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  작업구분이 {조_그룹목록.length}개 등장했습니다 — 이 거래처는 &ldquo;조별표지&rdquo; 대상이라
+                  통합 명세서를 만들지 않습니다. 다운로드하면 &ldquo;요청내용&rdquo; 표지에 작업구분별 부분합이
+                  나눠 표시되고, 작업구분별 시트 {조_그룹목록.length}개를 받습니다.
+                </p>
+              </div>
+            )}
+            {분할표시 && !data?.조별표지 && (
               <div className="mb-1 space-y-1">
                 <p className="text-xs text-gray-500 dark:text-gray-400">
                   작업구분이 {조_그룹목록.length}개 등장했습니다 — 확정하면 거래명세서 1건이 발급되고,
@@ -1109,15 +1149,27 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
                         <Fragment key={조 || "미지정"}>
                           <tr className="border-t border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800/60">
                             <td colSpan={6} className="px-3 py-1 text-xs font-semibold text-gray-600 dark:text-gray-300">
-                              <div className="flex items-center justify-between">
-                                <span>
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="shrink-0">
                                   작업구분: {조 || "미지정"} ({indices.length}건)
                                 </span>
+                                {조 && (
+                                  <input
+                                    type="text"
+                                    value={조상단업무명맵[조] ?? ""}
+                                    onChange={(e) =>
+                                      set조상단업무명맵((prev) => ({ ...prev, [조]: e.target.value }))
+                                    }
+                                    placeholder="시트 상단 업무명 — 비워두면 자동"
+                                    title="이 작업구분 시트 상단(B12)에 표시할 업무명을 직접 입력합니다. 비워두면 자동으로 계산된 업무명이 표시됩니다."
+                                    className="min-w-0 flex-1 rounded border border-gray-300 bg-white px-1.5 py-0.5 text-xs font-normal text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+                                  />
+                                )}
                                 <button
                                   type="button"
                                   onClick={() => copyGroup(조, indices)}
                                   title="이 작업구분에 속한 항목 전체를 새 작업구분으로 복사합니다 — 조건은 원본과 같아 지금은 0건으로 보이니, 각 항목의 품명을 눌러 조건과 작업구분명을 수정해 주세요"
-                                  className="font-normal text-gray-500 hover:text-gray-800 hover:underline dark:text-gray-400 dark:hover:text-gray-100"
+                                  className="shrink-0 font-normal text-gray-500 hover:text-gray-800 hover:underline dark:text-gray-400 dark:hover:text-gray-100"
                                 >
                                   작업구분 복사
                                 </button>
@@ -1193,8 +1245,9 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
                   {!조정입력가능 && (
                     <tr>
                       <td colSpan={6} className="px-4 py-1 text-xs text-amber-600 dark:text-amber-400">
-                        통합시트명을 먼저 입력해야 공급가액·부가세를 조정할 수 있습니다(조가 여러 개일 때는
-                        통합시트에만 조정이 반영됩니다).
+                        {data?.조별표지
+                          ? "이 거래처는 조별표지 대상이라 통합 명세서가 없어 공급가액·부가세를 조정할 수 없습니다(작업구분이 1개일 때만 조정 가능)."
+                          : "통합시트명을 먼저 입력해야 공급가액·부가세를 조정할 수 있습니다(조가 여러 개일 때는 통합시트에만 조정이 반영됩니다)."}
                       </td>
                     </tr>
                   )}

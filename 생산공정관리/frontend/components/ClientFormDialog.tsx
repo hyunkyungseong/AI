@@ -14,7 +14,7 @@ type Props = {
   onCreated: (row: 거래처행) => void;
   onUpdated: (
     거래처명: string,
-    patch: Pick<거래처행, "사업자등록번호" | "수신이메일" | "비고" | "역발행" | "수정일">
+    patch: Pick<거래처행, "사업자등록번호" | "수신이메일" | "비고" | "역발행" | "조별표지" | "수정일">
   ) => void;
 };
 
@@ -48,6 +48,10 @@ export default function ClientFormDialog({
   const [비고, set비고] = useState(initial?.비고 ?? "");
   // 역발행(2026-08-24) — 신규 등록 시 기본값은 항상 비워둠(체크 안 함), 요청사항과 일치.
   const [역발행, set역발행] = useState(initial?.역발행 ?? false);
+  // 조별표지(2026-08-30) — 작업구분(조)이 2개 이상이면 통합 명세서 대신 "요청내용" 표지에 조별
+  // 부분합을 나눠 보여주고, 통합시트명은 서버가 자동으로 무시한다. 신규 등록 시 기본값은 역발행과
+  // 동일하게 항상 비워둠(체크 안 함).
+  const [조별표지, set조별표지] = useState(initial?.조별표지 ?? false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -89,7 +93,7 @@ export default function ClientFormDialog({
         const res = await fetch("/api/client-create", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ 거래처명: 이름, 사업자등록번호, 수신이메일, 비고, 역발행 }),
+          body: JSON.stringify({ 거래처명: 이름, 사업자등록번호, 수신이메일, 비고, 역발행, 조별표지 }),
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
@@ -97,12 +101,12 @@ export default function ClientFormDialog({
           return;
         }
         const 오늘 = new Date().toISOString().slice(0, 10);
-        onCreated({ 거래처명: 이름, 사업자등록번호, 수신이메일, 비고, 역발행, 등록일: 오늘, 수정일: 오늘 });
+        onCreated({ 거래처명: 이름, 사업자등록번호, 수신이메일, 비고, 역발행, 조별표지, 등록일: 오늘, 수정일: 오늘 });
       } else {
         const res = await fetch("/api/client-update", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ 거래처명: initial!.거래처명, 사업자등록번호, 수신이메일, 비고, 역발행 }),
+          body: JSON.stringify({ 거래처명: initial!.거래처명, 사업자등록번호, 수신이메일, 비고, 역발행, 조별표지 }),
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
@@ -110,7 +114,7 @@ export default function ClientFormDialog({
           return;
         }
         const 오늘 = new Date().toISOString().slice(0, 10);
-        onUpdated(initial!.거래처명, { 사업자등록번호, 수신이메일, 비고, 역발행, 수정일: 오늘 });
+        onUpdated(initial!.거래처명, { 사업자등록번호, 수신이메일, 비고, 역발행, 조별표지, 수정일: 오늘 });
       }
     } catch {
       setError("서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.");
@@ -171,6 +175,10 @@ export default function ClientFormDialog({
           <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
             <input type="checkbox" checked={역발행} onChange={(e) => set역발행(e.target.checked)} />
             역발행 (고객사가 거래명세서를 역으로 발행하는 거래처)
+          </label>
+          <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+            <input type="checkbox" checked={조별표지} onChange={(e) => set조별표지(e.target.checked)} />
+            조별표지 (작업구분별로 표지를 나눠 보여주고 통합 명세서는 만들지 않음)
           </label>
         </div>
 

@@ -216,6 +216,7 @@ export default function Tab4Invoice({
     통합조건식_해결?: 통합조건식_해결 | null;
     통합시트명?: string;
     상단업무명?: string;
+    조상단업무명맵?: Record<string, string>;
     공급가액_직접입력?: number;
     세액_직접입력?: number;
   }) {
@@ -267,6 +268,7 @@ export default function Tab4Invoice({
       // 최종목록의 조 종류 수로 다시 판정해 조건이 안 맞으면 무시한다.
       통합시트명: edited.통합시트명,
       상단업무명: edited.상단업무명,
+      조상단업무명맵: edited.조상단업무명맵,
       // 공급가액·부가세 직접 입력(override, 2026-08-13) — InvoicePreviewDialog가 조정칸에 값이
       // 있을 때만 채워 보낸다. 서버가 다시 한번 유효성(조 개수·통합시트명)을 검증한다.
       공급가액_직접입력: edited.공급가액_직접입력,

@@ -135,6 +135,7 @@ def get_db():
             수신이메일      VARCHAR(200),
             비고            TEXT,
             역발행          TINYINT(1) DEFAULT 0,
+            조별표지        TINYINT(1) DEFAULT 0,
             등록일          DATE DEFAULT (CURRENT_DATE),
             수정일          DATE DEFAULT (CURRENT_DATE)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -371,6 +372,19 @@ def get_db():
             등록일          DATETIME DEFAULT CURRENT_TIMESTAMP,
             수정일          DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             UNIQUE KEY uk_통합시트 (거래처명, 업무명조합)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """,
+
+    "조상단업무명설정": """
+        CREATE TABLE IF NOT EXISTS 조상단업무명설정 (
+            id              INT AUTO_INCREMENT PRIMARY KEY,
+            거래처명        VARCHAR(100) NOT NULL,
+            업무명조합      VARCHAR(500) NOT NULL,
+            조              VARCHAR(100) NOT NULL,
+            조상단업무명    VARCHAR(200),
+            등록일          DATETIME DEFAULT CURRENT_TIMESTAMP,
+            수정일          DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_조상단업무명 (거래처명, 업무명조합, 조)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """,
 
@@ -693,6 +707,25 @@ def migrate():
                     print(f"  마이그레이션: 단가마스터.{컬럼} 컬럼 추가 완료(기존 행 전부 0으로 채워짐)")
                 else:
                     print(f"  마이그레이션: 단가마스터.{컬럼} 컬럼 이미 존재 (건너뜀)")
+
+            # 2026-08-30 — "조별표지"(작업구분(조)이 2개 이상이면 통합 명세서 대신 "요청내용" 표지에
+            # 조별 부분합을 2개씩 나란히 배치하고, 통합시트명은 시스템이 자동으로 무시). 기존 거래처는
+            # 전부 DEFAULT 0(기존 방식 그대로)으로 채워져 회귀 없음 — 상세:
+            # `.claude/plans/plan_조별표지분리.md`.
+            if not _컬럼_존재(cur, "거래처마스터", "조별표지"):
+                cur.execute("ALTER TABLE 거래처마스터 ADD COLUMN 조별표지 TINYINT(1) DEFAULT 0 AFTER 역발행")
+                print("  마이그레이션: 거래처마스터.조별표지 컬럼 추가 완료(기존 행 전부 0으로 채워짐)")
+            else:
+                print("  마이그레이션: 거래처마스터.조별표지 컬럼 이미 존재 (건너뜀)")
+
+            # 2026-08-30 — "조상단업무명"(개별 조 시트 B12에 자동으로 들어가던 공유 업무명을 조별로
+            # 직접 입력/수정할 수 있게 함). NULL이면 기존처럼 공유 업무명을 그대로 씀 — 회귀 없음.
+            # 상세: `.claude/plans/plan_조상단업무명.md`.
+            if not _컬럼_존재(cur, "거래명세서_품목", "조상단업무명"):
+                cur.execute("ALTER TABLE 거래명세서_품목 ADD COLUMN 조상단업무명 VARCHAR(200) NULL AFTER 조")
+                print("  마이그레이션: 거래명세서_품목.조상단업무명 컬럼 추가 완료")
+            else:
+                print("  마이그레이션: 거래명세서_품목.조상단업무명 컬럼 이미 존재 (건너뜀)")
 
 
 def main():

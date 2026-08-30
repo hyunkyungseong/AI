@@ -42,6 +42,7 @@ export function mapClientRow(r: Rec): 거래처행 {
     수신이메일: r.수신이메일 != null ? String(r.수신이메일) : "",
     비고: r.비고 != null ? String(r.비고) : "",
     역발행: Boolean(r.역발행),
+    조별표지: Boolean(r.조별표지),
     등록일: String(r.등록일 ?? ""),
     수정일: String(r.수정일 ?? ""),
   };

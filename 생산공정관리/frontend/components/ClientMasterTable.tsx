@@ -41,6 +41,11 @@ const Row = memo(function Row({ row: r, checked, onToggle, onEdit }: RowProps) {
             역발행
           </span>
         )}
+        {r.조별표지 && (
+          <span className="ml-1 rounded border border-teal-300 px-1.5 py-0.5 text-xs text-teal-700 dark:border-teal-700 dark:text-teal-400">
+            조별표지
+          </span>
+        )}
       </td>
       <td className="px-3 py-1.5 text-gray-500 dark:text-gray-400">{r.등록일}</td>
       <td className="px-3 py-1.5 text-gray-500 dark:text-gray-400">{r.수정일}</td>
@@ -80,7 +85,7 @@ export default function ClientMasterTable({ rows, selected, onToggleRow, onToggl
             <th className="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-300">사업자등록번호</th>
             <th className="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-300">수신이메일</th>
             <th className="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-300">비고</th>
-            <th className="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-300">역발행</th>
+            <th className="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-300">설정</th>
             <th className="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-300">등록일</th>
             <th className="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-300">수정일</th>
             <th className="px-3 py-2" />
