@@ -68,7 +68,7 @@
 |---|---|---|
 | `SKILL.md` | 루트 | 검증된 스킬 코드 패턴 — 구현 시 재사용 |
 | `작업현황-대시보드-생성-KNOWLEDGE.md` | `docs/` | 프로젝트 지식, 도메인 용어, 주요 결정사항 |
-| `CHANGELOG.md` | `docs/` | 작업 완료 이력 |
+| `CHANGELOG.md` | `docs/` | 작업 완료 이력 (오래된 이력은 `CHANGELOG_archive.md`로 분리) |
 | `plan_N단계_*.md` | `.claude/plans/` | 현재 진행 단계 및 체크리스트 |
 
 ---
