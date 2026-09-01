@@ -100,6 +100,9 @@ export type 확정품목 = {
   // 조건식(규칙) 없이 "새 행 추가"로 직접 타이핑한 행이면 true(2026-08-12) — 서버가 이 값이 true인
   // 품명만 거래명세서품명이력에 저장한다(규칙 품명은 이미 청구품목규칙으로 따로 재사용되므로 중복 방지).
   수동입력?: boolean;
+  // "구분자" 행이면 true(2026-09-01) — 자료와 무관하게 사용자가 직접 문구를 입력하는 순수 수동
+  // 삽입 행. 거래명세서 Excel에서 품명~금액 영역이 하나로 병합된 캡션으로만 표시된다.
+  구분자?: boolean;
 };
 export type 확정규칙 = {
   순서: number;
@@ -127,6 +130,9 @@ type 편집행 = {
   구분표시?: string;
   규격?: string;
   비고?: string;
+  // "구분자" 행이면 true(2026-09-01) — 자료와 무관한 순수 수동 문구 삽입 행("새 행 추가"의 변형).
+  // true면 최종청구품명이 곧 캡션 텍스트이고 수량·단가·금액은 항상 0으로 무시된다.
+  구분자?: boolean;
 };
 
 type Props = {
@@ -461,6 +467,30 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
     () => Array.from(new Set((data?.품목.map((r) => r.자재명).filter(Boolean) as string[]) ?? [])).sort(),
     [data]
   );
+  // 업무명옵션(2026-09-01) — 원본 표 합산 키에 업무명이 포함되면서(서로 다른 업무명이 우연히
+  // 같은 작업명·단가를 쓸 때 한 줄로 합쳐지던 버그 수정 겸) 조건식에서도 업무명으로 직접
+  // 구분할 수 있도록 후보를 제공.
+  const 업무명옵션 = useMemo(
+    () => Array.from(new Set((data?.품목.map((r) => r.업무명).filter(Boolean) as string[]) ?? [])).sort(),
+    [data]
+  );
+  // 왼쪽 원본 표를 업무명 단위로 그룹 표시(2026-09-01) — 오른쪽 표의 조_그룹목록(작업구분 그룹)과
+  // 동일한 패턴. 업무명이 길면 매 행마다 반복 표기(대괄호 접두어)하는 대신 그룹 헤더 한 줄로만
+  // 보여줘 가독성을 확보 — 업무명이 하나뿐인 평소 요청에는 그룹 헤더 없이 기존과 동일하게 보인다.
+  const 업무명_그룹목록 = useMemo(() => {
+    const 맵 = new Map<string, number[]>();
+    const 순서: string[] = [];
+    (data?.품목 ?? []).forEach((r, i) => {
+      const key = r.업무명?.trim() || "";
+      if (!맵.has(key)) {
+        맵.set(key, []);
+        순서.push(key);
+      }
+      맵.get(key)!.push(i);
+    });
+    return 순서.map((업무명) => ({ 업무명, indices: 맵.get(업무명)! }));
+  }, [data]);
+  const 업무명그룹표시 = 업무명_그룹목록.length > 1;
   // 조 입력칸 datalist — 이 미리보기에서 이미 쓰인 조 이름 + 원본 표의 작업명(조 이름을 보통
   // 작업명과 같게 짓는 경우가 많아 후보로 함께 제안, 2026-07-29).
   const 조옵션 = useMemo(() => {
@@ -619,6 +649,33 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
       { key: `manual-${신규행_카운터++}`, 최종청구품명: "", 코드: null, 수량: 0, 단가: 0, 금액: 0, 조건: null, 조: undefined },
     ]);
   }
+  // "구분자" 행 추가(2026-09-01) — addManualRow()의 변형. 자료와 무관하게 사용자가 직접 문구를
+  // 입력하는 순수 삽입 행으로, 수량·단가·금액은 항상 0(입력칸 자체를 안 보여줌, renderRightRow 참고).
+  function addSeparatorRow() {
+    setRightRows((prev) => [
+      ...prev,
+      { key: `sep-${신규행_카운터++}`, 최종청구품명: "", 코드: null, 수량: 0, 단가: 0, 금액: 0, 조건: null, 구분자: true },
+    ]);
+  }
+  // 원하는 위치에 바로 구분자를 넣는 용도(2026-09-01, 사용자 요청 — "+ 구분자 추가"는 항상 맨
+  // 아래에 생겨서 원하는 자리로 옮기려면 ▲ 버튼을 여러 번 눌러야 하는 번거로움이 있었음). idx번
+  // 행 "바로 위"에 삽입 — copyRow()와 동일한 splice 패턴.
+  function insertSeparatorAbove(idx: number) {
+    setRightRows((prev) => {
+      const next = [...prev];
+      next.splice(idx, 0, {
+        key: `sep-${신규행_카운터++}`,
+        최종청구품명: "",
+        코드: null,
+        수량: 0,
+        단가: 0,
+        금액: 0,
+        조건: null,
+        구분자: true,
+      });
+      return next;
+    });
+  }
   function copyFromLeft() {
     setRightRows(
       data!.품목.map((row, i) => ({
@@ -698,10 +755,113 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
     );
   }
 
+  // 왼쪽 원본 표 한 행의 JSX — 업무명을 안 쓰는 화면(플랫 목록)과 업무명별로 묶어 보여주는 화면
+  // (2026-09-01) 양쪽에서 그대로 재사용한다(아래 renderRightRow와 동일한 패턴).
+  function renderOriginalRow(row: 원본품목, i: number) {
+    return (
+      <tr key={i} className="border-t border-gray-100 dark:border-gray-800">
+        <td className={td}>
+          {매칭Set.has(row) && (
+            <span className="text-green-600 dark:text-green-400" title="오른쪽 표에 반영됨">
+              ✓
+            </span>
+          )}
+        </td>
+        <td className={td}>{row.코드}</td>
+        <td className={td}>
+          {row.품목}
+          {row.작업명 && <span className="text-gray-500 dark:text-gray-400">({row.작업명})</span>}
+          {/* 자재명(자재단가 분할)과 공정비고(공정단가 등록 시 입력한 메모, 2026-08-24)는
+              한 품목에 동시에 붙지 않아(자재단가 항목 vs 공정단가 항목) 같은 자리·스타일을
+              공유한다 — 사용자 요청: "자재명과 완전히 같은 자리·스타일". */}
+          {(row.자재명 || row.공정비고) && (
+            <span
+              className="text-blue-600 dark:text-blue-400"
+              title={row.자재명 ? "자재단가로 분할된 항목" : "공정단가 등록 시 입력한 비고"}
+            >
+              {" "}
+              · {row.자재명 || row.공정비고}
+            </span>
+          )}
+        </td>
+        <td className={tdRight}>{row.수량.toLocaleString()}</td>
+        <td className={tdRight}>{row.단가.toLocaleString()}</td>
+        <td className={tdRight}>{Math.round(row.금액).toLocaleString()}</td>
+      </tr>
+    );
+  }
+
   // 오른쪽 표 한 행의 JSX — 조를 안 쓰는 화면(플랫 목록)과 조별로 묶어 보여주는 화면(2026-07-29)
   // 양쪽에서 그대로 재사용한다(전자는 rightRows를 그대로, 후자는 조_그룹목록의 indices로 호출).
   function renderRightRow(i: number) {
     const row = rightRows[i];
+    // ▲▼·복사·삭제 조작 버튼 — 구분자 행과 일반 행이 동일하게 재사용(2026-09-01).
+    const 조작버튼 = (
+      <td className={td}>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => moveRow(i, -1)}
+            disabled={i === 0}
+            title="위로 이동"
+            aria-label="위로 이동"
+            className="text-xs text-gray-500 hover:text-gray-800 disabled:opacity-30 dark:text-gray-400 dark:hover:text-gray-100"
+          >
+            ▲
+          </button>
+          <button
+            type="button"
+            onClick={() => moveRow(i, 1)}
+            disabled={i === rightRows.length - 1}
+            title="아래로 이동"
+            aria-label="아래로 이동"
+            className="text-xs text-gray-500 hover:text-gray-800 disabled:opacity-30 dark:text-gray-400 dark:hover:text-gray-100"
+          >
+            ▼
+          </button>
+          <button
+            type="button"
+            onClick={() => copyRow(i)}
+            title="이 행 복사"
+            aria-label="이 행 복사"
+            className="text-xs text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100"
+          >
+            복사
+          </button>
+          <button
+            type="button"
+            onClick={() => insertSeparatorAbove(i)}
+            title="이 행 위에 구분자 삽입"
+            aria-label="이 행 위에 구분자 삽입"
+            className="text-xs text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100"
+          >
+            구분자삽입
+          </button>
+          <button type="button" onClick={() => removeRow(i)} className="text-xs text-red-600 hover:underline dark:text-red-400">
+            삭제
+          </button>
+        </div>
+      </td>
+    );
+    // 구분자 행(2026-09-01) — 자료와 무관하게 사용자가 직접 문구를 입력하는 순수 삽입 행. 품명·
+    // 작업구분·수량·단가·금액 5칸을 하나로 합쳐 캡션 입력창 하나만 보여준다(거래명세서 Excel에서도
+    // 그 영역이 병합된 한 칸으로 나감, `write_거래명세서_excel()`의 `_구분자_밴드_적용()` 참고).
+    if (row.구분자) {
+      return (
+        <tr key={row.key} className="border-t border-gray-100 dark:border-gray-800">
+          <td className={td} colSpan={5}>
+            <input
+              type="text"
+              value={row.최종청구품명}
+              onChange={(e) => updateField(i, { 최종청구품명: e.target.value })}
+              className="w-full rounded border border-gray-300 bg-white px-1.5 py-0.5 text-sm font-medium text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200"
+              placeholder="구분자 문구 입력 (예: S교재)"
+            />
+          </td>
+          {조작버튼}
+        </tr>
+      );
+    }
     return (
       <tr key={row.key} className="border-t border-gray-100 dark:border-gray-800">
         <td className={td}>
@@ -767,42 +927,7 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
             className={numInput}
           />
         </td>
-        <td className={td}>
-          <div className="flex items-center gap-1.5">
-            <button
-              type="button"
-              onClick={() => moveRow(i, -1)}
-              disabled={i === 0}
-              title="위로 이동"
-              aria-label="위로 이동"
-              className="text-xs text-gray-500 hover:text-gray-800 disabled:opacity-30 dark:text-gray-400 dark:hover:text-gray-100"
-            >
-              ▲
-            </button>
-            <button
-              type="button"
-              onClick={() => moveRow(i, 1)}
-              disabled={i === rightRows.length - 1}
-              title="아래로 이동"
-              aria-label="아래로 이동"
-              className="text-xs text-gray-500 hover:text-gray-800 disabled:opacity-30 dark:text-gray-400 dark:hover:text-gray-100"
-            >
-              ▼
-            </button>
-            <button
-              type="button"
-              onClick={() => copyRow(i)}
-              title="이 행 복사"
-              aria-label="이 행 복사"
-              className="text-xs text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100"
-            >
-              복사
-            </button>
-            <button type="button" onClick={() => removeRow(i)} className="text-xs text-red-600 hover:underline dark:text-red-400">
-              삭제
-            </button>
-          </div>
-        </td>
+        {조작버튼}
       </tr>
     );
   }
@@ -841,6 +966,7 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
       규격: r.규격,
       비고: r.비고,
       수동입력: r.조건 === null,
+      구분자: r.구분자 === true,
     }));
     const 규칙: 확정규칙[] = rightRows
       .filter((r) => r.조건 !== null)
@@ -999,37 +1125,18 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
                   </tr>
                 </thead>
                 <tbody>
-                  {data.품목.map((row, i) => (
-                    <tr key={i} className="border-t border-gray-100 dark:border-gray-800">
-                      <td className={td}>
-                        {매칭Set.has(row) && (
-                          <span className="text-green-600 dark:text-green-400" title="오른쪽 표에 반영됨">
-                            ✓
-                          </span>
-                        )}
-                      </td>
-                      <td className={td}>{row.코드}</td>
-                      <td className={td}>
-                        {row.품목}
-                        {row.작업명 && <span className="text-gray-500 dark:text-gray-400">({row.작업명})</span>}
-                        {/* 자재명(자재단가 분할)과 공정비고(공정단가 등록 시 입력한 메모, 2026-08-24)는
-                            한 품목에 동시에 붙지 않아(자재단가 항목 vs 공정단가 항목) 같은 자리·스타일을
-                            공유한다 — 사용자 요청: "자재명과 완전히 같은 자리·스타일". */}
-                        {(row.자재명 || row.공정비고) && (
-                          <span
-                            className="text-blue-600 dark:text-blue-400"
-                            title={row.자재명 ? "자재단가로 분할된 항목" : "공정단가 등록 시 입력한 비고"}
-                          >
-                            {" "}
-                            · {row.자재명 || row.공정비고}
-                          </span>
-                        )}
-                      </td>
-                      <td className={tdRight}>{row.수량.toLocaleString()}</td>
-                      <td className={tdRight}>{row.단가.toLocaleString()}</td>
-                      <td className={tdRight}>{Math.round(row.금액).toLocaleString()}</td>
-                    </tr>
-                  ))}
+                  {!업무명그룹표시 && data.품목.map((row, i) => renderOriginalRow(row, i))}
+                  {업무명그룹표시 &&
+                    업무명_그룹목록.map(({ 업무명, indices }) => (
+                      <Fragment key={업무명 || "미지정"}>
+                        <tr className="border-t border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800/60">
+                          <td colSpan={6} className="px-3 py-1 text-xs font-semibold text-gray-600 dark:text-gray-300">
+                            업무명: {업무명 || "(업무명 없음)"}
+                          </td>
+                        </tr>
+                        {indices.map((i) => renderOriginalRow(data.품목[i], i))}
+                      </Fragment>
+                    ))}
                 </tbody>
                 <tfoot>
                   <tr className="border-t border-gray-200 dark:border-gray-700">
@@ -1072,6 +1179,9 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
                 </button>
                 <button type="button" onClick={addManualRow} className="text-xs text-gray-600 hover:underline dark:text-gray-300">
                   + 새 행 추가
+                </button>
+                <button type="button" onClick={addSeparatorRow} className="text-xs text-gray-600 hover:underline dark:text-gray-300">
+                  + 구분자 추가
                 </button>
               </div>
             </div>
@@ -1309,6 +1419,7 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
             단가옵션={단가옵션}
             작업명옵션={작업명옵션}
             자재명옵션={자재명옵션}
+            업무명옵션={업무명옵션}
             조옵션={조옵션}
             onSave={handleModalSave}
             onCancel={handleModalCancel}

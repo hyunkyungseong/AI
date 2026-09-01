@@ -727,6 +727,15 @@ def migrate():
             else:
                 print("  마이그레이션: 거래명세서_품목.조상단업무명 컬럼 이미 존재 (건너뜀)")
 
+            # 2026-09-01 — "구분자" 행(자료와 무관하게 사용자가 "새 행 추가"처럼 직접 입력하는 순수
+            # 문구 삽입 행 — 거래명세서 Excel에서 품명~금액 영역을 하나로 병합해 캡션만 표시).
+            # 상세: `.claude/plans/bb-ab-vast-piglet.md`.
+            if not _컬럼_존재(cur, "거래명세서_품목", "구분자"):
+                cur.execute("ALTER TABLE 거래명세서_품목 ADD COLUMN 구분자 TINYINT(1) NOT NULL DEFAULT 0 AFTER 비고")
+                print("  마이그레이션: 거래명세서_품목.구분자 컬럼 추가 완료")
+            else:
+                print("  마이그레이션: 거래명세서_품목.구분자 컬럼 이미 존재 (건너뜀)")
+
 
 def main():
     print(f"[MariaDB 초기화] {cfg.DB_NAME}@{cfg.DB_HOST}:{cfg.DB_PORT}")

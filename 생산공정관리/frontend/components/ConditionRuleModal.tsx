@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import EditableCombo from "./EditableCombo";
 
 export type 규칙조건단일 = {
-  field: "코드" | "품목" | "작업명" | "단가" | "자재명";
+  field: "코드" | "품목" | "작업명" | "단가" | "자재명" | "업무명";
   op: "==" | "contains";
   value: string;
 };
@@ -17,6 +17,7 @@ const 필드옵션 = [
   { value: "작업명" as const, label: "작업명" },
   { value: "단가" as const, label: "단가" },
   { value: "자재명" as const, label: "자재명" }, // 자재단가(2026-08-15)로 분할된 원본 행을 다시 묶을 때 사용
+  { value: "업무명" as const, label: "업무명" }, // 서로 다른 업무명을 하나로 합쳐 발행할 때 구분용(2026-09-01)
 ];
 
 function 연산자옵션(field: string) {
@@ -46,6 +47,7 @@ type Props = {
   작업명옵션?: string[];
   단가옵션?: string[];
   자재명옵션?: string[]; // 원본 표에 등장하는 자재명(2026-08-15, 단가마스터 자재명 정규화)
+  업무명옵션?: string[]; // 원본 표에 등장하는 업무명(2026-09-01)
   조옵션?: string[]; // 이미 쓰인 조 이름 + 원본 표의 작업명 목록(조별 분할발급, 2026-07-29)
   onSave: (결과: {
     최종청구품명: string;
@@ -72,12 +74,14 @@ function 값옵션(
   품목옵션: string[],
   작업명옵션: string[],
   단가옵션: string[],
-  자재명옵션: string[]
+  자재명옵션: string[],
+  업무명옵션: string[]
 ) {
   if (field === "코드") return 코드옵션;
   if (field === "품목") return 품목옵션;
   if (field === "단가") return 단가옵션;
   if (field === "자재명") return 자재명옵션;
+  if (field === "업무명") return 업무명옵션;
   return 작업명옵션;
 }
 
@@ -101,6 +105,7 @@ export default function ConditionRuleModal({
   작업명옵션 = [],
   단가옵션 = [],
   자재명옵션 = [],
+  업무명옵션 = [],
   조옵션 = [],
   onSave,
   onCancel,
@@ -316,7 +321,7 @@ export default function ConditionRuleModal({
                       <EditableCombo
                         value={cond.value}
                         onChange={(v) => updateCond(gi, ci, { value: v })}
-                        options={값옵션(cond.field, 코드옵션, 품목옵션, 작업명옵션, 단가옵션, 자재명옵션)}
+                        options={값옵션(cond.field, 코드옵션, 품목옵션, 작업명옵션, 단가옵션, 자재명옵션, 업무명옵션)}
                         placeholder="값"
                         aria-label="조건 값"
                         className={`w-28 ${inputCls}`}
@@ -324,7 +329,7 @@ export default function ConditionRuleModal({
                     )}
                     {cond.field === "단가" && (
                       <datalist id={`값옵션-${gi}-${ci}`}>
-                        {값옵션(cond.field, 코드옵션, 품목옵션, 작업명옵션, 단가옵션, 자재명옵션).map((v) => (
+                        {값옵션(cond.field, 코드옵션, 품목옵션, 작업명옵션, 단가옵션, 자재명옵션, 업무명옵션).map((v) => (
                           <option key={v} value={v} />
                         ))}
                       </datalist>
