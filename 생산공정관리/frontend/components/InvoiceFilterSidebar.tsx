@@ -60,7 +60,13 @@ export default function InvoiceFilterSidebar({ filters }: Props) {
         </button>
       </div>
 
-      <MultiSelectCombo label="사업부" options={["DM사업부", "N사업부"]} selected={사업부} onChange={set사업부} />
+      <MultiSelectCombo
+        label="사업부"
+        options={["DM사업부", "N사업부"]}
+        selected={사업부}
+        onChange={set사업부}
+        closeOnSelect
+      />
 
       <div>
         <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">조회기간</label>
@@ -81,9 +87,9 @@ export default function InvoiceFilterSidebar({ filters }: Props) {
         </div>
       </div>
 
-      <MultiSelectCombo label="담당자" options={담당자옵션} selected={담당자} onChange={set담당자} />
-      <MultiSelectCombo label="거래처" options={거래처옵션} selected={거래처} onChange={set거래처} />
-      <MultiSelectCombo label="업무명" options={업무명옵션} selected={업무명} onChange={set업무명} />
+      <MultiSelectCombo label="담당자" options={담당자옵션} selected={담당자} onChange={set담당자} closeOnSelect />
+      <MultiSelectCombo label="거래처" options={거래처옵션} selected={거래처} onChange={set거래처} closeOnSelect />
+      <MultiSelectCombo label="업무명" options={업무명옵션} selected={업무명} onChange={set업무명} closeOnSelect />
 
       <button
         type="button"

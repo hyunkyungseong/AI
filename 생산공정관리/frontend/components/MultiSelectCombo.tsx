@@ -8,10 +8,20 @@ type Props = {
   selected: string[];
   onChange: (next: string[]) => void;
   placeholder?: string;
+  // true면 항목 선택 즉시 드롭다운을 닫음(다시 클릭해서 열어야 추가 선택 가능) — 미지정 시 기존처럼
+  // 계속 열려있는 상태 유지(거래명세서관리 탭 요청으로 2026-09-02 추가, 통계분석 탭은 기존 동작 유지)
+  closeOnSelect?: boolean;
 };
 
 // Streamlit st.multiselect와 비슷한 느낌: 선택 항목은 칩으로 표시, 입력창에 검색어를 치면 드롭다운이 좁혀짐
-export default function MultiSelectCombo({ label, options, selected, onChange, placeholder = "전체" }: Props) {
+export default function MultiSelectCombo({
+  label,
+  options,
+  selected,
+  onChange,
+  placeholder = "전체",
+  closeOnSelect = false,
+}: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const rootRef = useRef<HTMLDivElement>(null);
@@ -35,6 +45,7 @@ export default function MultiSelectCombo({ label, options, selected, onChange, p
   function add(opt: string) {
     onChange([...selected, opt]);
     setQuery("");
+    if (closeOnSelect) setOpen(false);
   }
 
   function remove(opt: string) {

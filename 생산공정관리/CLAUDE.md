@@ -111,10 +111,10 @@ touch docs/CHANGELOG.md
 
 ## 🛠️ 기술 스택 (고정 — 변경 전 반드시 확인)
 
-| 구분 | 현재 | 최종 목표 (2026-07-19 확정) |
+| 구분 | 현재 | 최종 목표 (2026-09-02 수정) |
 |---|---|---|
 | 언어 | Python 3.12.5 | Python 3.12.5 |
-| 프론트엔드 | Next.js (로컬 dev) | Next.js (Vercel 배포) |
+| 프론트엔드 | Next.js (로컬 dev) | Next.js (사무실 PC 자체 호스팅, `next build`+`next start` — Vercel 아님) |
 | 백엔드 | FastAPI (`scripts/api.py`) | FastAPI (`scripts/api.py`) |
 | 차트 | Plotly 6.7.0 | 추후 결정 (Next.js 쪽) |
 | DB | MariaDB (사무실 PC) | MariaDB (사무실 PC) |

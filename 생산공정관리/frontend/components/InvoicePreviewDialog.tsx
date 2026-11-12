@@ -224,6 +224,11 @@ function 초기_rightRows(data: 미리보기결과 | null): 편집행[] {
 
 export default function InvoicePreviewDialog({ open, data, submitting, onConfirm, onClose }: Props) {
   const [rightRows, setRightRows] = useState<편집행[]>(() => 초기_rightRows(data));
+  // 작업구분(조) 칸 입력 중 분리 방지(2026-09-15 사용자 요청) — onChange마다 곧바로 rightRows를
+  // 갱신하면 그 값을 보는 조_그룹목록(useMemo)이 매 글자 입력마다 재계산돼, 한 글자만 쳐도 그 행이
+  // 즉시 별도 그룹으로 갈라져 보이는 문제가 있었음. 편집 중인 셀은 이 로컬 상태에만 반영하고,
+  // blur(또는 Enter)에서만 rightRows에 실제로 반영해 그룹 재계산을 그 시점 한 번으로 미룬다.
+  const [조편집중, set조편집중] = useState<{ idx: number; 값: string } | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [modalTarget, setModalTarget] = useState<number | null>(null); // null = 새 규칙 행 추가
   // 통합조건식 부족/초과 배너에서 사용자가 "제외/추가하고 확정"을 선택하면 채워짐(2026-08-08) —
@@ -889,8 +894,18 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
           <input
             type="text"
             list="조옵션-표"
-            value={row.조 ?? ""}
-            onChange={(e) => updateField(i, { 조: e.target.value || undefined })}
+            value={조편집중?.idx === i ? 조편집중.값 : row.조 ?? ""}
+            onFocus={() => set조편집중({ idx: i, 값: row.조 ?? "" })}
+            onChange={(e) => set조편집중({ idx: i, 값: e.target.value })}
+            onBlur={() => {
+              if (조편집중?.idx === i) {
+                updateField(i, { 조: 조편집중.값.trim() || undefined });
+              }
+              set조편집중(null);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") e.currentTarget.blur();
+            }}
             className="w-36 rounded border border-gray-300 bg-white px-1.5 py-0.5 text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
             placeholder="—"
           />
@@ -1218,6 +1233,18 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
                     className="flex-1 rounded border border-gray-300 px-2 py-1 text-xs dark:border-gray-600 dark:bg-gray-800"
                   />
                 </div>
+              </div>
+            )}
+            {!그룹표시 && (
+              <div className="mb-1">
+                <input
+                  type="text"
+                  value={조상단업무명맵[""] ?? ""}
+                  onChange={(e) => set조상단업무명맵((prev) => ({ ...prev, "": e.target.value }))}
+                  placeholder="시트 상단 업무명(B12) — 비워두면 자동"
+                  title="이 거래명세서 시트 상단(B12)에 표시할 업무명을 직접 입력합니다. 비워두면 자동으로 계산된 업무명이 표시됩니다."
+                  className="w-full rounded border border-gray-300 px-2 py-1 text-xs dark:border-gray-600 dark:bg-gray-800"
+                />
               </div>
             )}
             <datalist id="조옵션-표">
