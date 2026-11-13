@@ -114,7 +114,7 @@ touch docs/CHANGELOG.md
 | 구분 | 현재 | 최종 목표 (2026-09-02 수정) |
 |---|---|---|
 | 언어 | Python 3.12.5 | Python 3.12.5 |
-| 프론트엔드 | Next.js (사무실 PC 자체 호스팅 운영 중, 2026-11-13~ / 로컬은 dev) | Next.js (사무실 PC 자체 호스팅, `next build`+`next start` — Vercel 아님) |
+| 프론트엔드 | Next.js (사무실 PC 자체 호스팅 구축 완료 2026-11-13, 개발 중·실사용 전 / 로컬은 dev) | Next.js (사무실 PC 자체 호스팅, `next build`+`next start` — Vercel 아님) |
 | 백엔드 | FastAPI (`scripts/api.py`) | FastAPI (`scripts/api.py`) |
 | 차트 | Plotly 6.7.0 | 추후 결정 (Next.js 쪽) |
 | DB | MariaDB (사무실 PC) | MariaDB (사무실 PC) |
