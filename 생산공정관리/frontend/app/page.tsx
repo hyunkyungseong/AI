@@ -8,6 +8,8 @@ import Dashboard, {
   type 거래처행,
   type 단가행,
 } from "@/components/Dashboard";
+import ForcedPasswordChange from "@/components/ForcedPasswordChange";
+import type { 내정보 as 내정보타입 } from "@/lib/session";
 
 type 원본행 = 운영통계행 & Record<string, unknown>;
 type 미발행원본행 = 미발행행 & Record<string, unknown>;
@@ -22,11 +24,31 @@ export default async function Home() {
   const issuedResPromise = fastapiFetch("/발행목록");
   const clientResPromise = fastapiFetch("/거래처마스터");
   const pricingResPromise = fastapiFetch("/단가마스터");
+  const meResPromise = fastapiFetch("/내정보"); // 상단 이름 표시 + 필수 비밀번호 변경 판단(7단계 2-2·2-4)
+
+  // 접속이 거부되면(401) 사유를 로그인 화면에 전달(2026-11-13, 7단계 2-1 — 새로고침으로 끊긴 경우에도 이유가 보이게)
+  async function 거부시_로그인화면(res: Response) {
+    if (res.status !== 401) return;
+    const data = await res.json().catch(() => ({}));
+    const reason = typeof data?.인증사유 === "string" ? data.인증사유 : "";
+    redirect(reason ? `/login?reason=${encodeURIComponent(reason)}` : "/login");
+  }
+
+  // 내정보는 비밀번호 변경이 필요한 상태에서도 서버가 통과시키는 가벼운 조회 — 먼저 받아서, 관리자가
+  // 만들었거나 초기화한 계정이면 대시보드 대신 필수 변경 화면만 보여준다(다른 요청들은 403이 오므로
+  // 대시보드를 그리면 오류 화면이 됨). 나머지 요청은 이미 동시에 출발해 있어 대기 시간은 늘지 않음.
+  const meRes = await meResPromise;
+  await 거부시_로그인화면(meRes);
+  if (!meRes.ok) {
+    throw new Error(`내 정보를 불러오지 못했습니다 (status ${meRes.status})`);
+  }
+  const 내정보: 내정보타입 = await meRes.json();
+  if (내정보.비밀번호변경필요) return <ForcedPasswordChange />;
 
   // 인증 확인은 가장 가벼운 호출(단순 SELECT, pandas 집계 없음) 하나만 기다려서 처리 —
   // 나머지 4개는 아래에서 Promise째로 Dashboard에 넘겨 각자 스트리밍되게 한다.
   const clientRes = await clientResPromise;
-  if (clientRes.status === 401) redirect("/login");
+  await 거부시_로그인화면(clientRes);
   if (!clientRes.ok) {
     throw new Error(`거래처 마스터를 불러오지 못했습니다 (status ${clientRes.status})`);
   }
@@ -90,6 +112,7 @@ export default async function Home() {
 
   return (
     <Dashboard
+      내정보={내정보}
       clientRows={clientRows}
       summaryPromise={loadSummary()}
       invoicePromise={loadInvoice()}

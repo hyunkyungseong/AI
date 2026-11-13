@@ -68,7 +68,8 @@ from typing import Dict, List, Literal, Optional
 import pandas as pd
 import pymysql
 from pymysql.constants import CLIENT
-from fastapi import FastAPI, HTTPException, Query, Depends, Response
+from fastapi import FastAPI, HTTPException, Query, Depends, Response, Request, Header
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -80,6 +81,13 @@ import auth
 인증필요 = [Depends(auth.get_current_user)]
 
 app = FastAPI(title="생산공정관리 대시보드 API", version="0.1.0")
+
+
+@app.exception_handler(auth.인증오류)
+async def 인증오류_처리(request: Request, exc: auth.인증오류):
+    # 출입증 거부 사유를 영문 코드로 함께 실어 보냄(2026-11-13, 7단계 1-3). detail은 기존처럼 문자열 —
+    # Next.js 중계 파일들이 응답 본문을 그대로 넘기므로 화면 접속 감시 장치(2-1)가 인증사유를 바로 읽는다.
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail, "인증사유": exc.사유})
 
 
 @contextmanager
@@ -135,10 +143,249 @@ def login(요청: 로그인요청):
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM 사용자 WHERE 사용자명=%s", (요청.사용자명,))
             user = cur.fetchone()
-    if not user or not auth.비밀번호_확인(요청.비밀번호, user["비밀번호_해시"]):
-        raise HTTPException(status_code=401, detail="사용자명 또는 비밀번호가 올바르지 않습니다")
-    token = auth.토큰_발급(요청.사용자명)
-    return {"access_token": token, "token_type": "bearer", "이름": user["이름"]}
+            if not user or not auth.비밀번호_확인(요청.비밀번호, user["비밀번호_해시"]):
+                raise HTTPException(status_code=401, detail="사용자명 또는 비밀번호가 올바르지 않습니다")
+            # 비밀번호가 맞을 때만 사용중지 여부를 알려준다 — 비밀번호를 모르는 사람이 ID 존재 여부를
+            # 알아낼 수 없도록(2026-11-13, 7단계)
+            if not user["사용여부"]:
+                raise HTTPException(status_code=401, detail="사용이 중지된 계정입니다. 관리자에게 문의해 주세요")
+            # 로그인마다 새 출입증 번호를 발급해 저장 — 이후 이 번호와 다른(=이전 로그인의) 출입증은
+            # 출입증 검사(auth.get_current_user)에서 거부된다(중복 로그인 차단, 7단계 1-3)
+            세션ID = auth.새_세션ID()
+            cur.execute(
+                "UPDATE 사용자 SET 세션ID=%s, 마지막활동=NOW() WHERE id=%s",
+                (세션ID, user["id"]),
+            )
+    token = auth.토큰_발급(요청.사용자명, 세션ID)
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "이름": user["이름"],
+        "관리자": bool(user["관리자"]),
+        "비밀번호변경필요": bool(user["비밀번호변경필요"]),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 계정·접속 관리 (2026-11-13, 7단계 1-4) — 상세: `.claude/plans/plan_7단계_계정관리_접속보안.md`
+#   전원용: GET /내정보, PUT /내비밀번호, GET /세션확인
+#   관리자 전용: GET·POST /계정, PUT /계정/{id}, PUT /계정/{id}/비밀번호초기화, GET·PUT /시스템설정
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/내정보")
+def 내정보(정보: dict = Depends(auth.비밀번호변경중_사용자)):
+    """상단 이름 표시·관리자 메뉴 표시·비밀번호 변경 창 자동 표시(화면 2-2·2-4)용."""
+    return {k: 정보[k] for k in ("사용자명", "이름", "관리자", "비밀번호변경필요")}
+
+
+class 내비밀번호변경요청(BaseModel):
+    model_config = ConfigDict(title="ChangeMyPasswordRequest")
+
+    현재비밀번호: str
+    새비밀번호: str
+
+
+@app.put("/내비밀번호")
+def 내비밀번호_변경(요청: 내비밀번호변경요청, 정보: dict = Depends(auth.비밀번호변경중_사용자)):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 비밀번호_해시 FROM 사용자 WHERE id=%s", (정보["id"],))
+            현재해시 = cur.fetchone()["비밀번호_해시"]
+            if not auth.비밀번호_확인(요청.현재비밀번호, 현재해시):
+                raise HTTPException(status_code=400, detail="현재 비밀번호가 올바르지 않습니다")
+            오류 = auth.비밀번호_규칙_검사(요청.새비밀번호)
+            if 오류:
+                raise HTTPException(status_code=400, detail=오류)
+            if auth.비밀번호_확인(요청.새비밀번호, 현재해시):
+                raise HTTPException(status_code=400, detail="새 비밀번호가 현재 비밀번호와 같습니다")
+            cur.execute(
+                "UPDATE 사용자 SET 비밀번호_해시=%s, 비밀번호변경필요=0 WHERE id=%s",
+                (auth.비밀번호_해시(요청.새비밀번호), 정보["id"]),
+            )
+    return {"status": "ok"}
+
+
+@app.get("/세션확인")
+def 세션확인(활동: bool = Query(default=False), authorization: str = Header(default=None)):
+    """화면이 30초마다 조용히 부르는 접속 상태 확인(화면 2-1). 활동=false면 마지막활동을 갱신하지 않아
+    화면만 켜두고 자리를 비우면 유휴 시간이 그대로 흐른다 — 직원이 마우스·키보드를 실제로 조작했을 때만
+    화면이 활동=true로 보낸다. 비밀번호 변경 필요 상태는 거부하지 않고 결과로 알려준다(변경 창 유지용)."""
+    정보 = auth.출입증_검사(authorization, 활동갱신=활동, 비밀번호변경중_허용=True)
+    return {"status": "ok", "비밀번호변경필요": 정보["비밀번호변경필요"]}
+
+
+@app.get("/계정")
+def 계정_목록(관리자: dict = Depends(auth.관리자_확인)):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            # 비밀번호_해시·세션ID(출입증 번호)는 내보내지 않음
+            cur.execute(
+                """SELECT id, 사용자명, 이름, 관리자, 사용여부, 비밀번호변경필요, 마지막활동, 등록일
+                   FROM 사용자 ORDER BY 사용여부 DESC, 사용자명"""
+            )
+            행목록 = cur.fetchall()
+    for 행 in 행목록:
+        for k in ("관리자", "사용여부", "비밀번호변경필요"):
+            행[k] = bool(행[k])
+    return 행목록
+
+
+class 계정추가요청(BaseModel):
+    model_config = ConfigDict(title="AccountCreateRequest")
+
+    사용자명: str
+    이름: str
+    초기비밀번호: str
+    관리자: bool = False
+
+
+@app.post("/계정")
+def 계정_추가(요청: 계정추가요청, 관리자: dict = Depends(auth.관리자_확인)):
+    사용자명 = (요청.사용자명 or "").strip()
+    이름 = (요청.이름 or "").strip()
+    if not 사용자명 or not 이름:
+        raise HTTPException(status_code=400, detail="ID와 이름은 필수입니다")
+    오류 = auth.비밀번호_규칙_검사(요청.초기비밀번호)
+    if 오류:
+        raise HTTPException(status_code=400, detail=오류)
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                # 새 계정은 첫 로그인 후 반드시 본인 비밀번호로 바꾸도록 비밀번호변경필요=1
+                cur.execute(
+                    """INSERT INTO 사용자 (사용자명, 비밀번호_해시, 이름, 관리자, 사용여부, 비밀번호변경필요)
+                       VALUES (%s, %s, %s, %s, 1, 1)""",
+                    (사용자명, auth.비밀번호_해시(요청.초기비밀번호), 이름, int(요청.관리자)),
+                )
+                새_id = cur.lastrowid
+    except pymysql.err.IntegrityError:
+        raise HTTPException(status_code=409, detail=f"이미 있는 ID입니다: {사용자명}")
+    return {"status": "ok", "id": 새_id}
+
+
+class 계정수정요청(BaseModel):
+    model_config = ConfigDict(title="AccountUpdateRequest")
+
+    이름: Optional[str] = None
+    관리자: Optional[bool] = None
+    사용여부: Optional[bool] = None
+
+
+사용중지계정_안내 = "사용중지된 계정은 [재사용] 후 변경할 수 있습니다"
+
+
+@app.put("/계정/{id}")
+def 계정_수정(id: int, 요청: 계정수정요청, 관리자: dict = Depends(auth.관리자_확인)):
+    """보낸 항목만 변경. 안전장치: 본인 사용중지·관리자 해제 불가, 사용 중인 관리자가 0명이 되는 변경 차단,
+    사용중지된 계정은 재사용(사용여부=true)을 함께 보낼 때만 다른 변경 허용(2026-11-13 사용자 제보 — 화면에서
+    꺼진 것처럼 보이던 버튼이 실제로 저장되던 문제, 화면과 서버 이중 차단)."""
+    본인 = id == 관리자["id"]
+    if 본인 and 요청.사용여부 is False:
+        raise HTTPException(status_code=400, detail="본인 계정은 사용중지할 수 없습니다")
+    if 본인 and 요청.관리자 is False:
+        raise HTTPException(status_code=400, detail="본인의 관리자 권한은 해제할 수 없습니다")
+
+    변경 = {}
+    if 요청.이름 is not None:
+        이름 = 요청.이름.strip()
+        if not 이름:
+            raise HTTPException(status_code=400, detail="이름은 비워둘 수 없습니다")
+        변경["이름"] = 이름
+    if 요청.관리자 is not None:
+        변경["관리자"] = int(요청.관리자)
+    if 요청.사용여부 is not None:
+        변경["사용여부"] = int(요청.사용여부)
+    if not 변경:
+        raise HTTPException(status_code=400, detail="변경할 항목이 없습니다")
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, 사용여부 FROM 사용자 WHERE id=%s", (id,))
+            대상 = cur.fetchone()
+            if not 대상:
+                raise HTTPException(status_code=404, detail="해당 계정이 없습니다")
+            if not 대상["사용여부"] and 요청.사용여부 is not True:
+                raise HTTPException(status_code=400, detail=사용중지계정_안내)
+            설정절 = ", ".join(f"{k}=%s" for k in 변경)
+            cur.execute(f"UPDATE 사용자 SET {설정절} WHERE id=%s", (*변경.values(), id))
+            # 같은 트랜잭션 안에서 결과를 검사해 위반이면 예외 → get_db()가 rollback
+            cur.execute("SELECT COUNT(*) AS cnt FROM 사용자 WHERE 관리자=1 AND 사용여부=1")
+            if cur.fetchone()["cnt"] == 0:
+                raise HTTPException(status_code=400, detail="사용 중인 관리자가 최소 1명은 있어야 합니다")
+    return {"status": "ok"}
+
+
+class 비밀번호초기화요청(BaseModel):
+    model_config = ConfigDict(title="PasswordResetRequest")
+
+    임시비밀번호: str
+
+
+@app.put("/계정/{id}/비밀번호초기화")
+def 계정_비밀번호초기화(id: int, 요청: 비밀번호초기화요청, 관리자: dict = Depends(auth.관리자_확인)):
+    """관리자가 직접 입력한 임시 비밀번호로 바꾸고, 다음 로그인 후 반드시 본인 비밀번호로 바꾸게 함
+    (2026-11-13 사용자 확정). 이미 접속 중인 그 직원도 다음 요청부터 비밀번호 변경 창으로 유도됨."""
+    오류 = auth.비밀번호_규칙_검사(요청.임시비밀번호)
+    if 오류:
+        raise HTTPException(status_code=400, detail=오류)
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 사용여부 FROM 사용자 WHERE id=%s", (id,))
+            대상 = cur.fetchone()
+            if not 대상:
+                raise HTTPException(status_code=404, detail="해당 계정이 없습니다")
+            if not 대상["사용여부"]:
+                raise HTTPException(status_code=400, detail=사용중지계정_안내)
+            cur.execute(
+                "UPDATE 사용자 SET 비밀번호_해시=%s, 비밀번호변경필요=1 WHERE id=%s",
+                (auth.비밀번호_해시(요청.임시비밀번호), id),
+            )
+    return {"status": "ok"}
+
+
+유휴시간_범위_분 = (5, 480)
+
+
+@app.get("/시스템설정")
+def 시스템설정_조회(관리자: dict = Depends(auth.관리자_확인)):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 설정이름, 값 FROM 시스템설정")
+            설정 = {r["설정이름"]: r["값"] for r in cur.fetchall()}
+    return {
+        "유휴시간_분": int(설정.get("유휴시간_분", "30")),
+        "중복로그인차단": 설정.get("중복로그인차단", "1") == "1",
+    }
+
+
+class 시스템설정변경요청(BaseModel):
+    model_config = ConfigDict(title="SystemSettingsUpdateRequest")
+
+    유휴시간_분: Optional[int] = None
+    중복로그인차단: Optional[bool] = None
+
+
+@app.put("/시스템설정")
+def 시스템설정_변경(요청: 시스템설정변경요청, 관리자: dict = Depends(auth.관리자_확인)):
+    변경 = {}
+    if 요청.유휴시간_분 is not None:
+        최소, 최대 = 유휴시간_범위_분
+        if not (최소 <= 요청.유휴시간_분 <= 최대):
+            raise HTTPException(status_code=400, detail=f"유휴 시간은 {최소}~{최대}분 사이로 입력해 주세요")
+        변경["유휴시간_분"] = str(요청.유휴시간_분)
+    if 요청.중복로그인차단 is not None:
+        변경["중복로그인차단"] = "1" if 요청.중복로그인차단 else "0"
+    if not 변경:
+        raise HTTPException(status_code=400, detail="변경할 항목이 없습니다")
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            for 이름, 값 in 변경.items():
+                cur.execute(
+                    """INSERT INTO 시스템설정 (설정이름, 값) VALUES (%s, %s)
+                       ON DUPLICATE KEY UPDATE 값=VALUES(값)""",
+                    (이름, 값),
+                )
+    return {"status": "ok"}
 
 
 @app.get("/summary", dependencies=인증필요)

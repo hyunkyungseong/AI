@@ -26,6 +26,7 @@ MariaDB(dashboard DB) 초기화 스크립트 — 이 프로젝트 전용 신규 
                        단일 컬럼(용지제작단가 등)이 그대로 폴백으로 쓰임 — 기존 거래처는 영향 없음.
   16. 단가마스터_자재단가_매칭  — 위 자재단가 행 하나에 여러 자재코드/자재명을 묶어 매칭하는 테이블
                        (2026-08-15 추가). 자재코드 우선, 없으면 자재명으로 매칭.
+  17. 시스템설정        — 관리자가 화면에서 바꾸는 설정값(유휴시간_분·중복로그인차단) (2026-11-13 추가, 7단계)
 
 (2026-07-31~2026-08-01에 이 "청구품목통합규칙" 테이블을 "통합조건식" 기능으로 처음 시도했다가
  부작용(매칭 0건 규칙 노출, 단일 업무명 요청 차단)으로 같은 날 코드를 원복함 — 그때는 이 스크립트에서
@@ -255,7 +256,21 @@ def get_db():
             사용자명        VARCHAR(50) NOT NULL UNIQUE,
             비밀번호_해시   VARCHAR(255) NOT NULL,
             이름            VARCHAR(50),
-            등록일          DATETIME DEFAULT CURRENT_TIMESTAMP
+            등록일          DATETIME DEFAULT CURRENT_TIMESTAMP,
+            관리자          TINYINT(1) NOT NULL DEFAULT 0,
+            사용여부        TINYINT(1) NOT NULL DEFAULT 1,
+            세션ID          VARCHAR(64) NULL,
+            마지막활동      DATETIME NULL,
+            비밀번호변경필요 TINYINT(1) NOT NULL DEFAULT 0
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """,
+
+    # 2026-11-13(7단계) — 관리자가 계정관리 화면에서 바꾸는 설정값. 처음 값은 migrate()가 INSERT IGNORE로 넣음
+    "시스템설정": """
+        CREATE TABLE IF NOT EXISTS 시스템설정 (
+            설정이름        VARCHAR(50) PRIMARY KEY,
+            값              VARCHAR(100) NOT NULL,
+            수정일          DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """,
 
@@ -735,6 +750,42 @@ def migrate():
                 print("  마이그레이션: 거래명세서_품목.구분자 컬럼 추가 완료")
             else:
                 print("  마이그레이션: 거래명세서_품목.구분자 컬럼 이미 존재 (건너뜀)")
+
+            # 2026-11-13(7단계 계정관리·접속보안) — 사용자 표에 권한·세션 관리용 칸 5개.
+            # 기존 계정은 기본값(일반 직원·사용중)이 채워져 지금 로그인에 영향 없음.
+            # 상세: `.claude/plans/plan_7단계_계정관리_접속보안.md` [1] 1-1.
+            사용자_추가컬럼 = [
+                ("관리자", "TINYINT(1) NOT NULL DEFAULT 0", "등록일"),
+                ("사용여부", "TINYINT(1) NOT NULL DEFAULT 1", "관리자"),
+                ("세션ID", "VARCHAR(64) NULL", "사용여부"),
+                ("마지막활동", "DATETIME NULL", "세션ID"),
+                ("비밀번호변경필요", "TINYINT(1) NOT NULL DEFAULT 0", "마지막활동"),
+            ]
+            for 컬럼, 정의, 이후컬럼 in 사용자_추가컬럼:
+                if not _컬럼_존재(cur, "사용자", 컬럼):
+                    cur.execute(f"ALTER TABLE 사용자 ADD COLUMN {컬럼} {정의} AFTER {이후컬럼}")
+                    print(f"  마이그레이션: 사용자.{컬럼} 컬럼 추가 완료")
+                else:
+                    print(f"  마이그레이션: 사용자.{컬럼} 컬럼 이미 존재 (건너뜀)")
+
+            # 시스템설정 처음 값 — INSERT IGNORE라 관리자가 나중에 바꾼 값은 덮어쓰지 않음
+            for 설정이름, 값 in [("유휴시간_분", "30"), ("중복로그인차단", "1")]:
+                cur.execute("INSERT IGNORE INTO 시스템설정 (설정이름, 값) VALUES (%s, %s)", (설정이름, 값))
+                if cur.rowcount:
+                    print(f"  마이그레이션: 시스템설정 {설정이름}={값} 등록 완료")
+                else:
+                    print(f"  마이그레이션: 시스템설정 {설정이름} 이미 존재 (건너뜀)")
+
+            # 최초 관리자 지정 — 관리자가 한 명도 없을 때만 seonghk를 관리자로(사용자 확정, 2026-11-13)
+            cur.execute("SELECT COUNT(*) AS cnt FROM 사용자 WHERE 관리자 = 1")
+            if cur.fetchone()["cnt"] == 0:
+                cur.execute("UPDATE 사용자 SET 관리자 = 1 WHERE 사용자명 = %s", ("seonghk",))
+                if cur.rowcount:
+                    print("  마이그레이션: seonghk 계정을 최초 관리자로 지정 완료")
+                else:
+                    print("  마이그레이션: seonghk 계정 없음 — 관리자 지정 건너뜀 (계정 생성 후 다시 실행 필요)")
+            else:
+                print("  마이그레이션: 관리자 이미 존재 (최초 관리자 지정 건너뜀)")
 
 
 def main():

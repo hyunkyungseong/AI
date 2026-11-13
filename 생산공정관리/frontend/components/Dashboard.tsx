@@ -1,7 +1,9 @@
 "use client";
 
 import { Suspense, use, useState } from "react";
-import LogoutButton from "./LogoutButton";
+import UserMenu from "./UserMenu";
+import SessionGuard from "./SessionGuard";
+import type { 내정보 as 내정보타입 } from "@/lib/session";
 import Tab1Summary from "./Tab1Summary";
 import Tab2Clients from "./Tab2Clients";
 import Tab3Staff from "./Tab3Staff";
@@ -275,7 +277,9 @@ export default function Dashboard({
   invoicePromise,
   issuedPromise,
   pricingPromise,
+  내정보,
 }: {
+  내정보: 내정보타입;
   clientRows: 거래처행[];
   summaryPromise: Promise<운영통계행[]>;
   invoicePromise: Promise<미발행행[]>;
@@ -317,8 +321,10 @@ export default function Dashboard({
             </button>
           ))}
         </nav>
-        <LogoutButton />
+        <UserMenu 정보={내정보} />
       </header>
+      {/* 접속 감시 장치(7단계 2-1) — 다른 곳 로그인·유휴 시간 초과 등으로 끊기면 사유별 안내창 */}
+      <SessionGuard />
 
       <nav className="flex gap-1 border-b border-gray-200 px-4 py-2 dark:border-gray-800">
         {activeGroupDef.subTabs.map((t) => (
