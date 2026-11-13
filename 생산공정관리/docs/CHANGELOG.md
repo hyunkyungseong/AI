@@ -316,3 +316,4 @@
   - 로컬 PC 리허설: 운영 모드로 띄운 뒤 IP 주소(`192.168.30.60:3000`)로 접속해 로그인 유지·탭 동작 확인. `tsc`·`eslint`·`build` 통과
   - **사무실 PC 설치(사용자 진행)**: Node.js v24.22.3(x64 .msi, 다른 PC에서 받아 옮김, "Native Modules 도구" 체크 안 함 — sharp 등은 미리 만들어진 완성본 사용) / UTM 웹필터에 `registry.npmjs.org`·`fonts.googleapis.com`·`fonts.gstatic.com` 등록(build 시 `app/layout.tsx`의 구글 글꼴 다운로드 필요) / 기존 `frontend`는 `frontend_old_20261113`으로 보관 후 새로 복사 / `.env.local`=`FASTAPI_URL=http://127.0.0.1:8001` / 방화벽 포트 3000 허용
   - 문서: CLAUDE.md 실행 명령어·기술 스택, KNOWLEDGE 아키텍처·접속 방법·수정본 배포 방법 갱신
+- **다른 대역(192.168.10.x) 직원 접속 확인** ✅: 사내 UTM에 포트 3000 허용 정책 추가 후 10.x 대역에서도 정상 접속·로그인 확인(사용자). 도중에 API 서버 창에 보인 401 묶음은 로그인 전 첫 화면 접속 시의 정상 흔적으로 확인(코드 변경 없음, KNOWLEDGE 아키텍처에 메모)

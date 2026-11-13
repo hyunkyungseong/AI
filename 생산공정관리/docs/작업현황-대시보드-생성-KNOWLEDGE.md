@@ -161,6 +161,9 @@ pip install Pillow==11.2.1
   └── Next.js(frontend/, Node.js v24.22.3) — `next build` → `next start -H 0.0.0.0 -p 3000` 상시 실행
       → FASTAPI_URL=http://127.0.0.1:8001(같은 PC 안 API), 직원은 http://192.168.30.201:3000 접속
       → 방화벽은 3000만 개방(8001은 같은 PC 안 Next.js만 호출하므로 직원용 개방 불필요)
+      → 다른 대역(예: 192.168.10.x) 직원은 회사 UTM을 거치므로 UTM에 포트 3000 허용 정책 추가함(2026-11-13)
+      → API 서버 창의 `GET /summary`·`/미발행목록`·`/발행목록`·`/거래처마스터`·`/단가마스터` **401 다섯 줄 묶음**은
+        로그인 전 첫 화면 접속 → 로그인 화면으로 보내지는 정상 흔적(`app/page.tsx`) — 오류 아님
       → 인터넷: UTM 웹필터에 registry.npmjs.org·fonts.googleapis.com·fonts.gstatic.com 3개만 등록
         (패키지 설치·build 시 구글 글꼴 다운로드용 — 직원 사용 중에는 인터넷 불필요)
   (외부/재택 접속 필요해지면 그때 Cloudflare Tunnel(무료)+도메인(아사달 기존 도메인) 추가 예정 —
