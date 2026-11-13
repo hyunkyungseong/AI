@@ -23,7 +23,9 @@ export async function POST(request: Request) {
   const cookieStore = await cookies();
   cookieStore.set(COOKIE_NAME, data.access_token, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    // 사내 http 접속(http://192.168.30.201:3000)에서도 로그인이 유지되도록 기본은 꺼둠.
+    // 나중에 https(외부 접속)를 붙이면 .env.local에 COOKIE_SECURE=true 를 추가해 켠다.
+    secure: process.env.COOKIE_SECURE === "true",
     sameSite: "lax",
     maxAge: 토큰_유효시간_초,
     path: "/",

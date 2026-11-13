@@ -114,7 +114,7 @@ touch docs/CHANGELOG.md
 | 구분 | 현재 | 최종 목표 (2026-09-02 수정) |
 |---|---|---|
 | 언어 | Python 3.12.5 | Python 3.12.5 |
-| 프론트엔드 | Next.js (로컬 dev) | Next.js (사무실 PC 자체 호스팅, `next build`+`next start` — Vercel 아님) |
+| 프론트엔드 | Next.js (사무실 PC 자체 호스팅 운영 중, 2026-11-13~ / 로컬은 dev) | Next.js (사무실 PC 자체 호스팅, `next build`+`next start` — Vercel 아님) |
 | 백엔드 | FastAPI (`scripts/api.py`) | FastAPI (`scripts/api.py`) |
 | 차트 | Plotly 6.7.0 | 추후 결정 (Next.js 쪽) |
 | DB | MariaDB (사무실 PC) | MariaDB (사무실 PC) |
@@ -135,6 +135,8 @@ API 서버 실행        : API서버_실행.bat  (FastAPI, localhost:8000 — �
 API 서버 재시작      : API서버_재시작.bat (포트 8000 프로세스만 종료 후 재기동 — 코드 수정 후 반영 시 사용)
 웹 화면 실행         : 웹화면_실행.bat (Next.js, localhost:3000 — "접속 안 됨"일 때 이거 더블클릭)
 웹 화면 재시작       : 웹화면_재시작.bat (포트 3000 프로세스만 종료 후 재기동)
+[사무실PC] 웹 화면 : 웹화면_실행_사무실PC.bat (운영 모드 next start, 직원 접속 http://192.168.30.201:3000)
+[사무실PC] 화면 반영: 웹화면_업데이트_사무실PC.bat (frontend 복사 후 실행 — 종료→npm install→build→start)
 ```
 
 ## 📏 코딩 규칙

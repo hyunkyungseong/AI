@@ -156,18 +156,26 @@ pip install Pillow==11.2.1
   ├── Streamlit(app.py) → SQLite(work/dashboard.db)·processed.pkl 직접 접근(2026-08-18부로 유지보수 종료, 참고용)
   └── Next.js(frontend/) → frontend/.env.local의 FASTAPI_URL=http://192.168.30.201:8001로 사무실 PC FastAPI 호출
 
-[다음 — 배포 시(2026-09-02 방향전환: Vercel 대신 사무실 PC 자체 호스팅), 미착수]
+[6단계 완료 — 2026-11-13 사무실 PC 자체 호스팅 운영 시작]
   사무실 PC (위 구조에 Next.js 추가)
-  └── Next.js(frontend/) — `next build` → `next start`로 상시 실행(지금의 `next dev`와 달리
-      최초 접속 시 컴파일 대기 없음), 직원들은 사설 IP:포트로 직접 접속
-  (외부/재택 접속 필요해지면 그때 Cloudflare Tunnel(무료)+도메인(아사달 기존 도메인) 추가 예정)
+  └── Next.js(frontend/, Node.js v24.22.3) — `next build` → `next start -H 0.0.0.0 -p 3000` 상시 실행
+      → FASTAPI_URL=http://127.0.0.1:8001(같은 PC 안 API), 직원은 http://192.168.30.201:3000 접속
+      → 방화벽은 3000만 개방(8001은 같은 PC 안 Next.js만 호출하므로 직원용 개방 불필요)
+      → 인터넷: UTM 웹필터에 registry.npmjs.org·fonts.googleapis.com·fonts.gstatic.com 3개만 등록
+        (패키지 설치·build 시 구글 글꼴 다운로드용 — 직원 사용 중에는 인터넷 불필요)
+  (외부/재택 접속 필요해지면 그때 Cloudflare Tunnel(무료)+도메인(아사달 기존 도메인) 추가 예정 —
+   https를 붙이면 frontend/.env.local에 COOKIE_SECURE=true 추가)
 ```
 
-### 접속 방법 (2026-11-12 갱신 — 예전 Streamlit 8501 기준 표는 폐기)
-| 시점 | 누가 | 브라우저 주소 |
+### 접속 방법 (2026-11-13 갱신 — 6단계 자체 호스팅 완료)
+| 용도 | 누가 | 브라우저 주소 |
 |---|---|---|
-| 지금(배포 전) | 로컬 PC(`192.168.30.60`)에서 직접 | `http://localhost:3000` (개발용 `next dev`) |
-| 배포 후(6단계) | 직원 PC 전체(약 20명) | `http://192.168.30.201:3000` (사무실 PC `next start`) |
+| 실사용(운영) | 직원 PC 전체(약 20명) | `http://192.168.30.201:3000` (사무실 PC `next start`) |
+| 개발·수정 확인 | 로컬 PC(`192.168.30.60`)에서 직접 | `http://localhost:3000` (개발용 `next dev`) |
+
+> 로그인 쿠키는 `COOKIE_SECURE` 설정값으로 "https 전용" 여부를 정함(`frontend/app/api/login/route.ts`) —
+> 기본 꺼짐이라 사내 http 주소에서 로그인 유지됨. 예전 `NODE_ENV === "production"` 기준은 운영 모드에서
+> http 접속 시 로그인이 안 유지돼 2026-11-13 변경(localhost는 브라우저 예외라 IP 주소로 접속해야 재현됨).
 
 > `frontend/.env.local`의 `FASTAPI_URL`은 **브라우저 주소가 아니라** 화면 서버(Next.js)가 뒤에서 데이터를
 > 가져오는 API 서버 주소. 2026-11-12부터 로컬 PC는 `http://192.168.30.201:8001`(사무실 PC 실데이터)로 연결 —
@@ -175,11 +183,17 @@ pip install Pillow==11.2.1
 > 개발용 모드(`next dev`)는 다른 PC에서 IP로 접속 시 일부 요청을 기본 차단(Next.js `allowedDevOrigins` 문서) →
 > 직원 접속은 반드시 6단계 자체 호스팅으로 해결. 상세: `.claude/plans/plan_6단계_사무실PC자체호스팅.md`
 
-### 수정본 배포 방법 (6단계 이후 기준)
+### 수정본 배포 방법 (2026-11-13 확정 — 6단계 이후 기준)
 - 서버 쪽(`scripts/*.py`): 파일 복사 → API 서버 재시작 (지금과 동일)
-- 화면 쪽(`frontend/`): 파일 복사 → 사무실 PC에서 다시 조립(`build`) → 화면 서버 재시작(조립 중 1~2분 접속 불가 —
-  업무시간 외 권장). 6단계에서 만들 `웹화면_업데이트_사무실PC.bat`로 한 번에 처리 예정
+- 화면 쪽(`frontend/`): 로컬 PC cmd에서 필요한 것만 USB로 복사 →
+  `robocopy "D:\AI\생산공정관리\frontend" "E:\frontend" /E /XD node_modules .next /XF .env.local` (E:는 USB 문자, 약 1.2MB)
+  → 사무실 PC의 기존 `frontend`는 `frontend_old_날짜`로 이름 바꿔 보관(덮어쓰면 삭제된 옛 파일이 남아 build 오류 위험)
+  → 새 `frontend` 붙여넣기 → 보관본의 `.env.local`을 새 폴더로 옮김 → `웹화면_업데이트_사무실PC.bat` 더블클릭
+  (화면 종료→`npm install`→`build`→`start`, 수 분간 접속 불가 — 업무시간 외 권장)
+- 사무실 PC 재부팅 후: `API서버_실행_사무실PC.bat` → `웹화면_실행_사무실PC.bat` 순서로 실행(두 창 닫지 말 것)
 - 직원 PC는 설치·변경 없음 — 브라우저 새로고침만으로 새 버전 사용
+- ⚠️ 웹필터 등록(위 3개 사이트)이 해제되면 사무실 PC에서 build 불가 → 로컬 PC에서 build한 결과(`.next`에서
+  `dev`·`cache` 제외)+`node_modules`를 통째로 옮기는 방식으로 전환 필요(build 결과에 API 주소는 박히지 않음 확인)
 
 ### 전환 작업 순서 (2026-07-19 갱신 — Next.js 직행으로 확정)
 > 상세 체크리스트: `.claude/plans/plan_1단계_MariaDB전환.md`(1~4 완료) / `.claude/plans/plan_5단계_Next.js프론트엔드.md`(5, 다음 진행)
