@@ -6,14 +6,9 @@ import ClientMasterTable from "./ClientMasterTable";
 import ClientFormDialog from "./ClientFormDialog";
 import ConfirmDialog from "./ConfirmDialog";
 import type { 거래처행, 운영통계행 } from "@/components/Dashboard";
+import Banner, { type 배너 } from "./Banner";
 
-type 배너 = { type: "success" | "warning" | "error"; text: string };
 
-const 배너색상: Record<배너["type"], string> = {
-  success: "border-green-300 bg-green-50 text-green-800 dark:border-green-800 dark:bg-green-950 dark:text-green-300",
-  warning: "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300",
-  error: "border-red-300 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-300",
-};
 
 // "거래처 마스터" 탭 오케스트레이터 — rows/setRows는 Dashboard.tsx가 소유한 controlled state
 // (2026-08-09, Tab4Invoice.tsx의 rows/setRows와 동일한 패턴으로 변경) — "단가관리" 하위 탭
@@ -136,7 +131,7 @@ export default function ClientMaster({
           <p className="text-xs text-gray-500 dark:text-gray-400">등록된 거래처 {rows.length.toLocaleString()}건</p>
         </div>
 
-        {banner && <div className={`rounded-md border px-3 py-2 text-sm ${배너색상[banner.type]}`}>{banner.text}</div>}
+        <Banner banner={banner} onClose={() => setBanner(null)} />
 
         <div className="flex gap-2">
           <button

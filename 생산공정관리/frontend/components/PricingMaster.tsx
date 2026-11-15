@@ -5,14 +5,9 @@ import PricingMasterTable from "./PricingMasterTable";
 import PricingFormDialog from "./PricingFormDialog";
 import ConfirmDialog from "./ConfirmDialog";
 import type { 거래처행, 단가행, 운영통계행, 자재단가행, 공정단가행 } from "@/components/Dashboard";
+import Banner, { type 배너 } from "./Banner";
 
-type 배너 = { type: "success" | "warning" | "error"; text: string };
 
-const 배너색상: Record<배너["type"], string> = {
-  success: "border-green-300 bg-green-50 text-green-800 dark:border-green-800 dark:bg-green-950 dark:text-green-300",
-  warning: "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300",
-  error: "border-red-300 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-300",
-};
 
 function 정렬(rows: 단가행[]): 단가행[] {
   return [...rows].sort(
@@ -204,7 +199,7 @@ export default function PricingMaster({
           </p>
         </div>
 
-        {banner && <div className={`rounded-md border px-3 py-2 text-sm ${배너색상[banner.type]}`}>{banner.text}</div>}
+        <Banner banner={banner} onClose={() => setBanner(null)} />
 
         <div className="flex flex-wrap items-center gap-2">
           <select

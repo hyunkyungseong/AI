@@ -12,14 +12,9 @@ import type { 미리보기결과, 확정품목, 확정규칙, 통합조건식_�
 import { useInvoiceFilters } from "@/lib/useInvoiceFilters";
 import { useResetOnFilterChange } from "@/lib/useFilters";
 import type { 미발행행, 운영통계행, 발행행 } from "./Dashboard";
+import Banner, { type 배너 } from "./Banner";
 
-type 배너 = { type: "success" | "warning" | "error"; text: string };
 
-const 배너색상: Record<배너["type"], string> = {
-  success: "border-green-300 bg-green-50 text-green-800 dark:border-green-800 dark:bg-green-950 dark:text-green-300",
-  warning: "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300",
-  error: "border-red-300 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-300",
-};
 
 // 탭4 "미발행 목록" 오케스트레이터 — GET /미발행목록(서버가 미발행 판정+집계+금액계산을
 // 전부 끝낸 결과)을 props로 받아 필터·선택·요청 흐름만 담당한다.
@@ -354,9 +349,7 @@ export default function Tab4Invoice({
             </p>
           </div>
 
-          {banner && (
-            <div className={`rounded-md border px-3 py-2 text-sm ${배너색상[banner.type]}`}>{banner.text}</div>
-          )}
+          <Banner banner={banner} onClose={() => setBanner(null)} />
 
           <div className="space-y-2">
             <div className="flex items-center gap-2">

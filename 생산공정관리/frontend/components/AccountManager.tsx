@@ -7,6 +7,7 @@ import PasswordRuleHints from "./PasswordRuleHints";
 import SessionGuard from "./SessionGuard";
 import { 비밀번호_규칙통과 } from "@/lib/passwordRules";
 import type { 내정보 } from "@/lib/session";
+import Banner, { type 배너 } from "./Banner";
 
 // 계정 관리 화면(관리자 전용, 2026-11-13 7단계 2-3) — app/accounts/page.tsx가 관리자에게만 보여준다
 // (서버 API도 관리자가 아니면 403 — 이중 차단). 표·안내줄 모양은 StaffMaster.tsx와 맞춤.
@@ -24,13 +25,8 @@ type 계정행 = {
   등록일: string | null;
 };
 type 설정 = { 유휴시간_분: number; 중복로그인차단: boolean };
-type 배너 = { type: "success" | "error"; text: string };
 type 확인작업 = { 종류: "사용중지" | "재사용" | "관리자지정" | "관리자해제"; 행: 계정행 };
 
-const 배너색상: Record<배너["type"], string> = {
-  success: "border-green-300 bg-green-50 text-green-800 dark:border-green-800 dark:bg-green-950 dark:text-green-300",
-  error: "border-red-300 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-300",
-};
 const th = "px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-300";
 const td = "px-3 py-1.5 text-gray-900 dark:text-gray-100";
 const 입력칸 =
@@ -246,11 +242,7 @@ export default function AccountManager({ 정보 }: { 정보: 내정보 }) {
       </header>
 
       <main className="space-y-6 p-6">
-        {banner && (
-          <div role="status" className={`rounded-md border px-3 py-2 text-sm ${배너색상[banner.type]}`}>
-            {banner.text}
-          </div>
-        )}
+        <Banner banner={banner} onClose={() => setBanner(null)} />
 
         <section>
           <div className="mb-2 flex items-center justify-between">

@@ -4,17 +4,12 @@ import { useEffect, useMemo, useState } from "react";
 import EditableCombo from "./EditableCombo";
 import ConfirmDialog from "./ConfirmDialog";
 import type { 거래처행, 운영통계행 } from "@/components/Dashboard";
+import Banner, { type 배너 } from "./Banner";
 
 type 담당거래처매핑 = { id: number; 거래처명: string; 업무명: string | null };
 type 담당자행 = { id: number; 이름: string; 전화번호: string | null; 이메일: string | null; 담당거래처: 담당거래처매핑[] };
 
-type 배너 = { type: "success" | "warning" | "error"; text: string };
 
-const 배너색상: Record<배너["type"], string> = {
-  success: "border-green-300 bg-green-50 text-green-800 dark:border-green-800 dark:bg-green-950 dark:text-green-300",
-  warning: "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300",
-  error: "border-red-300 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-300",
-};
 
 const label = "block text-sm text-gray-700 dark:text-gray-300";
 const input =
@@ -188,7 +183,7 @@ export default function StaffMaster({ clientRows, taskRows }: { clientRows: 거�
             발급 시 자동으로 표기되고, 담당자 정보를 수정하면 연결된 모든 거래처에 반영됩니다.
           </p>
         </div>
-        {banner && <div className={`rounded-md border px-3 py-2 text-sm ${배너색상[banner.type]}`}>{banner.text}</div>}
+        <Banner banner={banner} onClose={() => setBanner(null)} />
       </div>
 
       <div className="grid flex-1 grid-cols-2 gap-4 overflow-hidden p-6">

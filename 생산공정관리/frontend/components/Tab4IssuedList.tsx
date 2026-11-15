@@ -12,14 +12,9 @@ import { useIssuedFilters } from "@/lib/useIssuedFilters";
 import { useResetOnFilterChange } from "@/lib/useFilters";
 import { build레벨1그룹 } from "@/lib/issuedGrouping";
 import type { 발행행, 미발행행, 운영통계행 } from "./Dashboard";
+import Banner, { type 배너 } from "./Banner";
 
-type 배너 = { type: "success" | "warning" | "error"; text: string };
 
-const 배너색상: Record<배너["type"], string> = {
-  success: "border-green-300 bg-green-50 text-green-800 dark:border-green-800 dark:bg-green-950 dark:text-green-300",
-  warning: "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300",
-  error: "border-red-300 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-300",
-};
 
 type PendingAction =
   | { kind: "publish" | "unpublish"; targetNumbers: string[] }
@@ -177,7 +172,7 @@ export default function Tab4IssuedList({
 
   // "취소"(부분취소) — 거래명세서_의뢰서는 의뢰서 단위 행이라 체크한 만큼만 정확히 취소되므로
   // "함께 처리됩니다" 안내가 필요 없다. 레벨1/레벨2 둘 다에서 호출 가능(scope로 구분).
-  function handleCancelClick(scope: "level1" | "level2") {
+  async function handleCancelClick(scope: "level1" | "level2") {
     const targetRows = scope === "level1" ? level2Rows : level2Rows.filter((r) => selected2.has(레벨2키(r)));
     if (targetRows.length === 0) {
       setBanner({ type: "warning", text: "선택된 항목이 없습니다." });
@@ -189,6 +184,37 @@ export default function Tab4IssuedList({
       if (arr) arr.push(r);
       else byNumber.set(r.거래명세서번호, [r]);
     }
+
+    // 사유 입력 창을 띄우기 전에 서버에 "점검만"으로 먼저 물어본다(2026-11-15 사용자 요청) — 서버가 실제
+    // 취소와 같은 코드로 끝까지 계산한 뒤 롤백하므로 판단이 어긋나지 않는다. 하나라도 불가하면 창 없이
+    // 사유를 바로 보여 준다(일부만 진행하면 무엇이 취소됐는지 헷갈려서 전부 막음). 실제 취소 때도 서버가 다시 검사.
+    setBanner(null);
+    setSubmitting(true);
+    const 불가: string[] = [];
+    try {
+      for (const [no, lines] of byNumber) {
+        try {
+          const res = await fetch("/api/invoice-cancel", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ 거래명세서번호: no, 의뢰서번호_목록: lines.map((l) => l.의뢰서번호), 점검만: true }),
+          });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            불가.push(`${no}: ${data.detail ?? "오류"}`);
+          }
+        } catch {
+          불가.push(`${no}: 서버에 연결할 수 없습니다`);
+        }
+      }
+    } finally {
+      setSubmitting(false);
+    }
+    if (불가.length > 0) {
+      setBanner({ type: "error", text: `취소할 수 없습니다: ${불가.join(" / ")}` });
+      return;
+    }
+
     const items: string[] = [];
     for (const [no, lines] of byNumber) {
       const 전체 = rows.filter((r) => r.거래명세서번호 === no).length;
@@ -387,9 +413,7 @@ export default function Tab4IssuedList({
             </p>
           </div>
 
-          {banner && (
-            <div className={`rounded-md border px-3 py-2 text-sm ${배너색상[banner.type]}`}>{banner.text}</div>
-          )}
+          <Banner banner={banner} onClose={() => setBanner(null)} />
 
           <div className="flex gap-2">
             {mode === "대기" && (
