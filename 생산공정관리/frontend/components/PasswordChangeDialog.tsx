@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { 비밀번호_규칙통과 } from "@/lib/passwordRules";
 import PasswordRuleHints from "./PasswordRuleHints";
+import { useDraggable, 손잡이클래스 } from "@/lib/useDraggable";
 
 // 비밀번호 변경 창(2026-11-13, 7단계 2-4).
 // - 일반: 상단 메뉴 [비밀번호 변경]에서 열림. 취소·Esc 가능, 성공하면 "변경되었습니다" 후 닫기(접속 유지).
@@ -21,6 +22,7 @@ const 입력칸 =
   "w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-gray-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100";
 
 export default function PasswordChangeDialog({ 모드, onClose, onSuccess, onLogout }: Props) {
+  const { attachPanel: 창연결, panelStyle: 창위치, handleProps: 손잡이 } = useDraggable<HTMLFormElement>();
   const [현재, set현재] = useState("");
   const [새, set새] = useState("");
   const [확인값, set확인값] = useState("");
@@ -73,10 +75,16 @@ export default function PasswordChangeDialog({ 모드, onClose, onSuccess, onLog
       className="fixed inset-0 z-[90] flex items-center justify-center bg-black/40 p-4"
     >
       <form
+        ref={창연결}
+        style={창위치}
         onSubmit={handleSubmit}
         className="w-full max-w-md rounded-lg border border-gray-200 bg-white p-5 shadow-lg dark:border-gray-700 dark:bg-gray-900"
       >
-        <h2 id="password-change-title" className="text-base font-semibold text-gray-900 dark:text-gray-100">
+        <h2
+          id="password-change-title"
+          {...손잡이}
+          className={`text-base font-semibold text-gray-900 dark:text-gray-100 ${손잡이클래스}`}
+        >
           {모드 === "필수" ? "비밀번호 변경이 필요합니다" : "비밀번호 변경"}
         </h2>
 

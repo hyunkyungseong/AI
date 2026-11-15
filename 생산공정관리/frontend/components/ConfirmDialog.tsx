@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { useDraggable, 손잡이클래스 } from "@/lib/useDraggable";
 
 type Props = {
   open: boolean;
@@ -37,6 +38,7 @@ export default function ConfirmDialog({
   onConfirm,
   onClose,
 }: Props) {
+  const { attachPanel: 창연결, panelStyle: 창위치, handleProps: 손잡이 } = useDraggable();
   useEffect(() => {
     if (!open) return;
     function onKeyDown(e: KeyboardEvent) {
@@ -52,8 +54,14 @@ export default function ConfirmDialog({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="w-full max-w-md rounded-lg border border-gray-200 bg-white p-5 shadow-lg dark:border-gray-700 dark:bg-gray-900">
-        <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">{title}</h2>
+      <div
+        ref={창연결}
+        style={창위치}
+        className="w-full max-w-md rounded-lg border border-gray-200 bg-white p-5 shadow-lg dark:border-gray-700 dark:bg-gray-900"
+      >
+        <h2 {...손잡이} className={`text-base font-semibold text-gray-900 dark:text-gray-100 ${손잡이클래스}`}>
+          {title}
+        </h2>
         <p className="mt-2 text-sm text-gray-700 dark:text-gray-300">{message}</p>
 
         {items && items.length > 0 && (

@@ -5,6 +5,7 @@ import ConditionRuleModal from "./ConditionRuleModal";
 import type { 규칙조건 } from "./ConditionRuleModal";
 import ConfirmDialog from "./ConfirmDialog";
 import { 적용_규칙, 평가_조건 } from "@/lib/billingRules";
+import { useDraggable, 손잡이클래스 } from "@/lib/useDraggable";
 import type { 원본품목 } from "@/lib/billingRules";
 
 export type 미리보기품목 = 원본품목;
@@ -223,6 +224,9 @@ function 초기_rightRows(data: 미리보기결과 | null): 편집행[] {
 }
 
 export default function InvoicePreviewDialog({ open, data, submitting, onConfirm, onClose }: Props) {
+  // 창 끌기(2026-11-15) — 이 창 안의 ConfirmDialog(fixed)는 transform이 아닌 left/top 이동이라
+  // 여전히 화면 기준으로 뜬다(useDraggable.ts 설명 참고).
+  const { attachPanel: 창연결, panelStyle: 창위치, handleProps: 손잡이 } = useDraggable();
   const [rightRows, setRightRows] = useState<편집행[]>(() => 초기_rightRows(data));
   // 작업구분(조) 칸 입력 중 분리 방지(2026-09-15 사용자 요청) — onChange마다 곧바로 rightRows를
   // 갱신하면 그 값을 보는 조_그룹목록(useMemo)이 매 글자 입력마다 재계산돼, 한 글자만 쳐도 그 행이
@@ -1010,8 +1014,14 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-2">
       {/* 화면을 최대한 넓게 써야 편집이 편하다는 사용자 요청(2026-08-16)으로 여백을 줄이고 상한을
           늘림 — 이전 h-[92vh] w-[96vw] max-w-[1600px]에서 확대. */}
-      <div className="relative flex h-[98vh] w-[99vw] max-w-[2400px] flex-col overflow-hidden rounded-lg border border-gray-200 bg-white p-5 shadow-lg dark:border-gray-700 dark:bg-gray-900">
-        <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">거래명세서 미리보기 · 편집</h2>
+      <div
+        ref={창연결}
+        style={창위치}
+        className="relative flex h-[98vh] w-[99vw] max-w-[2400px] flex-col overflow-hidden rounded-lg border border-gray-200 bg-white p-5 shadow-lg dark:border-gray-700 dark:bg-gray-900"
+      >
+        <h2 {...손잡이} className={`text-base font-semibold text-gray-900 dark:text-gray-100 ${손잡이클래스}`}>
+          거래명세서 미리보기 · 편집
+        </h2>
         <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
           {data.거래처명} · {data.업무명_목록.join(", ")}
         </p>

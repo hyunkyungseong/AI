@@ -59,6 +59,7 @@
 | SKILL-47 | 화면 전체의 접속 끊김(401)을 한곳에서 잡기 — 중계 파일·버튼 코드를 하나씩 고치지 말고 `SessionGuard.tsx`가 `window.fetch`를 감싸 `/api/*` 응답을 감시(로그인·로그아웃 요청은 제외) + 30초 주기·창 복귀 시 조용히 확인 | ✅ 2026-11-14 |
 | SKILL-48 | 꺼진 것처럼 보이는 버튼은 진짜로 꺼야 함 — 줄(`tr`) 전체 `opacity`는 클릭을 막지 못하고 살아 있는 버튼까지 흐리게 만듦 → 버튼에 `disabled`+안내 `title`, 흐림은 글자 칸에만, 서버도 같은 조건으로 거부(이중 차단) | ✅ 2026-11-14 |
 | SKILL-49 | "되는지 미리 확인"(점검)은 판단 코드를 따로 만들지 말고 실제 처리 코드를 끝까지 돌린 뒤 내부 신호 예외로 롤백 — 점검과 실제 결과가 어긋날 수 없음 | ✅ 2026-11-15 |
+| SKILL-50 | 공용 훅이 돌려준 값을 `ref=`에 쓸 때는 반환값을 **구조분해**로 받을 것 — `x.panelRef`처럼 묶음에서 꺼내 `ref=`에 넣으면 `react-hooks/refs` 린트가 묶음 전체를 ref로 보고 `x.style`까지 막음. 훅 내부도 useRef 대신 useState+콜백 ref로 | ✅ 2026-11-15 |
 
 ---
 
@@ -2023,6 +2024,39 @@ except HTTPException:
 - `except _점검완료`는 `except Exception`보다 **앞에** 둘 것 — 뒤에 두면 500 오류로 감싸짐
 - 중간에 `return`하는 분기(예: 전체취소 DELETE)가 있으면 그 직전에도 같은 신호를 던질 것
 - 화면은 점검 중 버튼을 잠그고(`submitting`), 실제 처리 때도 서버가 다시 검사(SKILL-48 이중 차단)
+
+## SKILL-50. 공용 훅 반환값은 구조분해로 받기 — `react-hooks/refs` 린트 오탐 피하기
+
+**목적:** 여러 화면이 같이 쓰는 훅이 "창에 붙일 콜백 ref + 스타일 + 이벤트 묶음"을 돌려줄 때, 린트(eslint `react-hooks/refs`)에 막히지 않게 쓰기
+
+**검증 상태:** ✅ 완료 (2026-11-15, 팝업 창 끌기 `frontend/lib/useDraggable.ts` — 7개 창, 린트 18건 → 0건)
+
+**문제 상황:**
+- `const 끌기 = useDraggable(); <div ref={끌기.panelRef} style={끌기.panelStyle}>`처럼 썼더니 3줄 모두 "Cannot access refs during render" 오류가 남
+- 린트는 묶음에서 꺼낸 값이 `ref=`에 들어가는 것을 보면 그 묶음 전체를 ref로 간주함 → 평범한 스타일 객체(`끌기.panelStyle`)·이벤트(`끌기.handleProps`)까지 "렌더 중 ref 읽기"로 판정
+- 훅 내부를 useRef → useState로 바꾸거나 이름을 `panelRef` → `attachPanel`로 바꾸는 것만으로는 해결되지 않음
+- 단서: 1,500줄짜리 `InvoicePreviewDialog.tsx`만 오류가 없었음(린트 분석이 생략된 것으로 보임) → 오류가 없다고 안전하다는 뜻이 아님
+
+**해결 패턴:**
+```tsx
+// 훅 쪽 — useRef 없이 상태 + 고정된 콜백 ref
+const [창, set창] = useState<T | null>(null);
+const attachPanel = useCallback((node: T | null) => {
+  set창(node);
+  if (!node) setOffset((o) => (o.x === 0 && o.y === 0 ? o : { x: 0, y: 0 })); // 창이 빠질 때 초기화
+}, []);
+return { attachPanel, panelStyle, handleProps };
+
+// 쓰는 쪽 — 반드시 구조분해
+const { attachPanel: 창연결, panelStyle: 창위치, handleProps: 손잡이 } = useDraggable();
+<div ref={창연결} style={창위치}>
+  <h2 {...손잡이} className={`... ${손잡이클래스}`}>제목</h2>
+```
+
+**주의사항:**
+- 콜백 ref는 `useCallback(..., [])`로 고정할 것 — 렌더마다 새 함수면 React가 매번 null→노드로 다시 불러 "창이 빠질 때 초기화" 로직이 매 렌더 실행됨
+- `if (!open) return null` 구조의 팝업(ConfirmDialog 등)은 닫혀도 훅 상태가 남음 → "창 DOM이 빠지는 순간(콜백 ref null)"을 초기화 시점으로 쓰면 부모를 안 고쳐도 됨
+- 창 이동은 `transform` 대신 `position:relative` + `left/top` — `transform`이 걸린 조상은 자식 `position:fixed`의 기준점이 되어 창 안 확인창·드롭다운(SKILL-38)이 엉뚱한 곳에 뜸
 
 ---
 

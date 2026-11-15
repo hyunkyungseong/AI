@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import EditableCombo from "./EditableCombo";
+import { useDraggable, 손잡이클래스 } from "@/lib/useDraggable";
 import type { 거래처행, 운영통계행 } from "@/components/Dashboard";
 
 type Props = {
@@ -42,6 +43,7 @@ export default function ClientFormDialog({
   // useState 초기값이 항상 그 시점의 initial을 정확히 반영한다 — useEffect로 재동기화할 필요가
   // 없다(Next.js 16 react-hooks/set-state-in-effect 규칙 위반 회피, Tab4의 usePrunedSelection과
   // 같은 이유: 렌더링 중 조정 대신 React가 권장하는 "key로 리셋" 패턴 채택).
+  const { attachPanel: 창연결, panelStyle: 창위치, handleProps: 손잡이 } = useDraggable();
   const [거래처명, set거래처명] = useState(initial?.거래처명 ?? "");
   const [사업자등록번호, set사업자등록번호] = useState(initial?.사업자등록번호 ?? "");
   const [수신이메일, set수신이메일] = useState(initial?.수신이메일 ?? "");
@@ -125,8 +127,12 @@ export default function ClientFormDialog({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="w-full max-w-md rounded-lg border border-gray-200 bg-white p-5 shadow-lg dark:border-gray-700 dark:bg-gray-900">
-        <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">
+      <div
+        ref={창연결}
+        style={창위치}
+        className="w-full max-w-md rounded-lg border border-gray-200 bg-white p-5 shadow-lg dark:border-gray-700 dark:bg-gray-900"
+      >
+        <h2 {...손잡이} className={`text-base font-semibold text-gray-900 dark:text-gray-100 ${손잡이클래스}`}>
           {mode === "create" ? "신규 거래처 추가" : `거래처 수정 — ${initial?.거래처명}`}
         </h2>
 

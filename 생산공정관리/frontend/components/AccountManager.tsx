@@ -6,6 +6,7 @@ import ConfirmDialog from "./ConfirmDialog";
 import PasswordRuleHints from "./PasswordRuleHints";
 import SessionGuard from "./SessionGuard";
 import { 비밀번호_규칙통과 } from "@/lib/passwordRules";
+import { useDraggable, 손잡이클래스 } from "@/lib/useDraggable";
 import type { 내정보 } from "@/lib/session";
 import Banner, { type 배너 } from "./Banner";
 
@@ -57,10 +58,17 @@ async function 오류문구(res: Response | null, 기본: string) {
 
 // 공용 작은 창 틀(계정 추가·비밀번호 초기화·이름 수정)
 function ModalFrame({ 제목, children }: { 제목: string; children: React.ReactNode }) {
+  const { attachPanel: 창연결, panelStyle: 창위치, handleProps: 손잡이 } = useDraggable();
   return (
     <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="w-full max-w-md rounded-lg border border-gray-200 bg-white p-5 shadow-lg dark:border-gray-700 dark:bg-gray-900">
-        <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">{제목}</h2>
+      <div
+        ref={창연결}
+        style={창위치}
+        className="w-full max-w-md rounded-lg border border-gray-200 bg-white p-5 shadow-lg dark:border-gray-700 dark:bg-gray-900"
+      >
+        <h2 {...손잡이} className={`text-base font-semibold text-gray-900 dark:text-gray-100 ${손잡이클래스}`}>
+          {제목}
+        </h2>
         {children}
       </div>
     </div>

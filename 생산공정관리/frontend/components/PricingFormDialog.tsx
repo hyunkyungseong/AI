@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import EditableCombo from "./EditableCombo";
 import PricingMaterialSection from "./PricingMaterialSection";
 import PricingProcessSection from "./PricingProcessSection";
+import { useDraggable, 손잡이클래스 } from "@/lib/useDraggable";
 import type { 단가행, 운영통계행, 자재단가행, 공정단가행 } from "@/components/Dashboard";
 
 type Props = {
@@ -108,6 +109,7 @@ export default function PricingFormDialog({
   onMaterialPricesChanged,
   onProcessPricesChanged,
 }: Props) {
+  const { attachPanel: 창연결, panelStyle: 창위치, handleProps: 손잡이 } = useDraggable();
   const [업무명, set업무명] = useState(initial?.업무명 ?? "");
   const [작업명, set작업명] = useState(initial?.작업명 ?? "");
   const [가격, set가격] = useState<Record<가격필드, string>>({
@@ -292,8 +294,12 @@ export default function PricingFormDialog({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       {/* 자재별 단가 편집창이 펼쳐지면 내용이 화면 높이를 넘어설 수 있어(2026-08-16 실사용 제보 —
           아래 저장/취소 버튼이 화면 밖으로 밀려남) 팝업 전체를 세로 스크롤 가능하게 높이 제한. */}
-      <div className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-lg border border-gray-200 bg-white p-5 shadow-lg dark:border-gray-700 dark:bg-gray-900">
-        <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">
+      <div
+        ref={창연결}
+        style={창위치}
+        className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-lg border border-gray-200 bg-white p-5 shadow-lg dark:border-gray-700 dark:bg-gray-900"
+      >
+        <h2 {...손잡이} className={`text-base font-semibold text-gray-900 dark:text-gray-100 ${손잡이클래스}`}>
           {mode === "create" ? `새 단가 추가 — ${거래처명}` : `단가 수정 — ${거래처명}`}
         </h2>
 
