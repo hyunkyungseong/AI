@@ -11,7 +11,14 @@
       "Bash(drop*)",
       "Read(../*)  ",
       "Edit(../*)  ",
-      "Write(../*)"
+      "Write(../*)",
+      "Read(./scripts/db_config.py)",
+      "Edit(./scripts/db_config.py)",
+      "Write(./scripts/db_config.py)",
+      "Bash(*db_config.py*)",
+      "Read(./**/.env)",
+      "Read(./**/*.env)",
+      "Bash(*.env*)"
     ]
   },
   "hooks": {
