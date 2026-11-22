@@ -45,7 +45,7 @@
 - [x] KNOWLEDGE 버전 규칙, API 규격서 2종 갱신, CHANGELOG 기록 (2026-11-22)
 - [x] 커밋 (2026-11-22)
 - [x] 사무실 PC 배포 완료 후 git 태그 `v0.9.0` (2026-11-22)
-- 참고: 전달용 웹페이지(Artifact)는 이번에 재발행 안 함 — `/health`에 항목 1개 추가뿐이라 상대 시스템 영향 없음. 다음 규격서 변경 때 함께 반영
+- [x] 전달용 웹페이지(Artifact)에도 반영 — Version 5 재발행 (2026-11-22, 사용자 요청)
 
 ### 4단계 — 사무실 PC 배포 (사용자 진행)
 - [x] 배포 묶음 `output/배포_v0.9.0` (`api.py`·`version.py`·`data_transform.py`(11-19 Paffy 정리분)·`frontend`, DB 변경 없음)

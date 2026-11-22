@@ -401,3 +401,4 @@
   - 검증: `py_compile`·`tsc`·`eslint` 통과, `/health`·`/api/version` 응답 확인, 서버 임시 0.9.1로 주황색 표시 사용자 확인 후 원복
   - **사무실 PC 배포 완료 (v0.9.0)** — 묶음 `output/배포_v0.9.0`(`api.py`·`version.py`·`data_transform.py`(11-19 Paffy 정리분 포함)·`frontend`, DB 변경 없음), 백업 `*.bak_버전도입전`·`frontend_old_버전도입전`. 사용자 화면 확인 정상. git 태그 `v0.9.0`
   - 배포 묶음은 `git archive HEAD frontend`로 생성(커밋된 파일만 → 비밀 설정 파일·`node_modules`·`.next` 자동 제외)
+- **전달용 API 웹페이지 규격서에 `/health` `version` 반영** ✅ — 같은 링크로 Version 5 재발행(https://claude.ai/artifact/41DLbCGwna6pHpHUCzeqc7): 최종 갱신일 2026-11-22, 상단 "2026-11-22 바뀐 내용" 추가, §2 응답 예시(정상·503)에 `version` + 안내 상자(기존 항목 그대로·바꾸실 것 없음). 발행된 페이지를 불러와 그 내용 위에 수정(로컬 HTML 원본 없음 문제 해결)
