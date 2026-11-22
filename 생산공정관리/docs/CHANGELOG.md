@@ -399,3 +399,5 @@
   - **화면**: `frontend/package.json`(+lock 루트 2곳) 0.9.0, `next.config.ts`가 빌드 시 버전 주입, `app/api/version` 중계 신규, `components/VersionBadge.tsx` 신규 → 상단 오른쪽 `화면 vX · 서버 vY`(다르면 주황색 + 안내, 서버 꺼짐은 `서버 ?`)
   - 문서: API 규격서 2종 `/health` 예시에 `version` 추가
   - 검증: `py_compile`·`tsc`·`eslint` 통과, `/health`·`/api/version` 응답 확인, 서버 임시 0.9.1로 주황색 표시 사용자 확인 후 원복
+  - **사무실 PC 배포 완료 (v0.9.0)** — 묶음 `output/배포_v0.9.0`(`api.py`·`version.py`·`data_transform.py`(11-19 Paffy 정리분 포함)·`frontend`, DB 변경 없음), 백업 `*.bak_버전도입전`·`frontend_old_버전도입전`. 사용자 화면 확인 정상. git 태그 `v0.9.0`
+  - 배포 묶음은 `git archive HEAD frontend`로 생성(커밋된 파일만 → 비밀 설정 파일·`node_modules`·`.next` 자동 제외)
