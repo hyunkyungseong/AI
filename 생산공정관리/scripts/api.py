@@ -77,10 +77,11 @@ import db_config as cfg
 import data_transform as dt
 import billing
 import auth
+from version import APP_VERSION
 
 인증필요 = [Depends(auth.get_current_user)]
 
-app = FastAPI(title="생산공정관리 대시보드 API", version="0.1.0")
+app = FastAPI(title="생산공정관리 대시보드 API", version=APP_VERSION)
 
 
 @app.exception_handler(auth.인증오류)
@@ -125,9 +126,10 @@ def health():
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT 1")
-        return {"status": "ok", "db": "connected"}
+        return {"status": "ok", "db": "connected", "version": APP_VERSION}
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"DB 연결 실패: {e}")
+        # DB가 끊겨도 서버 버전은 알 수 있게 version을 함께 실음(2026-11-22) — detail은 기존 형식 그대로
+        return JSONResponse(status_code=503, content={"detail": f"DB 연결 실패: {e}", "version": APP_VERSION})
 
 
 class 로그인요청(BaseModel):

@@ -391,3 +391,11 @@
 
 ### 2026-11-19
 - **작동하지 않던 옛 Paffy 키워드 규칙 제거** ✅ (`scripts/data_transform.py` `add_client_column()`) — "모의고사 시험지"/"OMR"로 업무명을 나누던 4줄 삭제, 거래처명 `파피(Paffy)` 치환은 유지. 검토 결과 N사업부 교재제작(시험지·답안지(OMR)·책자)은 한 의뢰서에 함께 들어갈 수 있고 종류별 별도 자재라 **자재별 단가로 이미 구분 가능** — 업무명 분리는 섞인 의뢰서(로컬 24건)에서 자재 이중 집계 위험만 만듦. 규칙은 최초 커밋(2026-07-18)부터 한 번도 작동한 적 없어 동작 변화 없음(`py_compile` + 샘플 3건 확인). 사무실 PC는 동작이 같아 다음 배포 때 함께 반영. 상세: `.claude/plans/plan_Paffy_모의고사OMR구분.md`
+
+### 2026-11-22
+- **버전 관리 도입 + 화면·`/health` 버전 표시 (v0.9.0)** ✅ (`.claude/plans/plan_버전관리_화면health표시.md`)
+  - 형식 v주.부.수, 시작 v0.9.0(실사용 시작일에 v1.0.0) — 규칙은 KNOWLEDGE "버전 관리"
+  - **서버**: `scripts/version.py` 신규(`APP_VERSION`), `scripts/api.py` Swagger 버전 연결 + `/health` 응답에 `version` 추가(정상·DB 실패 503 둘 다, 기존 항목은 그대로)
+  - **화면**: `frontend/package.json`(+lock 루트 2곳) 0.9.0, `next.config.ts`가 빌드 시 버전 주입, `app/api/version` 중계 신규, `components/VersionBadge.tsx` 신규 → 상단 오른쪽 `화면 vX · 서버 vY`(다르면 주황색 + 안내, 서버 꺼짐은 `서버 ?`)
+  - 문서: API 규격서 2종 `/health` 예시에 `version` 추가
+  - 검증: `py_compile`·`tsc`·`eslint` 통과, `/health`·`/api/version` 응답 확인, 서버 임시 0.9.1로 주황색 표시 사용자 확인 후 원복

@@ -2,6 +2,7 @@
 
 import { Suspense, use, useState } from "react";
 import UserMenu from "./UserMenu";
+import VersionBadge from "./VersionBadge";
 import SessionGuard from "./SessionGuard";
 import type { 내정보 as 내정보타입 } from "@/lib/session";
 import Tab1Summary from "./Tab1Summary";
@@ -321,7 +322,10 @@ export default function Dashboard({
             </button>
           ))}
         </nav>
-        <UserMenu 정보={내정보} />
+        <div className="flex items-center gap-3">
+          <VersionBadge />
+          <UserMenu 정보={내정보} />
+        </div>
       </header>
       {/* 접속 감시 장치(7단계 2-1) — 다른 곳 로그인·유휴 시간 초과 등으로 끊기면 사유별 안내창 */}
       <SessionGuard />
