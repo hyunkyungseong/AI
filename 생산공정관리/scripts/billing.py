@@ -854,6 +854,153 @@ def 병합_통합품목행(전체품목행):
     ]
 
 
+# ── 고객 제출용 명세서(2026-11-22) ────────────────────────────────────────────
+# 내부용 최종 줄(확정되는 거래명세서_품목 '최종')을 고객용 줄("상자")에 담기만 하는 기능 — 금액은 항상
+# 담긴 줄의 합계로 계산하고, 사람이 수량·단가·금액을 입력하지 않는다(확정 이후 금액 변동 금지, 사용자
+# 결정). 아래 세 함수는 DB를 안 건드리는 순수 함수라 서버(확정·부분취소·재편집)가 공용으로 쓴다.
+# 상세: `.claude/plans/plan_고객제출용명세서.md`.
+#
+# 상자목록 형식(화면 → 서버): [{"품명","규격","비고","포함":[최종목록 인덱스,...],"나머지전부":bool}, ...]
+# 저장규칙 형식(고객제출용규칙 표): [{"순서","품명","규격","비고","포함항목":[[코드,표시품명,조],...],
+#   "나머지전부"}, ...]
+
+def _고객_매칭키(r, 품명필드="표시품명"):
+    """api._품목_매칭키와 같은 기준 — (코드, 품명, 조). 다음 달 자동 적용 때 내부용 줄을 찾는 키."""
+    return (r.get("코드") or "", r.get(품명필드) or "", r.get("조") or "")
+
+
+def _고객_대상줄(r):
+    """상자에 담아야 하는 줄인가 — "구분자" 행(금액 없는 순수 문구 행, 2026-09-01)은 제외."""
+    return not r.get("구분자")
+
+
+def 고객품목_계산(최종목록, 상자목록):
+    """상자목록대로 최종목록 줄을 담아 고객용 줄을 만든다.
+    반환: (고객줄, 미배정, 오류)
+      고객줄 = [{"품명","규격","비고","수량","단가","금액","포함":[인덱스...]}, ...] (상자 순서 그대로)
+        - 금액 = 담긴 줄 금액 합계(소수 둘째 자리 반올림 — DB DECIMAL(14,2)와 동일)
+        - 수량·단가 = 담긴 줄의 단가가 전부 같은 숫자일 때만 "수량 합계·그 단가", 아니면 None
+      미배정 = 어느 상자에도 안 담긴 대상줄 인덱스 목록(나머지전부 상자가 있으면 그 상자가 전부 받음)
+      오류 = 사람이 읽을 문장 목록 — 하나라도 있으면 저장하면 안 됨(미배정도 저장 불가 사유)
+    """
+    오류 = []
+    대상 = [i for i, r in enumerate(최종목록) if _고객_대상줄(r)]
+    대상셋 = set(대상)
+    배정 = {}  # 인덱스 → 상자 번호
+    나머지_상자 = [b for b, 상자 in enumerate(상자목록) if 상자.get("나머지전부")]
+    if len(나머지_상자) > 1:
+        오류.append("'나머지 전부' 줄은 하나만 둘 수 있습니다")
+    for b, 상자 in enumerate(상자목록):
+        if not (상자.get("품명") or "").strip():
+            오류.append(f"{b + 1}번째 고객용 줄의 품명이 비어 있습니다")
+        for i in 상자.get("포함") or []:
+            if not isinstance(i, int) or i not in 대상셋:
+                오류.append(f"{b + 1}번째 고객용 줄에 없는 내부용 줄({i})이 들어 있습니다")
+            elif i in 배정:
+                오류.append(f"내부용 {i + 1}번째 줄이 고객용 줄 두 곳에 담겨 있습니다")
+            else:
+                배정[i] = b
+    미배정 = [i for i in 대상 if i not in 배정]
+    if 나머지_상자 and len(나머지_상자) == 1:
+        for i in 미배정:
+            배정[i] = 나머지_상자[0]
+        미배정 = []
+    if 미배정:
+        오류.append(f"고객용 줄에 담기지 않은 내부용 줄이 {len(미배정)}개 있습니다")
+
+    고객줄 = []
+    for b, 상자 in enumerate(상자목록):
+        담긴 = [i for i in 대상 if 배정.get(i) == b]
+        if not 담긴:
+            오류.append(f"{b + 1}번째 고객용 줄 '{(상자.get('품명') or '').strip()}'에 담긴 내부용 줄이 없습니다")
+        금액 = round(sum(float(최종목록[i].get("금액") or 0) for i in 담긴), 2)
+        단가들 = {최종목록[i].get("단가") for i in 담긴}
+        if len(단가들) == 1 and None not in 단가들:
+            단가 = float(단가들.pop())
+            수량 = round(sum(float(최종목록[i].get("수량") or 0) for i in 담긴), 2)
+        else:
+            단가 = 수량 = None
+        고객줄.append({
+            "품명": (상자.get("품명") or "").strip(),
+            "규격": (상자.get("규격") or "").strip() or None,
+            "비고": (상자.get("비고") or "").strip() or None,
+            "수량": 수량, "단가": 단가, "금액": 금액, "포함": 담긴,
+        })
+
+    # 안전장치 — 위 구조상 항상 같지만, 계산이 바뀌어도 "합계가 다르면 막음"이 깨지지 않게 다시 확인
+    if not 오류:
+        내부합 = round(sum(float(최종목록[i].get("금액") or 0) for i in 대상), 2)
+        고객합 = round(sum(r["금액"] for r in 고객줄), 2)
+        if abs(내부합 - 고객합) > 0.005:
+            오류.append(f"고객용 합계({고객합:,.2f})가 내부용 합계({내부합:,.2f})와 다릅니다")
+    return 고객줄, 미배정, 오류
+
+
+def 고객규칙_만들기(최종목록, 상자목록, 품명필드="표시품명"):
+    """확정된 상자목록 → 저장규칙 행 목록(다음 확정 때 자동 적용용). 인덱스 대신 내부용 줄의 매칭키
+    (코드, 품명, 조)로 바꿔 저장한다(같은 키는 한 번만). 나머지전부 상자는 포함항목 없이 표시만."""
+    결과 = []
+    for b, 상자 in enumerate(상자목록):
+        키들 = []
+        if not 상자.get("나머지전부"):
+            for i in 상자.get("포함") or []:
+                if isinstance(i, int) and 0 <= i < len(최종목록):
+                    키 = list(_고객_매칭키(최종목록[i], 품명필드))
+                    if 키 not in 키들:
+                        키들.append(키)
+        결과.append({
+            "순서": b + 1,
+            "품명": (상자.get("품명") or "").strip(),
+            "규격": (상자.get("규격") or "").strip() or None,
+            "비고": (상자.get("비고") or "").strip() or None,
+            "포함항목": 키들,
+            "나머지전부": bool(상자.get("나머지전부")),
+        })
+    return 결과
+
+
+def 고객규칙_자동적용(최종목록, 저장규칙, 품명필드="표시품명"):
+    """저장규칙을 이번 최종목록에 적용해 상자목록을 만든다(화면 초기값·부분취소 재적용용).
+    각 내부용 줄은 매칭키가 들어 있는 첫 번째 규칙(순서 오름차순)에 담기고, 어디에도 없으면 나머지전부
+    규칙이 받는다. 이번에 담길 줄이 하나도 없는 규칙(지난달에만 있던 품목)은 결과에서 뺀다 — 나머지전부
+    규칙은 빈 채로 남겨도 되지만 금액 0 줄이 생기므로 마찬가지로 뺀다.
+    반환: (상자목록, 미배정 인덱스 목록) — 미배정이 있으면 사람이 다시 편집해야 함."""
+    규칙들 = sorted(저장규칙 or [], key=lambda r: r.get("순서", 0))
+    키_규칙 = {}
+    for n, 규칙 in enumerate(규칙들):
+        if 규칙.get("나머지전부"):
+            continue
+        for 키 in 규칙.get("포함항목") or []:
+            키_규칙.setdefault(tuple(키), n)
+    나머지 = next((n for n, 규칙 in enumerate(규칙들) if 규칙.get("나머지전부")), None)
+
+    담김 = {n: [] for n in range(len(규칙들))}
+    미배정 = []
+    for i, r in enumerate(최종목록):
+        if not _고객_대상줄(r):
+            continue
+        n = 키_규칙.get(_고객_매칭키(r, 품명필드), 나머지)
+        if n is None:
+            미배정.append(i)
+        else:
+            담김[n].append(i)
+
+    상자목록 = []
+    for n, 규칙 in enumerate(규칙들):
+        if not 담김[n]:
+            continue
+        상자목록.append({
+            "품명": 규칙.get("품명") or "",
+            "규격": 규칙.get("규격"),
+            "비고": 규칙.get("비고"),
+            # 나머지전부 상자도 이번에 받은 줄을 명시적으로 담아 둔다 — 화면에서 무엇이 들어갔는지
+            # 보이게 하고, 서버 재검증(고객품목_계산)에서도 같은 결과가 나온다.
+            "포함": 담김[n],
+            "나머지전부": bool(규칙.get("나머지전부")),
+        })
+    return 상자목록, 미배정
+
+
 def generate_거래명세서_excel(df_all, 단가맵, 자재map, 의뢰서번호셋, 발행일, 담당자=None):
     """zipfile+regex로 템플릿 xlsx 가변 셀만 교체 — Excel 불필요, 빠름.
     build_품목행()으로 원본 품목을 계산한 뒤 write_거래명세서_excel()에 위임(로직은 그대로,
@@ -886,6 +1033,105 @@ def _set_str(xml, ref, text):
     s_attr = re.search(r's="(\d+)"', s_m.group(1)).group(0) if s_m else ''
     new = f'<c r="{ref}" {s_attr} t="inlineStr"><is><t>{_esc(text)}</t></is></c>'
     return re.sub(rf'<c r="{ref}"[^>]*?(?:/>|>.*?</c>)', new, xml, count=1, flags=re.DOTALL)
+
+
+# ── 긴 글자 셀 안 줄바꿈(2026-11-22, 사용자 요청) ──────────────────────────────
+# 템플릿의 품명 칸(D열, D:G 병합)은 "셀에 맞춤(shrinkToFit)"이라 긴 품명이 아주 작은 글씨로 줄어들고,
+# B12(업무명, B:G 병합)는 그냥 잘린다. 칸 너비를 넘는 글자(또는 직접 넣은 줄바꿈)가 있을 때만 그 셀을
+# "줄바꿈" 서식으로 바꾸고 행 높이를 늘린다 — 짧은 글자만 있는 명세서는 파일이 한 바이트도 안 바뀐다.
+# 여러 시트를 합칠 때(combine_거래명세서_시트들) 서식표(styles.xml)는 한 장만 쓰므로, 줄바꿈 서식은
+# 필요할 때 항상 "같은 후보 목록·같은 순서"로 한꺼번에 추가해 어느 시트의 서식표든 똑같게 만든다.
+_줄바꿈_열범위 = {"B": "BCDEFG", "D": "DEFG"}  # 명세서 시트 병합 범위(B12=B:G, 품명=D:G). 표지는 셀 자기 열 하나
+_한글폭, _영문폭, _줄높이 = 2.3, 1.2, 16.5     # 12pt 글꼴 기준 대략값(엑셀 열너비 단위·pt)
+_줄바꿈_후보_캐시 = {}
+
+
+def _글자폭(text):
+    return sum(_한글폭 if ord(ch) >= 0x1100 else _영문폭 for ch in text)
+
+
+def _줄바꿈_후보():
+    """(템플릿 서식 개수, 줄바꿈 서식을 만들 원본 스타일 번호 목록) — 템플릿 파일에서 직접 읽어 항상 같다.
+    대상: 명세서 시트 B12·품명 칸(D16~D29), 표지("요청내용") 품목 칸(C5, 2026-11-22 사용자 요청)."""
+    if not _줄바꿈_후보_캐시:
+        with zipfile.ZipFile(템플릿_PATH) as z:
+            시트 = {"sheet2": z.read("xl/worksheets/sheet2.xml").decode("utf-8"),
+                    "sheet1": z.read("xl/worksheets/sheet1.xml").decode("utf-8")}
+            st = z.read("xl/styles.xml").decode("utf-8")
+        후보 = set()
+        for 이름, refs in (("sheet2", ["B12"] + [f"D{r}" for r in range(16, 30)]), ("sheet1", ["C5"])):
+            for ref in refs:
+                m = re.search(rf'<c r="{ref}"[^>]*?s="(\d+)"', 시트[이름])
+                if m:
+                    후보.add(int(m.group(1)))
+        xfs = re.findall(r"<xf [^>]*?(?:/>|>.*?</xf>)", re.search(r"<cellXfs[^>]*>(.*?)</cellXfs>", st, re.S).group(1), re.S)
+        _줄바꿈_후보_캐시["값"] = (len(xfs), sorted(후보))
+    return _줄바꿈_후보_캐시["값"]
+
+
+def _줄바꿈_서식맵(file_map):
+    """styles.xml에 후보 스타일의 줄바꿈 버전이 있으면 그 번호를, 없으면 추가해서 {원본번호: 새번호}를 준다.
+    추가분은 항상 "템플릿 서식 개수 + 후보 순서" 자리에 놓이므로, 이미 추가된 서식표(다른 시트·앞선 호출)
+    를 다시 만나도 두 번 추가하지 않고 같은 번호를 그대로 쓴다."""
+    기본개수, 후보 = _줄바꿈_후보()
+    st = file_map["xl/styles.xml"].decode("utf-8")
+    m = re.search(r"(<cellXfs[^>]*>)(.*?)(</cellXfs>)", st, re.S)
+    xfs = re.findall(r"<xf [^>]*?(?:/>|>.*?</xf>)", m.group(2), re.S)
+    if len(xfs) == 기본개수 + len(후보):
+        return {s: 기본개수 + i for i, s in enumerate(후보)}
+    if len(xfs) != 기본개수:
+        raise ValueError("거래명세서 서식표(styles.xml)가 예상과 달라 줄바꿈 서식을 넣을 수 없습니다 — 템플릿 변경 여부 확인")
+    추가 = []
+    for s in 후보:
+        xf = xfs[s]
+        if "<alignment" in xf:
+            xf = re.sub(r"<alignment([^>]*?)/>", lambda a: "<alignment" + re.sub(r'\s+shrinkToFit="1"', "", a.group(1)) + ' wrapText="1"/>', xf)
+        else:
+            if xf.endswith("/>"):
+                xf = xf[:-2] + ' applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf>'
+            else:
+                xf = xf.replace("</xf>", '<alignment vertical="center" wrapText="1"/></xf>')
+        추가.append(xf)
+    새목록 = m.group(1).replace(f'count="{len(xfs)}"', f'count="{len(xfs) + len(추가)}"') + m.group(2) + "".join(추가) + m.group(3)
+    file_map["xl/styles.xml"] = (st[:m.start()] + 새목록 + st[m.end():]).encode("utf-8")
+    return {s: 기본개수 + i for i, s in enumerate(후보)}
+
+
+def _긴글자_줄바꿈(xml, file_map, ref, text, 열범위=None):
+    """ref 셀의 글자가 칸 너비(열범위 — 기본은 명세서 병합 범위, 표지는 셀 자기 열)를 넘으면 줄바꿈 서식 +
+    행 높이 조정. 안 넘으면 xml 그대로."""
+    if not text:
+        return xml
+    열, 행 = re.match(r"([A-Z]+)(\d+)", ref).groups()
+    cols = re.search(r"<cols>(.*?)</cols>", xml, re.S).group(1)
+    너비 = 0.0
+    for c in (열범위 or _줄바꿈_열범위.get(열, 열)):
+        n = ord(c) - 64
+        m = next((m for m in re.finditer(r'<col min="(\d+)" max="(\d+)" width="([\d.]+)"', cols)
+                  if int(m.group(1)) <= n <= int(m.group(2))), None)
+        너비 += float(m.group(3)) if m else 8.43
+    줄수 = sum(max(1, math.ceil(_글자폭(seg) / (너비 * 0.92))) for seg in str(text).split("\n"))
+    if 줄수 <= 1:
+        return xml
+    sm = re.search(rf'<c r="{ref}"[^>]*?s="(\d+)"', xml)
+    if not sm:
+        return xml
+    맵 = _줄바꿈_서식맵(file_map)
+    원본 = int(sm.group(1))
+    if 원본 in 맵:
+        xml = re.sub(rf'(<c r="{ref}"[^>]*?)s="{원본}"', rf'\g<1>s="{맵[원본]}"', xml, count=1)
+    필요높이 = round(줄수 * _줄높이 + 3, 1)
+
+    def _높이(rm):
+        tag = rm.group(0)
+        # \s 필수 — 없으면 customHeight="1" 안의 ht="1"을 행 높이로 잘못 읽거나 잘라 XML이 깨진다(검증 중 발견)
+        hm = re.search(r'\sht="([\d.]+)"', tag)
+        if hm and float(hm.group(1)) >= 필요높이:
+            return tag
+        tag = re.sub(r'\s+ht="[\d.]+"', "", tag)
+        tag = re.sub(r'\s+customHeight="1"', "", tag)
+        return tag.replace(f'<row r="{행}"', f'<row r="{행}" ht="{필요높이}" customHeight="1"', 1)
+    return re.sub(rf'<row r="{행}"[^>]*>', _높이, xml, count=1)
 
 
 def write_거래명세서_excel(품목행목록, 총합계, 세액, 거래처명, 업무명, 발행일, 담당자=None):
@@ -991,6 +1237,7 @@ def write_거래명세서_excel(품목행목록, 총합계, 세액, 거래처명
     xml = _set_str(xml, "B10", 발행일.strftime("%Y-%m-%d"))
     xml = _set_str(xml, "B11", 거래처명)
     xml = _set_str(xml, "B12", 업무명)
+    xml = _긴글자_줄바꿈(xml, file_map, "B12", 업무명)
     xml = _set_str(xml, "D14", f"금 {num2words(최종합계, lang='ko')}")
     xml = _set_num(xml, "K14", 최종합계)
     xml = _set_num(xml, f"K{소계_행}", round(총합계))
@@ -1031,12 +1278,17 @@ def write_거래명세서_excel(품목행목록, 총합계, 세액, 거래처명
             xml = _set_str(xml, f"B{r}", 구분날짜)
         첫행 = False
         xml = _set_str(xml, f"D{r}", row["표시품명"])
+        xml = _긴글자_줄바꿈(xml, file_map, f"D{r}", row["표시품명"])
         if row.get("규격"):
             xml = _set_str(xml, f"H{r}", row["규격"])
-        xml = _set_num(xml, f"I{r}", int(row["수량"]))
+        # 고객 제출용 시트(2026-11-22) — 담긴 줄의 단가가 섞이면 수량·단가를 빈칸으로 둔다(수량 None,
+        # "단가빈칸" 표시). 기존 내부용 줄은 수량이 항상 숫자이고 "단가빈칸"이 없어 동작이 그대로다.
+        if row["수량"] is not None:
+            xml = _set_num(xml, f"I{r}", int(row["수량"]))
         단가 = row.get("단가")
         if 단가 is None:
-            xml = _set_str(xml, f"J{r}", "—")
+            if not row.get("단가빈칸"):
+                xml = _set_str(xml, f"J{r}", "—")
         else:
             xml = _set_num(xml, f"J{r}", 단가)
         xml = _set_num(xml, f"K{r}", round(row["금액"]))
@@ -1133,6 +1385,7 @@ def _요청내용_채우기(file_map, 표지정보):
     xml = _set_str(xml, "C3", 표지정보.get("거래처명") or "")
     xml = _set_str(xml, "C4", 표지정보["발행일"].strftime("%Y-%m-%d"))
     xml = _set_str(xml, "C5", 표지정보.get("품목") or "")
+    xml = _긴글자_줄바꿈(xml, file_map, "C5", 표지정보.get("품목") or "")  # 긴 품목 줄바꿈(2026-11-22)
     xml = _set_num(xml, "C6", round(float(표지정보.get("공급가액") or 0)))
     xml = _set_num(xml, "C7", round(float(표지정보.get("세액") or 0)))
     xml = _set_num(xml, "C8", round(float(표지정보.get("합계") or 0)))
@@ -1316,6 +1569,13 @@ def _요청내용_다중블록_채우기(file_map, 표지정보):
     xml = re.sub(r'<dimension ref="[^"]*"/>', f'<dimension ref="A2:G{마지막_row}"/>', xml)
     xml = _요청내용_2블록_cols_확장(xml)
 
+    # 긴 품목 줄바꿈(2026-11-22) — 블록마다 품목은 4번째 줄(row_base+3), 값 열은 C(왼쪽)·C+shift(오른쪽)
+    for pair_idx in range(0, len(조별목록), 2):
+        row_base = 2 + (pair_idx // 2) * (ROW_BLOCK_HEIGHT + ROW_GAP)
+        for side, 블록 in enumerate(조별목록[pair_idx:pair_idx + 2]):
+            값_col = _col_num_to_letter(_col_letter_to_num("C") + (0 if side == 0 else RIGHT_COL_SHIFT))
+            xml = _긴글자_줄바꿈(xml, file_map, f"{값_col}{row_base + 3}", 블록["품목"] or "", 열범위=값_col)
+
     file_map["xl/worksheets/sheet1.xml"] = xml.encode("utf-8")
 
 
@@ -1444,6 +1704,10 @@ def combine_거래명세서_시트들(시트_목록, 표지정보=None):
     표지_유지 = 표지정보 is not None
 
     base = dict(file_maps[0])
+    # 긴 글자 줄바꿈(2026-11-22) — 줄바꿈 서식이 추가된 시트가 하나라도 있으면 그 서식표를 쓴다. 추가분은
+    # 어느 시트든 같은 후보·같은 순서라 내용이 같고(_줄바꿈_서식맵), 원래 서식은 앞부분 그대로라
+    # 줄바꿈이 없는 시트에도 영향이 없다. 아무 시트도 안 늘었으면 기존과 동일(첫 파일 것).
+    base["xl/styles.xml"] = max((fm["xl/styles.xml"] for fm in file_maps), key=len)
     pop_keys = ["xl/comments1.xml", "xl/drawings/vmlDrawing1.vml"]
     if not 표지_유지:
         pop_keys += [
@@ -1484,9 +1748,11 @@ def combine_거래명세서_시트들(시트_목록, 표지정보=None):
         sheet_entries.append((표지_이름, sheet1_rid))
     localSheetId_오프셋 = 1 if 표지_유지 else 0
     첫_데이터탭_이름 = None
+    데이터탭_이름들 = []
 
     for i, (엑셀바이트, 시트명) in enumerate(시트_목록):
         이름 = _safe_sheet_name(시트명 or f"시트{i+1}", used_names)
+        데이터탭_이름들.append(이름)
         if i == 0:
             첫_데이터탭_이름 = 이름
         범위 = _print_area_range(file_maps[i]["xl/workbook.xml"].decode("utf-8"))
@@ -1533,7 +1799,10 @@ def combine_거래명세서_시트들(시트_목록, 표지정보=None):
         if 표지정보.get("조별목록"):
             _요청내용_다중블록_채우기(base, 표지정보)
         else:
-            _요청내용_채우기(base, {**표지정보, "비고": f"시트참조({첫_데이터탭_이름})"})
+            # 고객 제출용 시트(2026-11-22)가 맨 앞에 붙는 경우 표지는 그대로 내부용 탭을 가리키도록
+            # 호출부가 "시트참조_순번"(0부터)을 준다 — 없으면 기존처럼 첫 데이터 탭.
+            참조이름 = 데이터탭_이름들[표지정보["시트참조_순번"]] if 0 <= 표지정보.get("시트참조_순번", -1) < len(데이터탭_이름들) else 첫_데이터탭_이름
+            _요청내용_채우기(base, {**표지정보, "비고": f"시트참조({참조이름})"})
 
     sheets_block = "".join(
         f'<sheet name="{_xml_esc(name)}" sheetId="{1000 + idx}" r:id="{rid}"/>'

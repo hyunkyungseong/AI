@@ -43,6 +43,7 @@ export function mapClientRow(r: Rec): 거래처행 {
     비고: r.비고 != null ? String(r.비고) : "",
     역발행: Boolean(r.역발행),
     조별표지: Boolean(r.조별표지),
+    고객제출용: Boolean(r.고객제출용),
     등록일: String(r.등록일 ?? ""),
     수정일: String(r.수정일 ?? ""),
   };
@@ -108,6 +109,9 @@ export function mapIssuedRow(r: Rec): 발행행 {
     합계증감: Number(r.합계증감 ?? 0),
     확정공급가액: Number(r.확정공급가액 ?? 0),
     역발행: Boolean(r.역발행),
+    고객제출용: Boolean(r.고객제출용),
+    고객용있음: Boolean(r.고객용있음),
+    고객용_재편집필요: Boolean(r.고객용_재편집필요),
     담당자: String(r.담당자 ?? ""),
     사업부: String(r.사업부 ?? ""),
     거래처명: String(r.거래처명 ?? ""),

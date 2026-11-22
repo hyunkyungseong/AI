@@ -13,6 +13,7 @@ import { useInvoiceFilters } from "@/lib/useInvoiceFilters";
 import { useResetOnFilterChange } from "@/lib/useFilters";
 import type { 미발행행, 운영통계행, 발행행 } from "./Dashboard";
 import Banner, { type 배너 } from "./Banner";
+import type { 고객상자 } from "@/lib/customerSheet";
 
 
 
@@ -214,6 +215,7 @@ export default function Tab4Invoice({
     조상단업무명맵?: Record<string, string>;
     공급가액_직접입력?: number;
     세액_직접입력?: number;
+    고객제출용_묶음?: 고객상자[];
   }) {
     // 미리보기 다이얼로그가 이미 부가세오류가 있으면 "확정" 버튼을 막아두지만, 이중 안전장치로
     // 여기서도 한 번 더 막는다(작업명별 부가세 처리 방식이 섞여 판정 불가, 2026-08-04).
@@ -268,6 +270,8 @@ export default function Tab4Invoice({
       // 있을 때만 채워 보낸다. 서버가 다시 한번 유효성(조 개수·통합시트명)을 검증한다.
       공급가액_직접입력: edited.공급가액_직접입력,
       세액_직접입력: edited.세액_직접입력,
+      // 고객 제출용(2026-11-22) — 고객제출용 거래처만 채워짐. 금액은 안 보내고 서버가 직접 합산·검증.
+      고객제출용_묶음: edited.고객제출용_묶음,
     };
 
     setSubmitting(true);
@@ -307,6 +311,11 @@ export default function Tab4Invoice({
             // 역발행도 같은 이유(2026-08-24) — 거래처 단위 값이라 여기선 모르고, refreshIssued()가
             // 즉시 정확한 값으로 덮어쓴다.
             역발행: false,
+            // 고객 제출용(2026-11-22) — 확정 직후엔 고객용 줄이 막 저장된 상태(재편집 불필요), 정확한 값은
+            // 곧바로 refreshIssued()가 덮어쓴다
+            고객제출용: Boolean(previewData?.고객제출용),
+            고객용있음: Boolean(previewData?.고객제출용),
+            고객용_재편집필요: false,
             // 2026-08-23 — `...r`(원래 미발행행)의 예상공급가액은 개별 의뢰서 몫(조건식 미적용)이라
             // 발행요청목록의 거래명세서 단위 값과 스케일이 다르다. null로 두면 Tab4.tsx의
             // handleIssued가 곧바로 refreshIssued()로 정확한 값을 받아와 덮어쓴다.

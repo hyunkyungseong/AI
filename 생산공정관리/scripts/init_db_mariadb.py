@@ -137,6 +137,7 @@ def get_db():
             비고            TEXT,
             역발행          TINYINT(1) DEFAULT 0,
             조별표지        TINYINT(1) DEFAULT 0,
+            고객제출용      TINYINT(1) DEFAULT 0,
             등록일          DATE DEFAULT (CURRENT_DATE),
             수정일          DATE DEFAULT (CURRENT_DATE)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -223,6 +224,7 @@ def get_db():
             공급가액_직접입력 DECIMAL(12,2),
             세액_직접입력   DECIMAL(12,2),
             부가세구분      VARCHAR(10) NULL,
+            고객용_재편집필요 TINYINT(1) DEFAULT 0,
             발송여부        TINYINT DEFAULT 0,
             발행가능        TINYINT DEFAULT 1,
             발송일          DATE,
@@ -416,6 +418,46 @@ def get_db():
             비고            VARCHAR(200),
             수정자          VARCHAR(50) NOT NULL,
             수정일시        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_거래명세서번호 (거래명세서번호)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """,
+
+    # 2026-11-22 고객 제출용 명세서 — 거래처+업무명조합별로 "내부용 최종 줄을 어느 고객용 줄(상자)에
+    # 담는지" 저장해 다음 확정 때 자동 적용. 포함항목 = [[코드, 표시품명, 조], ...](내부용 줄 매칭 키,
+    # api._품목_매칭키와 동일), 나머지전부=1이면 어느 상자에도 안 담긴 줄을 전부 받음.
+    # 상세: `.claude/plans/plan_고객제출용명세서.md`.
+    "고객제출용규칙": """
+        CREATE TABLE IF NOT EXISTS 고객제출용규칙 (
+            id              INT AUTO_INCREMENT PRIMARY KEY,
+            거래처명        VARCHAR(100) NOT NULL,
+            업무명조합      VARCHAR(500) NOT NULL,
+            순서            INT NOT NULL,
+            품명            VARCHAR(300) NOT NULL,
+            규격            VARCHAR(50),
+            비고            VARCHAR(200),
+            포함항목        JSON,
+            나머지전부      TINYINT(1) NOT NULL DEFAULT 0,
+            등록일          DATETIME DEFAULT CURRENT_TIMESTAMP,
+            수정일          DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_고객제출용규칙 (거래처명, 업무명조합, 순서)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """,
+
+    # 2026-11-22 고객 제출용 명세서 — 확정된 거래명세서 1건의 고객용 줄(금액은 서버가 내부용 최종 줄을
+    # 합산해 만든 값, 사람이 입력하지 않음). 거래명세서 삭제(전체취소) 시 함께 지워짐.
+    "거래명세서_고객품목": """
+        CREATE TABLE IF NOT EXISTS 거래명세서_고객품목 (
+            id              INT AUTO_INCREMENT PRIMARY KEY,
+            거래명세서번호  VARCHAR(30) NOT NULL,
+            순서            INT NOT NULL,
+            품명            VARCHAR(300) NOT NULL,
+            규격            VARCHAR(50),
+            비고            VARCHAR(200),
+            수량            DECIMAL(14,2),
+            단가            DECIMAL(12,2),
+            금액            DECIMAL(14,2) NOT NULL,
+            FOREIGN KEY (거래명세서번호) REFERENCES 거래명세서(거래명세서번호)
+                ON UPDATE CASCADE ON DELETE CASCADE,
             INDEX idx_거래명세서번호 (거래명세서번호)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """,
@@ -802,6 +844,19 @@ def migrate():
                 채움[구분] += 1
             print(f"  마이그레이션: 거래명세서.부가세구분 기존 건 채우기 — 포함 {채움['포함']}건, "
                   f"별도 {채움['별도']}건, 판단불가(비워 둠) {채움['판단불가']}건")
+
+            # 2026-11-22 고객 제출용 명세서 — 거래처 설정 칸 + 부분취소 후 재편집 필요 표시 칸.
+            # 기존 행은 전부 0(기능 꺼짐·표시 없음)으로 채워져 회귀 없음.
+            # 상세: `.claude/plans/plan_고객제출용명세서.md`.
+            for 테이블, 컬럼, 이후컬럼 in [
+                ("거래처마스터", "고객제출용", "조별표지"),
+                ("거래명세서", "고객용_재편집필요", "부가세구분"),
+            ]:
+                if not _컬럼_존재(cur, 테이블, 컬럼):
+                    cur.execute(f"ALTER TABLE {테이블} ADD COLUMN {컬럼} TINYINT(1) DEFAULT 0 AFTER {이후컬럼}")
+                    print(f"  마이그레이션: {테이블}.{컬럼} 컬럼 추가 완료(기존 행 전부 0으로 채워짐)")
+                else:
+                    print(f"  마이그레이션: {테이블}.{컬럼} 컬럼 이미 존재 (건너뜀)")
 
             # 시스템설정 처음 값 — INSERT IGNORE라 관리자가 나중에 바꾼 값은 덮어쓰지 않음
             for 설정이름, 값 in [("유휴시간_분", "30"), ("중복로그인차단", "1")]:

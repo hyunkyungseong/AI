@@ -46,6 +46,11 @@ const Row = memo(function Row({ row: r, checked, onToggle, onEdit }: RowProps) {
             조별표지
           </span>
         )}
+        {r.고객제출용 && (
+          <span className="ml-1 rounded border border-amber-300 px-1.5 py-0.5 text-xs text-amber-700 dark:border-amber-700 dark:text-amber-400">
+            고객 제출용
+          </span>
+        )}
       </td>
       <td className="px-3 py-1.5 text-gray-500 dark:text-gray-400">{r.등록일}</td>
       <td className="px-3 py-1.5 text-gray-500 dark:text-gray-400">{r.수정일}</td>

@@ -7,4 +7,4 @@
 # 0.9.0에서 시작 — 직원 실사용 시작일에 1.0.0으로 올림.
 # 화면 버전은 frontend/package.json "version"에 따로 있음(화면·서버는 따로 배포되므로 각자 기록).
 # 상세 규칙: docs/작업현황-대시보드-생성-KNOWLEDGE.md "버전 관리"
-APP_VERSION = "0.9.0"
+APP_VERSION = "0.10.0"

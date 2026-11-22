@@ -14,6 +14,8 @@ type Props = {
   // 의미가 없어짐). 꺼두면 경영지원부가 "거래명세서 발행" 처리 시 그 건만 자동 제외된다.
   showPublishGate?: boolean;
   onTogglePublishGate?: (no: string, value: boolean) => void;
+  // 고객 제출용(2026-11-22) — 발행요청목록 전용. 고객 제출용 거래처 건에 [고객용 편집] 버튼을 보여준다.
+  onEditCustomer?: (no: string) => void;
 };
 
 type RowProps = {
@@ -25,6 +27,7 @@ type RowProps = {
   showDownload?: boolean;
   showPublishGate?: boolean;
   onTogglePublishGate?: (no: string, value: boolean) => void;
+  onEditCustomer?: (no: string) => void;
 };
 
 // 다운로드 열 아이콘(2026-08-12, 사용자 요청 — 한글 텍스트 대신 직관적인 아이콘). 별도 아이콘
@@ -51,6 +54,7 @@ const Row = memo(function Row({
   showDownload,
   showPublishGate,
   onTogglePublishGate,
+  onEditCustomer,
 }: RowProps) {
   return (
     <tr className="border-t border-gray-100 dark:border-gray-800">
@@ -115,6 +119,30 @@ const Row = memo(function Row({
         >
           {g.수정이력있음 ? "편집됨" : "원본"}
         </button>
+        {g.고객용_재편집필요 ? (
+          // 부분취소로 내부용 줄이 바뀌어 저장된 묶음이 안 맞는 건 — 다시 맞출 때까지 엑셀 다운로드가 막힘
+          <button
+            type="button"
+            onClick={() => onEditCustomer?.(g.거래명세서번호)}
+            disabled={!onEditCustomer}
+            className="ml-1.5 rounded border border-red-400 bg-red-50 px-1 text-xs font-medium text-red-700 hover:bg-red-100 disabled:cursor-default dark:border-red-700 dark:bg-red-950 dark:text-red-400"
+            title="부분취소로 내부용 줄이 바뀌어 고객 제출용을 다시 맞춰야 합니다(그전까지 엑셀 다운로드 불가)"
+          >
+            고객용 재편집 필요
+          </button>
+        ) : (
+          g.고객제출용 &&
+          onEditCustomer && (
+            <button
+              type="button"
+              onClick={() => onEditCustomer(g.거래명세서번호)}
+              className="ml-1.5 rounded border border-amber-300 px-1 text-xs text-amber-700 hover:bg-amber-50 dark:border-amber-700 dark:text-amber-400 dark:hover:bg-amber-950"
+              title={g.고객용있음 ? "고객 제출용 명세서 묶음 고치기(금액은 바뀌지 않음)" : "고객 제출용 명세서 만들기"}
+            >
+              고객용 편집
+            </button>
+          )
+        )}
       </td>
       <td className="px-3 py-1.5 text-gray-700 dark:text-gray-300">{g.사업부}</td>
       <td className="px-3 py-1.5 text-gray-900 dark:text-gray-100">
@@ -191,6 +219,7 @@ export default function InvoiceIssuedLevel1Table({
   showDownload = false,
   showPublishGate = false,
   onTogglePublishGate,
+  onEditCustomer,
 }: Props) {
   const 전체선택됨 = groups.length > 0 && groups.every((g) => selected.has(g.key));
   const colSpan = 16 + (showDownload ? 1 : 0) + (showPublishGate ? 1 : 0);
@@ -261,6 +290,7 @@ export default function InvoiceIssuedLevel1Table({
               showDownload={showDownload}
               showPublishGate={showPublishGate}
               onTogglePublishGate={onTogglePublishGate}
+              onEditCustomer={onEditCustomer}
             />
           ))}
           {groups.length === 0 && (

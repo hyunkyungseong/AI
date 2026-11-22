@@ -682,6 +682,52 @@ def _통합규칙_저장(cur, 거래처명, 업무명조합, 규칙목록):
         )
 
 
+# ── 고객 제출용 명세서(2026-11-22) — 상세: `.claude/plans/plan_고객제출용명세서.md` ──
+def _고객규칙_조회(cur, 거래처명, 업무명조합):
+    """고객제출용규칙(다음 확정 때 자동 적용할 묶음) 조회 — 순서 오름차순."""
+    cur.execute(
+        "SELECT 순서, 품명, 규격, 비고, 포함항목, 나머지전부 FROM 고객제출용규칙 "
+        "WHERE 거래처명=%s AND 업무명조합=%s ORDER BY 순서",
+        (거래처명, 업무명조합),
+    )
+    행목록 = list(cur.fetchall())  # 0건이면 pymysql이 ()를 돌려주므로 항상 list로 통일
+    for r in 행목록:
+        if isinstance(r["포함항목"], str):
+            r["포함항목"] = json.loads(r["포함항목"])
+        r["포함항목"] = r["포함항목"] or []
+        r["나머지전부"] = bool(r["나머지전부"])
+    return 행목록
+
+
+def _고객규칙_저장(cur, 거래처명, 업무명조합, 규칙목록):
+    """_통합규칙_저장()과 동일 패턴(DELETE 후 INSERT 통째 교체)."""
+    cur.execute("DELETE FROM 고객제출용규칙 WHERE 거래처명=%s AND 업무명조합=%s", (거래처명, 업무명조합))
+    if 규칙목록:
+        cur.executemany(
+            "INSERT INTO 고객제출용규칙 (거래처명, 업무명조합, 순서, 품명, 규격, 비고, 포함항목, 나머지전부) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+            [
+                (거래처명, 업무명조합, r["순서"], r["품명"], r.get("규격"), r.get("비고"),
+                 json.dumps(r.get("포함항목") or [], ensure_ascii=False), 1 if r.get("나머지전부") else 0)
+                for r in 규칙목록
+            ],
+        )
+
+
+def _고객품목_저장(cur, 거래명세서번호, 고객줄):
+    """거래명세서 1건의 고객용 줄을 통째로 교체 저장(금액은 billing.고객품목_계산()이 만든 값)."""
+    cur.execute("DELETE FROM 거래명세서_고객품목 WHERE 거래명세서번호=%s", (거래명세서번호,))
+    if 고객줄:
+        cur.executemany(
+            "INSERT INTO 거래명세서_고객품목 (거래명세서번호, 순서, 품명, 규격, 비고, 수량, 단가, 금액) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+            [
+                (거래명세서번호, i, r["품명"], r.get("규격"), r.get("비고"), r.get("수량"), r.get("단가"), r["금액"])
+                for i, r in enumerate(고객줄)
+            ],
+        )
+
+
 def _통합규칙_조합목록(cur, 거래처명):
     """이 거래처에 저장된 모든 통합조건식 업무명조합 문자열(중복 제거) — 부족/초과 판정용."""
     cur.execute("SELECT DISTINCT 업무명조합 FROM 청구품목통합규칙 WHERE 거래처명=%s", (거래처명,))
@@ -1008,8 +1054,15 @@ def 발행목록(사업부: Optional[List[str]] = Query(default=None)):
             발행행목록 = cur.fetchall()
             # 역발행(2026-08-24) — 거래처명 기준 표시용 조회, 거래명세서 단위 값이라 별도 저장 없이
             # 매번 거래처마스터에서 조회해 붙인다(거래처마스터가 나중에 바뀌어도 항상 최신값 반영).
-            cur.execute("SELECT 거래처명, 역발행 FROM 거래처마스터")
-            역발행맵 = {r["거래처명"]: bool(r["역발행"]) for r in cur.fetchall()}
+            cur.execute("SELECT 거래처명, 역발행, 고객제출용 FROM 거래처마스터")
+            _거래처설정 = cur.fetchall()
+            역발행맵 = {r["거래처명"]: bool(r["역발행"]) for r in _거래처설정}
+            # 고객 제출용(2026-11-22) — 거래처 설정 + 건별 상태(고객용 줄 있음 / 재편집 필요)
+            고객제출용맵 = {r["거래처명"]: bool(r["고객제출용"]) for r in _거래처설정}
+            cur.execute("SELECT 거래명세서번호 FROM 거래명세서 WHERE 고객용_재편집필요=1")
+            고객재편집셋 = {r["거래명세서번호"] for r in cur.fetchall()}
+            cur.execute("SELECT DISTINCT 거래명세서번호 FROM 거래명세서_고객품목")
+            고객용있음셋 = {r["거래명세서번호"] for r in cur.fetchall()}
             if not 발행행목록:
                 return []
 
@@ -1080,6 +1133,9 @@ def 발행목록(사업부: Optional[List[str]] = Query(default=None)):
                 # 단위로 이미 확정 저장된 값(공급가액_직접입력 우선)이라 의뢰서 라인마다 동일하게 붙는다.
                 "확정공급가액": 확정공급가액,
                 "역발행": 역발행맵.get(r["거래처명"], False),
+                "고객제출용": 고객제출용맵.get(r["거래처명"], False),
+                "고객용있음": 거래명세서번호 in 고객용있음셋,
+                "고객용_재편집필요": 거래명세서번호 in 고객재편집셋,
                 "담당자": r["마케팅담당자"],
                 "사업부": r["사업부"],
                 "거래처명": r["거래처명"],
@@ -1404,6 +1460,34 @@ def _거래명세서_엑셀_시트목록(cur, 거래명세서번호):
         # (2026-08-30, 사용자 제보 — BC카드 등 통합시트 케이스에서 품목이 안 맞던 문제).
         표지정보["품목"] = billing.읽기_시트2_셀(통합바이트, "B12")
 
+    # 고객 제출용 시트(2026-11-22) — 확정 때 저장된 고객용 줄이 있으면 맨 앞에 끼운다. 금액은 저장값
+    # 그대로(확정 이후 재계산 없음), 하단 공급가액·세액은 내부용과 같은 거래명세서 저장값(직접입력 포함)을
+    # 쓴다. 상단 업무명(B12)은 내부용 첫 시트에 실제로 적힌 값을 그대로 따른다 — 내부용 편집창의 B12 입력값이
+    # 그대로 고객용에도 찍힌다(별도 고객용 B12 칸은 중복이라 두지 않음, 2026-11-22 사용자 결정). 표지 "시트참조"는 계속
+    # 내부용 첫 탭을 가리키게 순번 1을 넘긴다. 상세: `.claude/plans/plan_고객제출용명세서.md`.
+    cur.execute(
+        "SELECT 품명, 규격, 비고, 수량, 단가, 금액 FROM 거래명세서_고객품목 WHERE 거래명세서번호=%s ORDER BY 순서",
+        (거래명세서번호,),
+    )
+    고객줄 = cur.fetchall()
+    if 고객줄:
+        고객품목행목록 = [
+            {
+                "코드": None, "표시품명": r["품명"],
+                "수량": float(r["수량"]) if r["수량"] is not None else None,
+                "단가": float(r["단가"]) if r["단가"] is not None else None,
+                "단가빈칸": True,
+                "금액": float(r["금액"]), "구분표시": None, "규격": r["규격"], "비고": r["비고"],
+            }
+            for r in 고객줄
+        ]
+        고객바이트 = billing.write_거래명세서_excel(
+            고객품목행목록, float(거래명세서["공급가액"]), float(거래명세서["세액"]), 거래명세서["거래처명"],
+            billing.읽기_시트2_셀(시트_목록[0][0], "B12") or 업무명, 발행일, 담당자,
+        )
+        시트_목록.insert(0, (고객바이트, "고객 제출용"))
+        표지정보["시트참조_순번"] = 1
+
     return 시트_목록, 표지정보
 
 
@@ -1426,10 +1510,17 @@ def 거래명세서엑셀(no: str):
     """
     with get_db() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT 묶음번호 FROM 거래명세서 WHERE 거래명세서번호=%s", (no,))
+            cur.execute("SELECT 묶음번호, 고객용_재편집필요 FROM 거래명세서 WHERE 거래명세서번호=%s", (no,))
             거래명세서 = cur.fetchone()
             if not 거래명세서:
                 raise HTTPException(status_code=404, detail="거래명세서번호를 찾을 수 없습니다")
+            if 거래명세서.get("고객용_재편집필요"):
+                # 고객 제출용(2026-11-22) — 부분취소로 내부용 줄이 바뀌어 저장된 고객용 묶음이 안 맞는 건.
+                # 맞지 않는 고객용 시트를 내보내지 않도록 다시 편집할 때까지 다운로드 자체를 막는다.
+                raise HTTPException(
+                    status_code=409,
+                    detail="고객 제출용 명세서를 다시 편집해야 다운로드할 수 있습니다. 발행요청목록에서 [고객용 편집]을 눌러 주세요.",
+                )
 
             묶음번호 = 거래명세서["묶음번호"]
             표지정보 = None
@@ -1756,9 +1847,15 @@ def 거래명세서미리보기(요청: 거래명세서미리보기_요청):
             수량불일치 = billing.자재수량_불일치_목록(df_all, 자재map, 의뢰서번호셋)
             # 조별표지(2026-08-30) — 이 거래처가 통합 명세서를 안 쓰고 조별로 표지를 나눠 보여주는
             # 대상인지, 화면이 "통합시트명" 입력칸을 감출 수 있도록 함께 내려준다.
-            cur.execute("SELECT 조별표지 FROM 거래처마스터 WHERE 거래처명=%s", (거래처명,))
+            cur.execute("SELECT 조별표지, 고객제출용 FROM 거래처마스터 WHERE 거래처명=%s", (거래처명,))
             _조별표지행 = cur.fetchone()
             조별표지_설정 = bool(_조별표지행 and _조별표지행["조별표지"])
+            # 고객 제출용(2026-11-22) — 대상 거래처면 화면이 확정 뒤 고객용 편집창을 띄우고, 지난번
+            # 저장한 묶음(고객규칙)을 이번 최종 줄에 자동 적용해 초기값으로 쓴다(키 = 이번 선택 업무명조합).
+            고객제출용_설정 = bool(_조별표지행 and _조별표지행["고객제출용"])
+            고객규칙 = (
+                _고객규칙_조회(cur, 거래처명, billing.업무명조합_키(업무명_목록)) if 고객제출용_설정 else []
+            )
 
     if 규칙목록:
         규칙적용결과, 미분류 = billing.적용_규칙(원본목록, 규칙목록)
@@ -1795,6 +1892,8 @@ def 거래명세서미리보기(요청: 거래명세서미리보기_요청):
         "부가세구분": 부가세구분,
         "부가세오류": 부가세오류,
         "조별표지": 조별표지_설정,
+        "고객제출용": 고객제출용_설정,
+        "고객규칙": 고객규칙,
         "수량불일치": 수량불일치,
         "단가미등록": 단가미등록,
         "품목": [
@@ -2009,6 +2108,9 @@ class 거래처행(BaseModel):
     역발행: Optional[bool] = False
     # 조별표지(2026-08-30) — 신규 등록 시 기본값은 항상 비워둠(False), 역발행과 동일 원칙.
     조별표지: Optional[bool] = False
+    # 고객제출용(2026-11-22) — 확정 시 내부용 명세서를 묶은 "고객 제출용" 시트를 추가로 만드는 거래처.
+    # 신규 등록 기본값은 꺼짐. 상세: `.claude/plans/plan_고객제출용명세서.md`.
+    고객제출용: Optional[bool] = False
     등록일: Optional[str] = None
     수정일: Optional[str] = None
 
@@ -2027,10 +2129,10 @@ def 거래처마스터_추가(거래처: 거래처행):
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    INSERT INTO 거래처마스터 (거래처명, 사업자등록번호, 수신이메일, 비고, 역발행, 조별표지, 등록일, 수정일)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                    INSERT INTO 거래처마스터 (거래처명, 사업자등록번호, 수신이메일, 비고, 역발행, 조별표지, 고객제출용, 등록일, 수정일)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 """, (거래처명, 거래처.사업자등록번호, 거래처.수신이메일, 거래처.비고,
-                      1 if 거래처.역발행 else 0, 1 if 거래처.조별표지 else 0,
+                      1 if 거래처.역발행 else 0, 1 if 거래처.조별표지 else 0, 1 if 거래처.고객제출용 else 0,
                       거래처.등록일 or 오늘, 거래처.수정일 or 오늘))
     except pymysql.err.IntegrityError:
         raise HTTPException(status_code=409, detail="이미 존재하는 거래처명입니다")
@@ -2047,11 +2149,14 @@ class 거래처행_수정(BaseModel):
     비고: Optional[str] = None
     역발행: Optional[bool] = False
     조별표지: Optional[bool] = False
+    # 고객제출용(2026-11-22) — None(필드 없음)이면 기존 값 유지. 화면·서버를 따로 배포하는 동안
+    # 옛 화면이 저장해도 이 설정이 꺼지지 않게 하기 위함.
+    고객제출용: Optional[bool] = None
 
 
 @app.put("/거래처마스터/{name}", dependencies=인증필요)
 def 거래처마스터_수정_요청(name: str, 거래처: 거래처행_수정):
-    """거래처 1건 수정 — 사업자등록번호·수신이메일·비고·역발행·조별표지만 변경 가능, 거래처명은
+    """거래처 1건 수정 — 사업자등록번호·수신이메일·비고·역발행·조별표지·고객제출용만 변경 가능, 거래처명은
     요청 바디에 필드 자체가 없어 API 레벨에서부터 변경 불가."""
     from datetime import date
     오늘 = str(date.today())
@@ -2059,10 +2164,12 @@ def 거래처마스터_수정_요청(name: str, 거래처: 거래처행_수정):
         with conn.cursor() as cur:
             cur.execute("""
                 UPDATE 거래처마스터
-                SET 사업자등록번호=%s, 수신이메일=%s, 비고=%s, 역발행=%s, 조별표지=%s, 수정일=%s
+                SET 사업자등록번호=%s, 수신이메일=%s, 비고=%s, 역발행=%s, 조별표지=%s,
+                    고객제출용=COALESCE(%s, 고객제출용), 수정일=%s
                 WHERE 거래처명=%s
             """, (거래처.사업자등록번호, 거래처.수신이메일, 거래처.비고,
-                  1 if 거래처.역발행 else 0, 1 if 거래처.조별표지 else 0, 오늘, name))
+                  1 if 거래처.역발행 else 0, 1 if 거래처.조별표지 else 0,
+                  None if 거래처.고객제출용 is None else (1 if 거래처.고객제출용 else 0), 오늘, name))
             if cur.rowcount == 0:
                 raise HTTPException(status_code=404, detail="해당 거래처명이 없습니다")
     return {"status": "ok"}
@@ -2577,6 +2684,18 @@ class 통합조건식_해결_입력(BaseModel):
     기존업무명조합: str
 
 
+class 고객상자_입력(BaseModel):
+    """고객 제출용 줄 1개(2026-11-22) — 화면은 "어느 내부용 줄을 담았는지"만 보내고 금액은 안 보낸다
+    (서버가 billing.고객품목_계산()으로 직접 합산). 포함 = 품목_최종 배열의 인덱스(0부터)."""
+    model_config = ConfigDict(title="CustomerSheetBoxInput")  # Swagger 표시용 영문 별명 — 필드명은 한글 그대로
+
+    품명: str
+    규격: Optional[str] = None
+    비고: Optional[str] = None
+    포함: List[int] = []
+    나머지전부: bool = False
+
+
 class 거래명세서요청_요청(BaseModel):
     model_config = ConfigDict(title="InvoiceRequestBody")  # Swagger 표시용 영문 별명 — 필드명은 한글 그대로
 
@@ -2605,6 +2724,9 @@ class 거래명세서요청_요청(BaseModel):
     # 두 값의 합으로 파생 — 별도로 받지 않는다.
     공급가액_직접입력: Optional[float] = None
     세액_직접입력: Optional[float] = None
+    # 고객 제출용 명세서(2026-11-22) — 거래처마스터.고객제출용이 켜진 거래처만 필수. 꺼진 거래처는
+    # 보내도 무시(설정이 미리보기와 확정 사이에 바뀐 경우 대비).
+    고객제출용_묶음: Optional[List[고객상자_입력]] = None
 
 
 @app.post("/거래명세서요청", dependencies=인증필요)
@@ -2707,6 +2829,9 @@ def 거래명세서요청(요청: 거래명세서요청_요청, 사용자: str =
     with get_db() as conn:
         with conn.cursor() as cur:
             _, _, _, 규칙목록 = _통합조건식_판정(cur, 요청.거래처명, set(_업무_목록))
+            cur.execute("SELECT 고객제출용 FROM 거래처마스터 WHERE 거래처명=%s", (요청.거래처명,))
+            _고객설정행 = cur.fetchone()
+            고객제출용_설정 = bool(_고객설정행 and _고객설정행["고객제출용"])
 
     # 이번 확정에서 규칙을 새로 만들거나 고쳤으면(요청.규칙 — 프론트가 매 확정마다 오른쪽 표의
     # 조건식 있는 행 전체를 보내므로 이 화면을 쓰는 한 사실상 항상 채워짐) 그 규칙을 기준선 계산에도
@@ -2737,6 +2862,24 @@ def 거래명세서요청(요청: 거래명세서요청_요청, 사용자: str =
          "수동입력": bool(r.수동입력), "구분자": bool(r.구분자)}
         for r in (요청.품목_최종 or [])
     ]
+
+    # 고객 제출용(2026-11-22) — DB에 쓰기 전에 서버가 직접 다시 계산·검증한다. 화면이 보낸 건 "어느 줄을
+    # 어느 고객용 줄에 담았는지"뿐이고 금액은 최종목록에서 합산 — 미배정·중복·합계 불일치가 있으면
+    # 거래명세서 자체를 만들지 않는다(사용자 결정: 합계가 다르면 막음). 품목_최종이 없는 옛 경로
+    # (Streamlit)는 고객용 편집 화면이 없어 검사하지 않는다.
+    고객줄 = []
+    고객규칙_저장목록 = None
+    if 고객제출용_설정 and 요청.품목_최종 is not None:
+        if 요청.고객제출용_묶음 is None:
+            raise HTTPException(
+                status_code=400,
+                detail="이 거래처는 고객 제출용 명세서를 함께 만들어야 합니다. 화면을 새로고침한 뒤 다시 확정해 주세요.",
+            )
+        상자목록 = [b.model_dump() for b in 요청.고객제출용_묶음]
+        고객줄, _, 고객오류 = billing.고객품목_계산(최종목록, 상자목록)
+        if 고객오류:
+            raise HTTPException(status_code=400, detail="고객 제출용 명세서 확인 필요: " + " / ".join(고객오류))
+        고객규칙_저장목록 = billing.고객규칙_만들기(최종목록, 상자목록)
 
     def _비교키(row):
         return (row.get("코드") or "", row.get("표시품명") or "", round(row.get("수량", 0), 2), row.get("단가"), round(row.get("금액", 0), 2))
@@ -2992,6 +3135,12 @@ def 거래명세서요청(요청: 거래명세서요청_요청, 사용자: str =
                         _통합규칙_저장(cur, 요청.거래처명, billing.업무명조합_키(요청.업무명_목록), 규칙목록_dict)
                     elif len(S) == 1:
                         _규칙_저장(cur, 요청.거래처명, next(iter(S)), 규칙목록_dict)
+
+                if 고객규칙_저장목록 is not None:
+                    # 고객 제출용(2026-11-22) — 위 내부용 저장과 같은 트랜잭션. 여기서 실패하면 거래명세서
+                    # 자체가 롤백돼 "내부용만 확정되고 고객용은 빠진" 상태가 생기지 않는다.
+                    _고객품목_저장(cur, 거래명세서번호, 고객줄)
+                    _고객규칙_저장(cur, 요청.거래처명, billing.업무명조합_키(요청.업무명_목록 or []), 고객규칙_저장목록)
     except HTTPException:
         raise
     except Exception as e:
@@ -3168,6 +3317,117 @@ class 거래명세서부분취소_요청(BaseModel):
     점검만: bool = False
 
 
+def _거래명세서_업무명조합(cur, 의뢰서목록):
+    """의뢰서번호 목록 → 그 의뢰서들의 업무명조합 키(확정 때 고객 묶음을 저장한 키와 같은 방식)."""
+    if not 의뢰서목록:
+        return ""
+    자리 = ", ".join(["%s"] * len(의뢰서목록))
+    cur.execute(f"SELECT DISTINCT 업무명 FROM 운영통계자료 WHERE 업무의뢰서번호 IN ({자리})", list(의뢰서목록))
+    return billing.업무명조합_키([r["업무명"] for r in cur.fetchall()])
+
+
+def _고객용_재적용(cur, 거래명세서번호, 거래처명, 원래_의뢰서목록, 최종목록):
+    """부분취소로 최종 줄이 바뀐 뒤 고객용 줄을 다시 맞춘다(2026-11-22). 고객용 줄도 재편집 표시도
+    없던 건(고객 제출용을 안 쓰는 건)은 아무것도 하지 않는다. 묶음은 확정 당시 키(취소 전 전체
+    의뢰서의 업무명조합)로 찾는다."""
+    cur.execute("SELECT COUNT(*) AS n FROM 거래명세서_고객품목 WHERE 거래명세서번호=%s", (거래명세서번호,))
+    고객줄수 = cur.fetchone()["n"]
+    cur.execute("SELECT 고객용_재편집필요 FROM 거래명세서 WHERE 거래명세서번호=%s", (거래명세서번호,))
+    _h = cur.fetchone()
+    if not 고객줄수 and not (_h and _h["고객용_재편집필요"]):
+        return
+    저장규칙 = _고객규칙_조회(cur, 거래처명, _거래명세서_업무명조합(cur, 원래_의뢰서목록))
+    오류 = ["저장된 묶음 없음"]
+    if 저장규칙:
+        상자목록, _ = billing.고객규칙_자동적용(최종목록, 저장규칙)
+        고객줄, _, 오류 = billing.고객품목_계산(최종목록, 상자목록)
+    if 오류:
+        _고객품목_저장(cur, 거래명세서번호, [])
+        cur.execute("UPDATE 거래명세서 SET 고객용_재편집필요=1 WHERE 거래명세서번호=%s", (거래명세서번호,))
+    else:
+        _고객품목_저장(cur, 거래명세서번호, 고객줄)
+        cur.execute("UPDATE 거래명세서 SET 고객용_재편집필요=0 WHERE 거래명세서번호=%s", (거래명세서번호,))
+
+
+def _확정건_최종목록(cur, 거래명세서번호):
+    """저장된 '최종' 품목 → 고객 묶음 계산용 dict 목록(확정 요청 때의 최종목록과 같은 모양·순서)."""
+    cur.execute(
+        "SELECT 코드, 품목, 조, 수량, 단가, 금액, 구분자 FROM 거래명세서_품목 "
+        "WHERE 거래명세서번호=%s AND 구분='최종' ORDER BY 순서",
+        (거래명세서번호,),
+    )
+    return [
+        {"코드": r["코드"] or "", "표시품명": r["품목"], "조": r["조"] or None,
+         "수량": float(r["수량"] or 0), "단가": float(r["단가"]) if r["단가"] is not None else None,
+         "금액": float(r["금액"] or 0), "구분자": bool(r["구분자"])}
+        for r in cur.fetchall()
+    ]
+
+
+def _고객편집_대상(cur, no):
+    cur.execute("SELECT 거래명세서번호, 거래처명, 발송여부 FROM 거래명세서 WHERE 거래명세서번호=%s", (no,))
+    h = cur.fetchone()
+    if not h:
+        raise HTTPException(status_code=404, detail="거래명세서번호를 찾을 수 없습니다")
+    cur.execute("SELECT 고객제출용 FROM 거래처마스터 WHERE 거래처명=%s", (h["거래처명"],))
+    설정 = cur.fetchone()
+    if not (설정 and 설정["고객제출용"]):
+        raise HTTPException(status_code=400, detail="이 거래처는 고객 제출용 명세서를 사용하지 않습니다(거래처관리에서 설정)")
+    cur.execute("SELECT 업무의뢰서번호 FROM 거래명세서_의뢰서 WHERE 거래명세서번호=%s", (no,))
+    의뢰서 = [r["업무의뢰서번호"] for r in cur.fetchall()]
+    return h, _거래명세서_업무명조합(cur, 의뢰서)
+
+
+@app.get("/거래명세서고객용/{no}", dependencies=인증필요)
+def 거래명세서고객용_조회(no: str):
+    """확정된 거래명세서의 고객용 편집창 재료(2026-11-22) — 최종 줄 + 저장된 묶음(편집창이 자동 적용)."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            h, 조합 = _고객편집_대상(cur, no)
+            최종 = _확정건_최종목록(cur, no)
+            규칙 = _고객규칙_조회(cur, h["거래처명"], 조합)
+    return {
+        "거래명세서번호": no, "거래처명": h["거래처명"], "발송여부": int(h["발송여부"] or 0),
+        # 화면 확정품목 모양(품목 = 표시품명)으로 내려준다 — CustomerSheetEditor가 그대로 쓴다
+        "품목_최종": [{"코드": r["코드"] or None, "품목": r["표시품명"], "조": r["조"],
+                     "수량": r["수량"], "단가": r["단가"], "금액": r["금액"], "구분자": r["구분자"]} for r in 최종],
+        "고객규칙": 규칙,
+    }
+
+
+class 고객용편집_요청(BaseModel):
+    model_config = ConfigDict(title="CustomerSheetEditRequest")  # Swagger 표시용 영문 별명 — 필드명은 한글 그대로
+
+    고객제출용_묶음: List[고객상자_입력]
+
+
+@app.put("/거래명세서고객용/{no}", dependencies=인증필요)
+def 거래명세서고객용_저장(no: str, 요청: 고객용편집_요청):
+    """확정된 거래명세서의 고객용 줄 다시 저장(2026-11-22) — 미발행 건만. 내부용 금액은 건드리지 않고,
+    확정 때와 같은 서버 검증(미배정·중복·합계)을 통과해야 저장된다. 수정이력은 남기지 않는다(금액 변동
+    없음). 저장하면 재편집 필요 표시가 풀리고 묶음 규칙도 갱신된다."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            h, 조합 = _고객편집_대상(cur, no)
+            if h["발송여부"] == 1:
+                raise HTTPException(status_code=400, detail="이미 발행완료된 거래명세서는 고객용을 고칠 수 없습니다. 먼저 발행 취소(되돌리기)를 진행해 주세요.")
+            최종 = _확정건_최종목록(cur, no)
+    상자목록 = [b.model_dump() for b in 요청.고객제출용_묶음]
+    고객줄, _, 오류 = billing.고객품목_계산(최종, 상자목록)
+    if 오류:
+        raise HTTPException(status_code=400, detail="고객 제출용 명세서 확인 필요: " + " / ".join(오류))
+    규칙 = billing.고객규칙_만들기(최종, 상자목록)
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                _고객품목_저장(cur, no, 고객줄)
+                _고객규칙_저장(cur, h["거래처명"], 조합, 규칙)
+                cur.execute("UPDATE 거래명세서 SET 고객용_재편집필요=0 WHERE 거래명세서번호=%s", (no,))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"고객용 저장 실패: {e}")
+    return {"status": "ok", "거래명세서번호": no, "고객줄수": len(고객줄)}
+
+
 class _부분취소_점검완료(Exception):
     """점검만=true일 때 get_db()가 롤백하도록 던지는 내부 신호(오류 아님)."""
 
@@ -3335,6 +3595,10 @@ def 거래명세서부분취소(요청: 거래명세서부분취소_요청, 사�
 
                 cur.execute("DELETE FROM 거래명세서_품목 WHERE 거래명세서번호=%s", (요청.거래명세서번호,))
                 _품목스냅샷_저장(cur, 요청.거래명세서번호, 원본목록, 최종목록, 기준목록, 조상단업무명맵)
+                # 고객 제출용(2026-11-22) — 고객용 줄이 있던 건은 남은 최종 줄에 저장된 묶음을 다시 적용한다.
+                # 다 담기면 고객용 줄 교체, 안 맞으면(새로 생긴 줄이 갈 곳 없음 등) 고객용 줄을 지우고
+                # "재편집 필요"로 표시 → 다시 맞출 때까지 엑셀 다운로드가 막힌다. 점검만 모드는 아래에서 롤백.
+                _고객용_재적용(cur, 요청.거래명세서번호, 헤더["거래처명"], 기존_목록, 최종목록)
 
                 품목 = ", ".join(sorted(set(summary["업무명"])))
                 담당자 = ", ".join(sorted(set(summary["마케팅담당자"])))

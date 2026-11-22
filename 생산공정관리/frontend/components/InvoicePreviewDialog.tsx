@@ -7,6 +7,8 @@ import ConfirmDialog from "./ConfirmDialog";
 import { 적용_규칙, 평가_조건 } from "@/lib/billingRules";
 import { useDraggable, 손잡이클래스 } from "@/lib/useDraggable";
 import type { 원본품목 } from "@/lib/billingRules";
+import CustomerSheetEditor from "./CustomerSheetEditor";
+import type { 고객상자, 저장고객규칙 } from "@/lib/customerSheet";
 
 export type 미리보기품목 = 원본품목;
 
@@ -82,6 +84,10 @@ export type 미리보기결과 = {
   // 조별표지(2026-08-30) — 이 거래처가 통합 명세서 대신 "요청내용" 표지에 조별로 나눠 보여주는
   // 대상이면 true. 서버가 통합시트명을 자동으로 무시하므로, 화면도 그 입력칸을 감춰 혼란을 줄인다.
   조별표지?: boolean;
+  // 고객 제출용(2026-11-22) — true면 "확정" 뒤 고객용 편집창(CustomerSheetEditor)이 이어서 뜬다.
+  // 고객규칙 = 지난번 저장한 묶음(이번 최종 줄에 자동 적용해 초기값으로 씀).
+  고객제출용?: boolean;
+  고객규칙?: 저장고객규칙[];
   수량불일치?: 수량불일치행[];
   단가미등록?: 단가미등록행[];
   규칙목록?: 저장된규칙[]; // POST /거래명세서미리보기 응답에 이미 포함되어 내려옴(2026-08-01,
@@ -150,9 +156,13 @@ type Props = {
     // 공급가액·부가세 직접 입력(override, 2026-08-13, 마케팅팀 요청 — 원단위 절사·반올림 차이 보정).
     공급가액_직접입력?: number;
     세액_직접입력?: number;
+    // 고객 제출용(2026-11-22) — 고객제출용 거래처만 채워짐(금액 없이 "어느 줄을 담았는지"만)
+    고객제출용_묶음?: 고객상자[];
   }) => void;
   onClose: () => void;
 };
+
+type 확정내용 = Parameters<Props["onConfirm"]>[0];
 
 // 좌우 표 컬럼 간 여백(2026-08-12 사용자 요청 — 필드가 다닥다닥 붙어 읽기 불편함) — px-3에서 넓힘.
 const th = "px-4 py-2 text-left font-medium text-gray-600 dark:text-gray-300";
@@ -239,6 +249,10 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
   // 채워지기 전엔 확정 버튼이 막힌다. data가 바뀌면(새 미리보기) key로 컴포넌트가 재마운트되므로
   // 별도 리셋 로직 없이 항상 null로 시작한다(ConditionRuleModal과 동일한 재마운트 전제).
   const [resolution, setResolution] = useState<통합조건식_해결 | null>(null);
+  // 고객 제출용(2026-11-22) — 내부용 "확정"을 누른 순간의 내용을 잠시 들고 있다가, 고객용 편집창에서
+  // [최종 확정]할 때 고객용 묶음과 합쳐 한 번에 보낸다(서버도 한 트랜잭션). 돌아가기를 누르면 null로
+  // 되돌리고 내부용 편집 내용(rightRows 등)은 그대로 남는다.
+  const [고객단계, set고객단계] = useState<확정내용 | null>(null);
   // 조건식 저장 시 다른 규칙과 겹치는 항목이 있으면 저장 전에 확인받기 위한 대기 상태(2026-08-08
   // 사용자 요청) — 겹치는 항목이 없으면 이 상태를 거치지 않고 바로 저장된다. 규칙별로 몇 건씩
   // 겹치는지도 함께 보여줘야 사용자가 어느 규칙과 부딪히는지 바로 알 수 있다(2026-08-08 추가 요청).
@@ -998,7 +1012,7 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
         규격: r.규격,
         비고: r.비고,
       }));
-    onConfirm({
+    const 내용: 확정내용 = {
       품목_최종,
       규칙,
       통합조건식_해결: resolution,
@@ -1007,7 +1021,12 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
       조상단업무명맵: Object.fromEntries(
         Object.entries(조상단업무명맵).filter(([, v]) => v.trim() !== "")
       ),
-    });
+    };
+    if (data?.고객제출용) {
+      set고객단계(내용);
+      return;
+    }
+    onConfirm(내용);
   }
 
   return (
@@ -1430,7 +1449,7 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
             disabled={submitting || rightRows.length === 0 || !!data.부가세오류 || (!!data.통합조건식_불일치 && !resolution)}
             className="rounded-md bg-gray-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-gray-700 disabled:opacity-50 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-gray-300"
           >
-            {submitting ? "요청 중..." : "확정"}
+            {submitting ? "요청 중..." : data.고객제출용 ? "확정 → 고객 제출용 편집" : "확정"}
           </button>
         </div>
 
@@ -1518,6 +1537,17 @@ export default function InvoicePreviewDialog({ open, data, submitting, onConfirm
           }}
           onClose={() => set미분류확인대기(false)}
         />
+
+        {고객단계 && (
+          <CustomerSheetEditor
+            거래처명={data.거래처명}
+            품목_최종={고객단계.품목_최종}
+            저장규칙={data.고객규칙 ?? []}
+            submitting={submitting}
+            onBack={() => set고객단계(null)}
+            onConfirm={(상자목록) => onConfirm({ ...고객단계, 고객제출용_묶음: 상자목록 })}
+          />
+        )}
       </div>
     </div>
   );

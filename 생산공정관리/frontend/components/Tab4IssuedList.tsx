@@ -13,6 +13,12 @@ import { useResetOnFilterChange } from "@/lib/useFilters";
 import { build레벨1그룹 } from "@/lib/issuedGrouping";
 import type { 발행행, 미발행행, 운영통계행 } from "./Dashboard";
 import Banner, { type 배너 } from "./Banner";
+import CustomerSheetEditor from "./CustomerSheetEditor";
+import type { 확정품목 } from "./InvoicePreviewDialog";
+import type { 고객상자, 저장고객규칙 } from "@/lib/customerSheet";
+
+// 고객 제출용(2026-11-22) — 확정된 건의 고객용 편집창 재료(GET /api/invoice-customer/[no])
+type 고객편집대상 = { 거래명세서번호: string; 거래처명: string; 품목_최종: 확정품목[]; 고객규칙: 저장고객규칙[] };
 
 
 
@@ -78,6 +84,53 @@ export default function Tab4IssuedList({
   // InvoiceHistoryDialog를 그 거래명세서번호로 마운트한다(ConditionRuleModal.tsx와 동일하게
   // 부모의 조건부 렌더링으로 열림/닫힘을 제어 — set-state-in-effect 린트 회피 패턴).
   const [historyTarget, setHistoryTarget] = useState<string | null>(null);
+  const [고객편집, set고객편집] = useState<고객편집대상 | null>(null);
+  const [고객저장중, set고객저장중] = useState(false);
+
+  // 고객 제출용(2026-11-22) — [고객용 편집]/[고객용 재편집 필요] 클릭 시 서버에서 최종 줄·저장 묶음을 받아
+  // 확정 때와 같은 편집창(CustomerSheetEditor)을 띄운다. 금액은 서버가 합산하므로 바뀌지 않는다.
+  async function handleOpenCustomer(no: string) {
+    setBanner(null);
+    try {
+      const res = await fetch(`/api/invoice-customer/${encodeURIComponent(no)}`, { cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setBanner({ type: "error", text: data.detail ?? "고객용 명세서를 불러오지 못했습니다." });
+        return;
+      }
+      set고객편집(data as 고객편집대상);
+    } catch {
+      setBanner({ type: "error", text: "서버에 연결할 수 없습니다." });
+    }
+  }
+
+  async function handleSaveCustomer(상자목록: 고객상자[]) {
+    if (!고객편집) return;
+    const no = 고객편집.거래명세서번호;
+    set고객저장중(true);
+    try {
+      const res = await fetch(`/api/invoice-customer/${encodeURIComponent(no)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 고객제출용_묶음: 상자목록 }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        // 창은 열어 둔다 — 안내를 보고 바로 다시 고칠 수 있게
+        setBanner({ type: "error", text: data.detail ?? "고객용 명세서 저장 중 오류가 발생했습니다." });
+        return;
+      }
+      setRows((prev) =>
+        prev.map((r) => (r.거래명세서번호 === no ? { ...r, 고객용있음: true, 고객용_재편집필요: false } : r))
+      );
+      set고객편집(null);
+      setBanner({ type: "success", text: `${no} 고객 제출용 명세서를 저장했습니다.` });
+    } catch {
+      setBanner({ type: "error", text: "서버에 연결할 수 없습니다." });
+    } finally {
+      set고객저장중(false);
+    }
+  }
 
   // 레벨1 선택이 바뀌면(체크·전체선택 무관) 레벨2 선택은 항상 초기화한다 — 레벨1이 바뀌면
   // 레벨2가 다른 대상 집합이 되므로 Streamlit(레벨2 key에 sorted(선택_idx_1) 포함)과 동일한 동작.
@@ -460,6 +513,7 @@ export default function Tab4IssuedList({
             showDownload
             showPublishGate={mode === "대기"}
             onTogglePublishGate={handleTogglePublishGate}
+            onEditCustomer={mode === "대기" ? handleOpenCustomer : undefined}
           />
 
           {selected1.size > 0 && (
@@ -496,6 +550,20 @@ export default function Tab4IssuedList({
 
       {historyTarget && (
         <InvoiceHistoryDialog key={historyTarget} 거래명세서번호={historyTarget} onClose={() => setHistoryTarget(null)} />
+      )}
+
+      {고객편집 && (
+        <CustomerSheetEditor
+          key={고객편집.거래명세서번호}
+          거래처명={`${고객편집.거래처명} (${고객편집.거래명세서번호})`}
+          품목_최종={고객편집.품목_최종}
+          저장규칙={고객편집.고객규칙}
+          submitting={고객저장중}
+          backLabel="닫기"
+          confirmLabel="저장"
+          onBack={() => set고객편집(null)}
+          onConfirm={handleSaveCustomer}
+        />
       )}
 
       <ConfirmDialog
